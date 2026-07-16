@@ -23,9 +23,11 @@
 //!   compiler *proves* this; a scanner holding non-thread-safe state simply
 //!   won't compile into the pipeline.
 
+pub mod ast;
 pub mod builtin;
 pub mod expand;
 pub mod supply;
+pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;
 pub use expand::ArchiveExpander;
 pub use supply::SupplyChainScanner;
@@ -90,6 +92,10 @@ pub fn default_pipeline() -> Result<Pipeline> {
         Box::new(ArchiveExpander::default()),
         Box::new(ScanTask(RegexScanner::new(builtin_rules())?)),
         Box::new(ScanTask(SupplyChainScanner)),
+        // AST chain: the scheduler places the extractor (Bytes→Ast) before the
+        // dangerous-call scanner (Ast→Matches) automatically.
+        Box::new(AstExtractor),
+        Box::new(DangerousCallScanner),
     ])
 }
 

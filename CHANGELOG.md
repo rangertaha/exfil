@@ -32,6 +32,11 @@ and this project adheres to
   [query] --format <fmt>` renders the findings graph.
 - Run-level orchestration (`exfill-engine::run`): `RunStage` sequence
   fetch → scan → report sharing the graph through `RunCtx`.
+- Tree-sitter AST scanning (`exfill-scan::ast`): `AstExtractor` (Bytes→Ast)
+  parses Python and JavaScript; `DangerousCallScanner` (Ast→Matches) flags
+  dangerous sinks (eval/exec/os.system/subprocess/child_process.exec/
+  pickle.loads/yaml.load) from the parse tree, so words in comments and
+  strings are not false-positives. ASTs are persisted with a `has_ast` edge.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
 - Ratatui progress gauge for `scan` (plain line output when piped).
 - Mutt-style `exfill tui`: findings index + pager, `/` limit, `:` commands,

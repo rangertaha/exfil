@@ -26,6 +26,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use exfill_core::{Match, Symbol, VirtualFile};
+use serde::{Deserialize, Serialize};
 
 /// The kind of data an artifact carries. Tasks declare their input and output
 /// in terms of these, and the scheduler matches producers to consumers.
@@ -42,7 +43,7 @@ pub enum ArtifactKind {
 }
 
 /// A parsed abstract syntax tree: the symbols a language scanner extracted.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ast {
     /// Detected language, e.g. `rust` or `python`.
     pub lang: String,
@@ -126,6 +127,8 @@ pub struct FileArtifacts {
     pub matches: Vec<Match>,
     /// Files expanded from this one (archive entries) to be processed in turn.
     pub expanded: Vec<VirtualFile>,
+    /// The parsed AST, if a language task produced one (for the `has_ast` edge).
+    pub ast: Option<Ast>,
 }
 
 impl Pipeline {
@@ -168,6 +171,12 @@ impl Pipeline {
                     out.expanded.append(&mut f);
                     // Keep it available too, in case a later task consumes Files.
                     available.insert(ArtifactKind::Files, Artifact::Files(Vec::new()));
+                }
+                Artifact::Ast(ast) => {
+                    // Surface the AST for persistence, and keep it available for
+                    // downstream Ast → Matches tasks.
+                    out.ast = Some(ast.clone());
+                    available.insert(ArtifactKind::Ast, Artifact::Ast(ast));
                 }
                 other => {
                     available.insert(other.kind(), other);

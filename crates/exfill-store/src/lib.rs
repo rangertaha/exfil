@@ -173,6 +173,31 @@ impl Store {
         Ok(())
     }
 
+    /// Store a file's AST (keyed by the file's content hash, so it dedups with
+    /// the file) and relate the file to it with `has_ast`. Idempotent.
+    pub async fn upsert_ast(
+        &self,
+        file_hash: &str,
+        lang: &str,
+        symbols: &serde_json::Value,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPSERT type::thing('ast', $h) CONTENT { lang: $lang, symbols: $symbols }; \
+                 DELETE has_ast WHERE in = $file; \
+                 RELATE $file->has_ast->(type::thing('ast', $h));",
+            )
+            .bind(("h", file_hash.to_string()))
+            .bind(("lang", lang.to_string()))
+            .bind(("symbols", symbols.clone()))
+            .bind(("file", RecordId::from(("file", file_hash))))
+            .await
+            .context("upsert ast")?
+            .check()
+            .context("ast statement failed")?;
+        Ok(())
+    }
+
     /// Create a finding record and relate it to the file it was found in.
     pub async fn add_finding(&self, m: &Match, file_hash: &str) -> Result<()> {
         self.db

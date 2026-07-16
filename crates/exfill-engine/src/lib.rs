@@ -61,11 +61,13 @@ pub struct Summary {
     pub errors: u64,
 }
 
-/// One processed file: its metadata, any matches, and — for files expanded
-/// from an archive — the content hash of the container they came from.
+/// One processed file: its metadata, any matches, an optional parsed AST, and —
+/// for files expanded from an archive — the content hash of the container.
 struct FileResult {
     meta: FileMeta,
     matches: Vec<Match>,
+    /// The parsed AST, when a language task produced one (for `has_ast`).
+    ast: Option<exfill_task::Ast>,
     /// `Some(container_hash)` when this file was expanded from an archive.
     contained_in: Option<String>,
 }
@@ -219,6 +221,12 @@ pub async fn scan(
                     for m in &fr.matches {
                         store.add_finding(m, &fr.meta.hash).await?;
                     }
+                    if let Some(ast) = &fr.ast {
+                        if !ast.symbols.is_empty() {
+                            let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
+                            store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
+                        }
+                    }
                     if let Some(container) = &fr.contained_in {
                         store.relate_contained_in(&fr.meta.hash, container).await?;
                     }
@@ -295,24 +303,29 @@ fn process_file(
 
     // The container file plus everything expanded out of it (recursively).
     let mut results = Vec::new();
-    let (matches, expanded) = run_pipeline(path, content, pipeline);
+    let processed = run_pipeline(path, content, pipeline);
     results.push(FileResult {
         meta,
-        matches,
+        matches: processed.matches,
+        ast: processed.ast,
         contained_in: None,
     });
-    expand_into(&hash, expanded, host, pipeline, 1, &mut results);
+    expand_into(&hash, processed.expanded, host, pipeline, 1, &mut results);
 
     Ok(WalkOutcome::Scanned(results))
 }
 
-/// Run the pipeline over one file's bytes, skipping binary content. Returns
-/// `(matches, expanded)` — the archive expander's output feeds re-processing.
-fn run_pipeline(
-    path: &Path,
-    content: Vec<u8>,
-    pipeline: &Pipeline,
-) -> (Vec<Match>, Vec<exfill_core::VirtualFile>) {
+/// What running the pipeline over one file's bytes yielded.
+#[derive(Default)]
+struct Processed {
+    matches: Vec<Match>,
+    expanded: Vec<exfill_core::VirtualFile>,
+    ast: Option<exfill_task::Ast>,
+}
+
+/// Run the pipeline over one file's bytes, skipping binary content (but still
+/// expanding archives — their inner files feed re-processing).
+fn run_pipeline(path: &Path, content: Vec<u8>, pipeline: &Pipeline) -> Processed {
     // An archive is a container: expand it, but never content-scan its raw
     // bytes (that would match on compression artifacts and produce garbage
     // findings). Its inner files are scanned individually after expansion.
@@ -325,17 +338,24 @@ fn run_pipeline(
             Ok(out) => out.expanded,
             Err(_) => Vec::new(),
         };
-        return (Vec::new(), expanded);
+        return Processed {
+            expanded,
+            ..Default::default()
+        };
     }
 
     // Binary files get a record (full VFS coverage) but are not scanned.
     let head = &content[..content.len().min(BINARY_SNIFF_LEN)];
     if head.contains(&0) {
-        return (Vec::new(), Vec::new());
+        return Processed::default();
     }
     match pipeline.run_file(path, content) {
-        Ok(out) => (out.matches, out.expanded),
-        Err(_) => (Vec::new(), Vec::new()),
+        Ok(out) => Processed {
+            matches: out.matches,
+            expanded: out.expanded,
+            ast: out.ast,
+        },
+        Err(_) => Processed::default(),
     }
 }
 
@@ -356,7 +376,7 @@ fn expand_into(
         let hash = blake3::hash(&vf.content).to_hex().to_string();
         let size = vf.content.len() as u64;
         let vpath = PathBuf::from(&vf.path);
-        let (matches, nested) = run_pipeline(&vpath, vf.content, pipeline);
+        let processed = run_pipeline(&vpath, vf.content, pipeline);
         out.push(FileResult {
             meta: FileMeta {
                 path: vf.path.clone(),
@@ -371,10 +391,11 @@ fn expand_into(
                 mtime: String::new(),
                 hash: hash.clone(),
             },
-            matches,
+            matches: processed.matches,
+            ast: processed.ast,
             contained_in: Some(container_hash.to_string()),
         });
-        expand_into(&hash, nested, host, pipeline, depth + 1, out);
+        expand_into(&hash, processed.expanded, host, pipeline, depth + 1, out);
     }
 }
 
@@ -514,6 +535,44 @@ mod tests {
                 m.uid() == 0
             })
             .unwrap_or(false)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ast_scanner_flags_dangerous_calls_and_stores_ast() {
+        let base =
+            std::env::temp_dir().join(format!("exfill-engine-test-ast-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(
+            tree.join("handler.py"),
+            "def handle(req):\n    return os.system(req)\n",
+        )
+        .unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // The dangerous call is flagged from the parse tree, not by regex.
+        let found = store.search_findings("rule=ast-os-command").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].path.ends_with("handler.py"));
+
+        // The file's AST was persisted and linked with has_ast.
+        let hash = blake3::hash(b"def handle(req):\n    return os.system(req)\n")
+            .to_hex()
+            .to_string();
+        let mut res = store
+            .db()
+            .query("SELECT count() AS n FROM has_ast WHERE in = type::thing('file', $h) GROUP ALL")
+            .bind(("h", hash))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows[0]["n"], 1, "file linked to its ast");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test(flavor = "multi_thread")]

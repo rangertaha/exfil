@@ -40,9 +40,13 @@ machine.
   without touching the engine. Run-level stages sequence fetch → scan → report.
 - **Multiple report formats** — `exfill analyze --format text|json|markdown`
   renders the findings graph with severity tallies and a risk score.
+- **AST-aware analysis** — Python and JavaScript are parsed with tree-sitter and
+  checked for dangerous calls (`eval`, `os.system`, `child_process.exec`,
+  `pickle.loads`, …) over the syntax tree, so the same word in a comment or
+  string is not a false positive the way a regex would make it.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
-  regex + supply-chain scanning and archive expansion ship today, tree-sitter
-  AST, YARA, and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
+  regex, supply-chain, archive expansion, and tree-sitter AST scanning ship
+  today, YARA and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.
 
 ## Install
