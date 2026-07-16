@@ -89,6 +89,9 @@ async fn main() -> Result<()> {
     let store_dir = PathBuf::from(&cli.store);
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,
+        Command::Sources => cmd_sources(),
+        Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
+        Command::Datasets => cmd_datasets().await?,
         Command::Scan { path } => cmd_scan(&store_dir, path).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
@@ -124,7 +127,7 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
 /// gauge on a terminal, plain match lines when piped.
 async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
-    let pipeline = exfill_scan::default_pipeline()?;
+    let pipeline = build_pipeline().await?;
     let store = exfill_store::Store::open_findings(store_dir).await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -138,6 +141,92 @@ async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<(
         "scanned {} files ({} unchanged): {} new matches, {} unreadable",
         summary.files, summary.unchanged, summary.matches, summary.errors
     );
+    Ok(())
+}
+
+/// Build the scan pipeline. If the catalog holds datasets, scan with their
+/// rules (leniently compiled) plus the built-in set; otherwise the built-ins
+/// alone. Non-compiling external patterns are reported and skipped.
+async fn build_pipeline() -> Result<exfill_task::Pipeline> {
+    let mut rules = exfill_scan::builtin_rules();
+    if let Ok(dir) = exfill_config::catalog_dir() {
+        if dir.exists() {
+            if let Ok(catalog) = exfill_store::Store::open_catalog(&dir).await {
+                rules.extend(catalog.all_rules().await.unwrap_or_default());
+            }
+        }
+    }
+    let (pipeline, skipped) = exfill_scan::pipeline_with_rules(rules)?;
+    if !skipped.is_empty() {
+        eprintln!(
+            "skipped {} rule(s) with unsupported patterns",
+            skipped.len()
+        );
+    }
+    Ok(pipeline)
+}
+
+/// List the available dataset source plugins.
+fn cmd_sources() {
+    println!("available sources:");
+    for name in exfill_source::Registry::new().names() {
+        let schemes = match name {
+            "builtin" => "builtin://",
+            "file" => "file:// or a path",
+            "http" => "http:// https://",
+            _ => "",
+        };
+        println!("  {name:<8} {schemes}");
+    }
+}
+
+/// Download a dataset into the catalog: a specific reference, or every
+/// configured `[[update]]` when none is given.
+async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -> Result<()> {
+    let dir = exfill_config::catalog_dir()?;
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let catalog = exfill_store::Store::open_catalog(&dir).await?;
+    let registry = exfill_source::Registry::new();
+
+    let refs: Vec<(String, String)> = match reference {
+        Some(r) => vec![(r.clone(), r)],
+        None => exfill_config::load(config)?
+            .update
+            .into_iter()
+            .map(|u| (u.name, u.reference))
+            .collect(),
+    };
+    if refs.is_empty() {
+        println!("nothing to pull (no reference and no [[update]] entries configured)");
+        return Ok(());
+    }
+    for (name, reference) in refs {
+        match registry.fetch(&reference).await {
+            Ok(dataset) => {
+                let n = catalog.upsert_dataset(&dataset).await?;
+                println!("pulled {:?} ({} rules) from {reference}", dataset.name, n);
+            }
+            Err(e) => eprintln!("failed to pull {name:?} from {reference}: {e:#}"),
+        }
+    }
+    Ok(())
+}
+
+/// List datasets stored in the catalog.
+async fn cmd_datasets() -> Result<()> {
+    let dir = exfill_config::catalog_dir()?;
+    let catalog = exfill_store::Store::open_catalog(&dir).await?;
+    let datasets = catalog.list_datasets().await?;
+    if datasets.is_empty() {
+        println!("no datasets — run `exfill pull` to download some");
+        return Ok(());
+    }
+    for (name, rules) in &datasets {
+        println!("{name:<24} {rules} rules");
+    }
+    println!("{} dataset(s)", datasets.len());
     Ok(())
 }
 

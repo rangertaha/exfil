@@ -24,6 +24,7 @@ exfill-config = { path = "crates/exfill-config" }
 exfill-store = { path = "crates/exfill-store" }
 exfill-scan = { path = "crates/exfill-scan" }
 exfill-task = { path = "crates/exfill-task" }
+exfill-source = { path = "crates/exfill-source" }
 exfill-report = { path = "crates/exfill-report" }
 exfill-engine = { path = "crates/exfill-engine" }
 serde = { version = "1", features = ["derive"] }

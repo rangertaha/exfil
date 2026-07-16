@@ -102,6 +102,22 @@ pub fn default_pipeline() -> Result<Pipeline> {
     ])
 }
 
+/// Build the standard pipeline but with an explicit regex ruleset (leniently
+/// compiled), for scanning with catalog-loaded datasets instead of only the
+/// built-in rules. Returns the pipeline and the names of any skipped patterns.
+pub fn pipeline_with_rules(rules: Vec<Rule>) -> Result<(Pipeline, Vec<String>)> {
+    let (regex, skipped) = RegexScanner::new_lenient(rules);
+    let pipeline = Pipeline::new(vec![
+        Box::new(ArchiveExpander::default()),
+        Box::new(ScanTask(regex)),
+        Box::new(ScanTask(SupplyChainScanner)),
+        Box::new(AstExtractor),
+        Box::new(DangerousCallScanner),
+        Box::new(TaintScanner),
+    ])?;
+    Ok((pipeline, skipped))
+}
+
 /// A compiled rule: its pattern plus the metadata carried onto every match.
 struct Compiled {
     rule: Rule,
@@ -123,6 +139,22 @@ impl RegexScanner {
             compiled.push(Compiled { rule, re });
         }
         Ok(Self { rules: compiled })
+    }
+
+    /// Compile rules leniently: patterns that don't compile are skipped (with
+    /// their names returned) rather than failing the whole set. Used for
+    /// external datasets, which may carry patterns using regex features Rust's
+    /// engine doesn't support (e.g. lookahead).
+    pub fn new_lenient(rules: Vec<Rule>) -> (Self, Vec<String>) {
+        let mut compiled = Vec::with_capacity(rules.len());
+        let mut skipped = Vec::new();
+        for rule in rules {
+            match Regex::new(&rule.pattern) {
+                Ok(re) => compiled.push(Compiled { rule, re }),
+                Err(_) => skipped.push(rule.name),
+            }
+        }
+        (Self { rules: compiled }, skipped)
     }
 
     /// Number of compiled rules.

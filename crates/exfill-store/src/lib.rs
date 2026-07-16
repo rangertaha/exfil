@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use exfill_core::{FileMeta, Match};
+use exfill_core::{Dataset, FileMeta, Match, Rule};
 use serde::{Deserialize, Serialize};
 use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::{RecordId, Surreal};
@@ -276,6 +276,124 @@ impl Store {
         Ok((n(files), n(scans)))
     }
 
+    /// Store a dataset and its rules in the catalog: upsert the dataset record
+    /// (with a denormalized rule count), content-address each rule (so the same
+    /// rule shared by two datasets dedups), and relate rules to the dataset with
+    /// `from_dataset`. Replaces the dataset's previous rule set. Returns the
+    /// number of rules stored.
+    pub async fn upsert_dataset(&self, dataset: &Dataset) -> Result<usize> {
+        let name = dataset.name.as_str();
+        let count = dataset.rules.len();
+        // Dataset record + clear its old rule edges (rules may have changed).
+        self.db
+            .query(
+                "UPSERT type::thing('dataset', $name) CONTENT { name: $name, rules: $count }; \
+                 DELETE from_dataset WHERE out = type::thing('dataset', $name);",
+            )
+            .bind(("name", name.to_string()))
+            .bind(("count", count))
+            .await
+            .with_context(|| format!("upsert dataset {name}"))?
+            .check()
+            .context("dataset statement failed")?;
+
+        for rule in &dataset.rules {
+            let id = rule_id(rule);
+            self.db
+                .query(
+                    "UPSERT type::thing('rule', $id) CONTENT $rule; \
+                     RELATE (type::thing('rule', $id))->from_dataset->(type::thing('dataset', $name));",
+                )
+                .bind(("id", id))
+                .bind(("rule", rule.clone()))
+                .bind(("name", name.to_string()))
+                .await
+                .with_context(|| format!("store rule {}", rule.name))?
+                .check()
+                .context("rule statement failed")?;
+        }
+        Ok(count)
+    }
+
+    /// List stored datasets as `(name, rule_count)`, alphabetical.
+    pub async fn list_datasets(&self) -> Result<Vec<(String, u64)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            name: String,
+            #[serde(default)]
+            rules: u64,
+        }
+        let mut res = self
+            .db
+            .query("SELECT name, rules FROM dataset ORDER BY name")
+            .await
+            .context("list datasets")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().map(|r| (r.name, r.rules)).collect())
+    }
+
+    /// Fetch one dataset with its rules, or `None` if absent.
+    pub async fn get_dataset(&self, name: &str) -> Result<Option<Dataset>> {
+        // Confirm the dataset exists.
+        let mut d = self
+            .db
+            .query("SELECT name FROM type::thing('dataset', $name)")
+            .bind(("name", name.to_string()))
+            .await
+            .context("get dataset")?;
+        let names: Vec<serde_json::Value> = d.take(0)?;
+        if names.is_empty() {
+            return Ok(None);
+        }
+        let rules = self.rules_of(name).await?;
+        Ok(Some(Dataset {
+            name: name.to_string(),
+            rules,
+        }))
+    }
+
+    /// The rules related to one dataset.
+    async fn rules_of(&self, name: &str) -> Result<Vec<Rule>> {
+        let mut res = self
+            .db
+            .query(
+                "SELECT * OMIT id FROM rule \
+                 WHERE ->from_dataset->dataset CONTAINS type::thing('dataset', $name)",
+            )
+            .bind(("name", name.to_string()))
+            .await
+            .context("rules of dataset")?;
+        Ok(res.take(0)?)
+    }
+
+    /// Every rule reachable from a dataset (what a scan applies). Deduplicated
+    /// by content-addressed id at the storage layer.
+    pub async fn all_rules(&self) -> Result<Vec<Rule>> {
+        let mut res = self
+            .db
+            .query("SELECT * OMIT id FROM rule WHERE count(->from_dataset) > 0")
+            .await
+            .context("all rules")?;
+        Ok(res.take(0)?)
+    }
+
+    /// Remove a dataset and its rule edges. Orphaned rule records are left for
+    /// `gc`. Returns whether the dataset existed.
+    pub async fn remove_dataset(&self, name: &str) -> Result<bool> {
+        let existed = self.get_dataset(name).await?.is_some();
+        self.db
+            .query(
+                "DELETE from_dataset WHERE out = type::thing('dataset', $name); \
+                 DELETE type::thing('dataset', $name);",
+            )
+            .bind(("name", name.to_string()))
+            .await
+            .with_context(|| format!("remove dataset {name}"))?
+            .check()
+            .context("remove dataset statement failed")?;
+        Ok(existed)
+    }
+
     /// Fetch one record by full id (`table:key`) as JSON.
     pub async fn get_record(&self, id: &str) -> Result<Option<serde_json::Value>> {
         let Some((table, key)) = id.split_once(':') else {
@@ -291,6 +409,16 @@ impl Store {
         let rows: Vec<serde_json::Value> = res.take(0)?;
         Ok(rows.into_iter().next())
     }
+}
+
+/// Content-addressed id for a rule (blake3 of name+pattern), so the same rule
+/// shared by two datasets stores once with two `from_dataset` edges.
+fn rule_id(rule: &Rule) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(rule.name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(rule.pattern.as_bytes());
+    hasher.finalize().to_hex().to_string()
 }
 
 /// The stat-cache row for one stored file, keyed by absolute path.
@@ -475,6 +603,93 @@ mod tests {
             .unwrap();
         let rows: Vec<serde_json::Value> = res.take(0).unwrap();
         assert_eq!(rows[0]["n"], 1, "one finding relates to file:aaa");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn rule(name: &str, pattern: &str) -> Rule {
+        Rule {
+            name: name.into(),
+            pattern: pattern.into(),
+            description: String::new(),
+            severity: Some(exfill_core::Severity::High),
+            cwe: Some("CWE-798".into()),
+            cve: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_dataset_crud() {
+        let dir = std::env::temp_dir().join(format!("exfill-catalog-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_CATALOG).await.unwrap();
+
+        // Upsert two datasets, one sharing a rule with the other.
+        let shared = rule("aws-key", r"AKIA[0-9A-Z]{16}");
+        let n = store
+            .upsert_dataset(&Dataset {
+                name: "security".into(),
+                rules: vec![shared.clone(), rule("gh", r"ghp_\w+")],
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        store
+            .upsert_dataset(&Dataset {
+                name: "extra".into(),
+                rules: vec![shared.clone(), rule("slack", r"xox[bp]-\w+")],
+            })
+            .await
+            .unwrap();
+
+        // list: two datasets with their counts.
+        let list = store.list_datasets().await.unwrap();
+        assert_eq!(list, vec![("extra".into(), 2), ("security".into(), 2)]);
+
+        // all_rules dedups the shared rule: 3 distinct (aws-key, gh, slack).
+        let all = store.all_rules().await.unwrap();
+        assert_eq!(
+            all.len(),
+            3,
+            "{:?}",
+            all.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
+
+        // get: the security dataset has its two rules.
+        let ds = store.get_dataset("security").await.unwrap().unwrap();
+        assert_eq!(ds.rules.len(), 2);
+        assert!(store.get_dataset("nope").await.unwrap().is_none());
+
+        // Re-upsert with fewer rules replaces the set.
+        store
+            .upsert_dataset(&Dataset {
+                name: "security".into(),
+                rules: vec![rule("only", r"X")],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_dataset("security")
+                .await
+                .unwrap()
+                .unwrap()
+                .rules
+                .len(),
+            1
+        );
+
+        // remove: gone from the list; second remove reports false.
+        assert!(store.remove_dataset("extra").await.unwrap());
+        assert!(!store.remove_dataset("extra").await.unwrap());
+        let names: Vec<String> = store
+            .list_datasets()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, vec!["security".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

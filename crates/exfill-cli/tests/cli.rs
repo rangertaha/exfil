@@ -168,9 +168,70 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn unimplemented_commands_say_so() {
     let sb = Sandbox::new("stub");
-    for cmd in ["sources", "pull", "datasets", "enrich", "gc", "mcp"] {
+    for cmd in ["enrich", "gc", "mcp"] {
         let out = exfill(&sb.store, &[cmd]);
         assert!(out.status.success(), "{cmd}");
         assert!(stdout(&out).contains("not yet implemented"), "{cmd}");
     }
+}
+
+/// Run exfill with an isolated catalog dir (so tests never touch the real one).
+fn exfill_catalog(store: &Path, catalog: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_exfill"))
+        .arg("--store")
+        .arg(store)
+        .args(args)
+        .env("EXFILL_CATALOG_DIR", catalog)
+        .output()
+        .expect("run exfill")
+}
+
+#[test]
+fn sources_pull_datasets_flow() {
+    let sb = Sandbox::new("catalog");
+    let catalog = sb.base.join("catalog");
+
+    // sources lists the plugins.
+    let out = exfill_catalog(&sb.store, &catalog, &["sources"]);
+    assert!(out.status.success());
+    let text = stdout(&out);
+    assert!(text.contains("builtin") && text.contains("file") && text.contains("http"));
+
+    // datasets is empty before any pull.
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets"]);
+    assert!(stdout(&out).contains("no datasets"), "{}", stdout(&out));
+
+    // pull the built-in security dataset into the catalog.
+    let out = exfill_catalog(&sb.store, &catalog, &["pull", "builtin://security"]);
+    assert!(out.status.success(), "pull failed: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("pulled \"security\""),
+        "{}",
+        stdout(&out)
+    );
+
+    // pull a custom dataset from a JSON file.
+    let ds = sb.base.join("custom.json");
+    std::fs::write(
+        &ds,
+        r#"{"name":"custom","rules":[{"name":"acme-token","pattern":"ACME-[0-9]{6}","severity":"high"}]}"#,
+    )
+    .unwrap();
+    let out = exfill_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // datasets now lists both.
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("security") && text.contains("custom"),
+        "{text}"
+    );
+    assert!(text.contains("2 dataset(s)"), "{text}");
+
+    // A scan now applies the custom rule from the catalog.
+    std::fs::write(sb.tree.join("token.txt"), "key = ACME-123456\n").unwrap();
+    let out = exfill_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("acme-token"), "{}", stdout(&out));
 }

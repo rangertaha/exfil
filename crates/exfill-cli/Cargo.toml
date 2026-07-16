@@ -13,6 +13,8 @@ exfill-core = { workspace = true }
 exfill-config = { workspace = true }
 exfill-store = { workspace = true }
 exfill-scan = { workspace = true }
+exfill-source = { workspace = true }
+exfill-task = { workspace = true }
 exfill-engine = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

@@ -66,6 +66,17 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(dir.join("exfill").join("config.toml"))
 }
 
+/// The datasets/rules catalog directory. `$EXFILL_CATALOG_DIR` overrides the
+/// default location in the user config dir (e.g. `~/.config/exfill/catalog`).
+/// Survives `exfill clean`, which only removes the local findings store.
+pub fn catalog_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("EXFILL_CATALOG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let dir = dirs::config_dir().context("could not determine user config directory")?;
+    Ok(dir.join("exfill").join("catalog"))
+}
+
 /// Load the config. With no explicit path, use the user config directory,
 /// writing the embedded default there if none exists yet.
 pub fn load(explicit: Option<&Path>) -> Result<Config> {

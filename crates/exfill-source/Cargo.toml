@@ -1,17 +1,19 @@
 [package]
-name = "exfill-store"
+name = "exfill-source"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 exfill-core = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+exfill-scan = { workspace = true }
 anyhow = { workspace = true }
-blake3 = "1"
+async-trait = "0.1"
+serde_json = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
 tokio = { workspace = true }
-surrealdb = { version = "2", default-features = false, features = ["kv-surrealkv"] }
 
 [lints]
 workspace = true
