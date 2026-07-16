@@ -14,11 +14,24 @@
 //! scanner automatically, purely from their declared artifact kinds — nobody
 //! wires them together by hand.
 //!
-//! Languages today: Python, JavaScript, TypeScript, Rust, Go, C, C++, and Java.
-//! Adding one is a single [`LangSpec`] entry (a grammar plus the node-kind and
-//! field names its calls, functions, and assignments use). Bash, Lua, and
-//! PowerShell need per-language call handling (different node shapes); C#/VB
-//! await an ABI-compatible tree-sitter grammar.
+//! Languages today: Python, JavaScript, TypeScript, C#, Rust, Go, C, C++, Java,
+//! Bash, Lua, and PowerShell. Adding one is a single [`LangSpec`] entry (a
+//! grammar plus the node-kind and field names its calls, functions, and
+//! assignments use).
+//!
+//! Two tiers of support fall out of how a grammar shapes its syntax tree:
+//!
+//! - **Calls + taint** (the C-family: Python, JS/TS, C#, Rust, Go, C, C++,
+//!   Java) — their call nodes carry an argument-list node and their assignments
+//!   name an identifier target, so data flow can be followed.
+//! - **Calls only** (Bash, Lua, PowerShell) — Bash and PowerShell `command`
+//!   nodes have no argument-list node, and their assignment targets are
+//!   `variable_name`/`variable` nodes rather than identifiers. They get
+//!   dangerous-call detection by callee name (`eval`, `Invoke-Expression`,
+//!   `os.execute`) but no taint propagation, which is why their `assign_kinds`
+//!   are empty. This is a deliberate false-negative: better silent than noisy.
+//!
+//! VB/VBScript remain unsupported — no maintained tree-sitter grammar exists.
 
 use std::path::Path;
 
@@ -140,6 +153,55 @@ fn specs() -> &'static [LangSpec] {
             func_kind: "method_declaration",
             assign_kinds: &["assignment_expression", "variable_declarator"],
         },
+        // C# `invocation_expression` uses the default `function`/`arguments`
+        // fields; its `variable_declarator` initializer is an unnamed child, so
+        // taint on `var x = ...` relies on `assignment_parts`' positional
+        // fallback.
+        LangSpec {
+            lang: "csharp",
+            extensions: &["cs", "csx"],
+            language: || tree_sitter_c_sharp::LANGUAGE.into(),
+            call_kind: "invocation_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "method_declaration",
+            assign_kinds: &["assignment_expression", "variable_declarator"],
+        },
+        // Shell/scripting languages whose call node isn't C-family. Bash's
+        // `command` and PowerShell's `command` carry no argument-list node and
+        // no identifier-typed assignment target, so they get dangerous-call
+        // detection (by callee name) but no taint propagation — hence empty
+        // `assign_kinds`.
+        LangSpec {
+            lang: "bash",
+            extensions: &["sh", "bash"],
+            language: || tree_sitter_bash::LANGUAGE.into(),
+            call_kind: "command",
+            fn_field: "name",
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_definition",
+            assign_kinds: &[],
+        },
+        LangSpec {
+            lang: "lua",
+            extensions: &["lua"],
+            language: || tree_sitter_lua::LANGUAGE.into(),
+            call_kind: "function_call",
+            fn_field: "name",
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_declaration",
+            assign_kinds: &[],
+        },
+        LangSpec {
+            lang: "powershell",
+            extensions: &["ps1", "psm1"],
+            language: || tree_sitter_powershell::LANGUAGE.into(),
+            call_kind: "command",
+            fn_field: "command_name",
+            args_field: "command_elements",
+            func_kind: "function_statement",
+            assign_kinds: &[],
+        },
     ]
 }
 
@@ -185,7 +247,16 @@ fn assignment_parts<'a>(node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
         .or_else(|| node.child_by_field_name("pattern"))?;
     let rhs = node
         .child_by_field_name("right")
-        .or_else(|| node.child_by_field_name("value"))?;
+        .or_else(|| node.child_by_field_name("value"))
+        // Positional fallback: some declarators (C#'s `var x = expr`) carry the
+        // initializer as an unnamed child, not a `value`/`right` field. Use the
+        // last named child that isn't the target itself.
+        .or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .filter(|n| n.id() != target.id())
+                .last()
+        })?;
     Some((target, rhs))
 }
 
@@ -219,6 +290,7 @@ fn collect_facts(
         | "scoped_identifier"
         | "field_expression"
         | "member_access_expression"
+        | "dot_index_expression"
         | "qualified_name" => {
             if let Ok(t) = node.utf8_text(src) {
                 calls.push(t.to_string());
@@ -400,13 +472,42 @@ fn sink_for(name: &str) -> Option<Sink> {
             "Process.Start execution",
         ));
     }
-    // C/C++ process execution: popen and the exec* family.
+    // C/C++ process execution: popen and the exec* family. Lua's `io.popen`
+    // lands here too — the call is equally dangerous.
     if last == "popen" || last.starts_with("execl") || last.starts_with("execv") {
         return Some(sink(
             "ast-c-exec",
             Severity::High,
             "CWE-78",
-            "C process execution",
+            "popen/exec process execution",
+        ));
+    }
+    // Scripting-language sinks. PowerShell's `Invoke-Expression` (alias `iex`)
+    // evaluates a string as code; Lua's `os.execute` shells out and
+    // `loadstring` compiles a string. Bash's `eval` falls through to the
+    // generic `eval` arm below.
+    if name == "Invoke-Expression" || name.eq_ignore_ascii_case("iex") {
+        return Some(sink(
+            "ast-powershell-iex",
+            Severity::High,
+            "CWE-95",
+            "PowerShell expression evaluation",
+        ));
+    }
+    if name.contains("os.execute") {
+        return Some(sink(
+            "ast-lua-os-execute",
+            Severity::High,
+            "CWE-78",
+            "Lua shell command execution",
+        ));
+    }
+    if last == "loadstring" {
+        return Some(sink(
+            "ast-eval",
+            Severity::High,
+            "CWE-95",
+            "code evaluation",
         ));
     }
 
@@ -723,6 +824,101 @@ mod tests {
             m.iter().any(|x| x.rule == "taint-command-injection"),
             "{m:?}"
         );
+    }
+
+    #[test]
+    fn bash_flags_eval_but_not_ordinary_commands() {
+        let m = findings("s.sh", "cat f.txt\neval \"$USER_INPUT\"\necho done\n");
+        assert_eq!(m.len(), 1, "only eval is a sink: {m:?}");
+        assert_eq!(m[0].rule, "ast-eval");
+        assert_eq!(m[0].line, 2);
+    }
+
+    #[test]
+    fn bash_extracts_functions_and_commands() {
+        let ast = ast_of("s.bash", "deploy() {\n  rsync -a . host:/srv\n}\n");
+        assert_eq!(ast.lang, "bash");
+        assert!(ast
+            .symbols
+            .iter()
+            .any(|s| s.kind == "function" && s.name == "deploy"));
+        assert!(ast
+            .symbols
+            .iter()
+            .any(|s| s.kind == "call" && s.name == "rsync"));
+    }
+
+    #[test]
+    fn lua_flags_os_execute_popen_and_loadstring() {
+        let m = findings(
+            "s.lua",
+            "os.execute(c)\nio.popen(c)\nloadstring(s)\nprint(x)\n",
+        );
+        let rules: Vec<&str> = m.iter().map(|x| x.rule.as_str()).collect();
+        assert!(rules.contains(&"ast-lua-os-execute"), "{rules:?}");
+        assert!(rules.contains(&"ast-c-exec"), "{rules:?}");
+        assert!(rules.contains(&"ast-eval"), "{rules:?}");
+        assert_eq!(m.len(), 3, "print is not a sink: {m:?}");
+    }
+
+    #[test]
+    fn powershell_flags_invoke_expression() {
+        let m = findings("s.ps1", "$c = $args[0]\nInvoke-Expression $c\nGet-Date\n");
+        assert_eq!(m.len(), 1, "only Invoke-Expression is a sink: {m:?}");
+        assert_eq!(m[0].rule, "ast-powershell-iex");
+        assert_eq!(m[0].cwe.as_deref(), Some("CWE-95"));
+    }
+
+    #[test]
+    fn csharp_flags_process_start() {
+        let m = findings("M.cs", "class M { void r(string c){ Process.Start(c); } }");
+        assert!(m.iter().any(|x| x.rule == "ast-process-start"), "{m:?}");
+    }
+
+    #[test]
+    fn csharp_taint_from_console_readline() {
+        // `var x = Console.ReadLine()` — the declarator's initializer is an
+        // unnamed child, so this exercises the positional rhs fallback.
+        let ast = ast_of(
+            "M.cs",
+            "class M { void r(){ var c = Console.ReadLine(); Process.Start(c); } }",
+        );
+        let Artifact::Matches(m) = crate::taint::TaintScanner
+            .run(Path::new("M.cs"), &Artifact::Ast(ast))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            m.iter().any(|x| x.rule == "taint-command-injection"),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn script_languages_are_selected_by_extension() {
+        for (path, lang) in [
+            ("x.sh", "bash"),
+            ("x.bash", "bash"),
+            ("x.lua", "lua"),
+            ("x.ps1", "powershell"),
+            ("x.psm1", "powershell"),
+            ("x.cs", "csharp"),
+        ] {
+            let spec = spec_for(Path::new(path)).expect(path);
+            assert_eq!(spec.lang, lang, "{path}");
+        }
+    }
+
+    #[test]
+    fn every_grammar_loads() {
+        // A grammar whose ABI mismatches the tree-sitter core fails at
+        // `set_language` and would silently yield an empty AST. Parse a trivial
+        // source per language and assert the lang tag survives.
+        for spec in specs() {
+            let ast = parse(spec, b"x");
+            assert_eq!(ast.lang, spec.lang, "{} failed to load", spec.lang);
+        }
     }
 
     #[test]

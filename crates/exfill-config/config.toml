@@ -13,7 +13,10 @@ datasets = []
 
 [plugins.ast]
 # Languages parsed for structural analysis (auto-detected by extension).
-languages = ["python", "javascript", "typescript", "rust", "go", "c", "cpp", "java"]
+languages = [
+  "python", "javascript", "typescript", "csharp", "rust", "go", "c", "cpp",
+  "java", "bash", "lua", "powershell",
+]
 
 [plugins.yara]
 # YARA rule files or directories.
