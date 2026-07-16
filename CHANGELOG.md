@@ -108,3 +108,10 @@ and this project adheres to
   & file structure, the plugin DAG, a diagram-heavy engine deep-dive, the AST
   scanner, taint analysis, the other scanners, the graph store, CLI/TUI, the
   integrations, and a Rust primer cross-referenced from every page.
+- AST language coverage extended to Ruby, Dart, Swift, Kotlin, and Groovy
+  (including `Jenkinsfile`s, selected by filename). Ruby and Dart get full
+  taint tracking; Swift/Kotlin/Groovy are calls-only. `call_kind` became
+  `call_kinds` (a list) so Groovy's two call forms both parse, and a
+  positional-callee fallback handles Swift/Kotlin. New sinks: Dart Process.run,
+  Kotlin ProcessBuilder, Groovy evaluate. SQL was evaluated and deferred (no
+  call-sink model; the sequel grammar fails to parse the T-SQL EXEC sink).

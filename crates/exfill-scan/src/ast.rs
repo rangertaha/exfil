@@ -15,23 +15,27 @@
 //! wires them together by hand.
 //!
 //! Languages today: Python, JavaScript, TypeScript, C#, Rust, Go, C, C++, Java,
-//! Bash, Lua, and PowerShell. Adding one is a single [`LangSpec`] entry (a
-//! grammar plus the node-kind and field names its calls, functions, and
-//! assignments use).
+//! Ruby, Dart, Bash, Lua, PowerShell, Swift, Kotlin, and Groovy (including
+//! `Jenkinsfile`s). Adding one is a single [`LangSpec`] entry (a grammar plus
+//! the node-kind and field names its calls, functions, and assignments use).
 //!
 //! Two tiers of support fall out of how a grammar shapes its syntax tree:
 //!
-//! - **Calls + taint** (the C-family: Python, JS/TS, C#, Rust, Go, C, C++,
-//!   Java) — their call nodes carry an argument-list node and their assignments
-//!   name an identifier target, so data flow can be followed.
-//! - **Calls only** (Bash, Lua, PowerShell) — Bash and PowerShell `command`
-//!   nodes have no argument-list node, and their assignment targets are
-//!   `variable_name`/`variable` nodes rather than identifiers. They get
-//!   dangerous-call detection by callee name (`eval`, `Invoke-Expression`,
-//!   `os.execute`) but no taint propagation, which is why their `assign_kinds`
-//!   are empty. This is a deliberate false-negative: better silent than noisy.
+//! - **Calls + taint** (Python, JS/TS, C#, Rust, Go, C, C++, Java, Ruby, Dart)
+//!   — their call nodes carry an argument-list node and their assignments name
+//!   an identifier target, so data flow can be followed.
+//! - **Calls only** (Bash, Lua, PowerShell, Swift, Kotlin, Groovy) — their call
+//!   or assignment nodes lack the named argument-list / identifier-target shape
+//!   taint needs (Swift/Kotlin place the callee positionally; Bash/PowerShell
+//!   `command` nodes have no argument-list node). They get dangerous-call
+//!   detection by callee name (`eval`, `Invoke-Expression`, `ProcessBuilder`,
+//!   `evaluate`) but no taint propagation — `assign_kinds` are empty. A
+//!   deliberate false-negative: better silent than noisy.
 //!
-//! VB/VBScript remain unsupported — no maintained tree-sitter grammar exists.
+//! Config/markup formats (JSON, YAML, HTML, XML, HCL/Terraform, Dockerfile)
+//! have no call-expression sinks, so this scanner does not model them — their
+//! risks (hardcoded secrets, insecure directives) are the regex/secret and
+//! supply-chain scanners' domain. VB/VBScript have no maintained grammar.
 
 use std::path::Path;
 
@@ -49,8 +53,10 @@ pub(crate) struct LangSpec {
     extensions: &'static [&'static str],
     /// Load the tree-sitter grammar.
     language: fn() -> tree_sitter::Language,
-    /// Grammar node kind for a call expression.
-    call_kind: &'static str,
+    /// Grammar node kinds for a call expression. Usually one; Groovy has two
+    /// (`method_invocation` for `sh(x)` and `juxt_function_call` for the
+    /// paren-less `sh 'x'`).
+    call_kinds: &'static [&'static str],
     /// Field on a call node holding the callee (usually `function`; Java's
     /// `method_invocation` uses `name`).
     fn_field: &'static str,
@@ -76,7 +82,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "python",
             extensions: &["py", "pyi"],
             language: || tree_sitter_python::LANGUAGE.into(),
-            call_kind: "call",
+            call_kinds: &["call"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_definition",
@@ -86,7 +92,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "javascript",
             extensions: &["js", "jsx", "mjs", "cjs"],
             language: || tree_sitter_javascript::LANGUAGE.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_declaration",
@@ -96,7 +102,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "typescript",
             extensions: &["ts", "tsx", "mts", "cts"],
             language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_declaration",
@@ -106,7 +112,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "rust",
             extensions: &["rs"],
             language: || tree_sitter_rust::LANGUAGE.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_item",
@@ -116,7 +122,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "go",
             extensions: &["go"],
             language: || tree_sitter_go::LANGUAGE.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_declaration",
@@ -126,7 +132,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "c",
             extensions: &["c", "h"],
             language: || tree_sitter_c::LANGUAGE.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_definition",
@@ -136,7 +142,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "cpp",
             extensions: &["cc", "cpp", "cxx", "hpp", "hh"],
             language: || tree_sitter_cpp::LANGUAGE.into(),
-            call_kind: "call_expression",
+            call_kinds: &["call_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_definition",
@@ -147,7 +153,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "java",
             extensions: &["java"],
             language: || tree_sitter_java::LANGUAGE.into(),
-            call_kind: "method_invocation",
+            call_kinds: &["method_invocation"],
             fn_field: "name",
             args_field: "arguments",
             func_kind: "method_declaration",
@@ -161,7 +167,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "csharp",
             extensions: &["cs", "csx"],
             language: || tree_sitter_c_sharp::LANGUAGE.into(),
-            call_kind: "invocation_expression",
+            call_kinds: &["invocation_expression"],
             fn_field: DEFAULT_FN_FIELD,
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "method_declaration",
@@ -176,7 +182,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "bash",
             extensions: &["sh", "bash"],
             language: || tree_sitter_bash::LANGUAGE.into(),
-            call_kind: "command",
+            call_kinds: &["command"],
             fn_field: "name",
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_definition",
@@ -186,7 +192,7 @@ fn specs() -> &'static [LangSpec] {
             lang: "lua",
             extensions: &["lua"],
             language: || tree_sitter_lua::LANGUAGE.into(),
-            call_kind: "function_call",
+            call_kinds: &["function_call"],
             fn_field: "name",
             args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_declaration",
@@ -196,17 +202,87 @@ fn specs() -> &'static [LangSpec] {
             lang: "powershell",
             extensions: &["ps1", "psm1"],
             language: || tree_sitter_powershell::LANGUAGE.into(),
-            call_kind: "command",
+            call_kinds: &["command"],
             fn_field: "command_name",
             args_field: "command_elements",
             func_kind: "function_statement",
             assign_kinds: &[],
         },
+        // Ruby: `call method:/arguments:` with identifier assignment targets, so
+        // it gets full taint. A receiver call (`IO.popen`) yields the method
+        // name alone (`popen`), which the last-component sink match handles.
+        LangSpec {
+            lang: "ruby",
+            extensions: &["rb"],
+            language: || tree_sitter_ruby::LANGUAGE.into(),
+            call_kinds: &["call"],
+            fn_field: "method",
+            args_field: "arguments",
+            func_kind: "method",
+            assign_kinds: &["assignment"],
+        },
+        // Dart: C-family call shape (`function`/`arguments`); its function name
+        // sits on `function_signature`, and `var x = e` is an
+        // `initialized_variable_definition` (name/value) — so taint works.
+        LangSpec {
+            lang: "dart",
+            extensions: &["dart"],
+            language: || tree_sitter_dart::LANGUAGE.into(),
+            call_kinds: &["call_expression"],
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_signature",
+            assign_kinds: &["initialized_variable_definition"],
+        },
+        // Swift and Kotlin `call_expression`s place the callee positionally (no
+        // field) and nest arguments outside an `arguments` field, so they are
+        // calls-only (empty `assign_kinds`); `callee_node`'s first-named-child
+        // fallback recovers the callee text.
+        LangSpec {
+            lang: "swift",
+            extensions: &["swift"],
+            language: || tree_sitter_swift::LANGUAGE.into(),
+            call_kinds: &["call_expression"],
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_declaration",
+            assign_kinds: &[],
+        },
+        LangSpec {
+            lang: "kotlin",
+            extensions: &["kt", "kts"],
+            language: || tree_sitter_kotlin_ng::LANGUAGE.into(),
+            call_kinds: &["call_expression"],
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_declaration",
+            assign_kinds: &[],
+        },
+        // Groovy (Jenkins pipelines): two call forms — `method_invocation` for
+        // `sh(x)` and `juxt_function_call` for the paren-less `sh 'x'`, the
+        // common Jenkinsfile style. Selected by extension or the `Jenkinsfile`
+        // filename (see `spec_for`).
+        LangSpec {
+            lang: "groovy",
+            extensions: &["groovy", "gradle", "jenkinsfile"],
+            language: || tree_sitter_groovy::LANGUAGE.into(),
+            call_kinds: &["method_invocation", "juxt_function_call"],
+            fn_field: "name",
+            args_field: "arguments",
+            func_kind: "function_declaration",
+            assign_kinds: &[],
+        },
     ]
 }
 
-/// The language spec for a path's extension, if supported.
+/// The language spec for a path, by file extension — or by filename for the
+/// extension-less `Jenkinsfile` (a Groovy pipeline).
 pub(crate) fn spec_for(path: &Path) -> Option<&'static LangSpec> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if name.eq_ignore_ascii_case("Jenkinsfile") {
+            return specs().iter().find(|s| s.lang == "groovy");
+        }
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     specs()
         .iter()
@@ -268,7 +344,7 @@ fn assignment_parts<'a>(node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
 fn collect_facts(
     node: Node,
     src: &[u8],
-    call_kind: &str,
+    call_kinds: &[&str],
     fn_field: &str,
     idents: &mut Vec<String>,
     calls: &mut Vec<String>,
@@ -291,15 +367,17 @@ fn collect_facts(
         | "field_expression"
         | "member_access_expression"
         | "dot_index_expression"
-        | "qualified_name" => {
+        | "qualified_name"
+        // Ruby constants (`ARGV`, `ENV`) are source candidates, not identifiers.
+        | "constant" => {
             if let Ok(t) = node.utf8_text(src) {
                 calls.push(t.to_string());
             }
         }
         _ => {}
     }
-    if node.kind() == call_kind {
-        if let Some(f) = node.child_by_field_name(fn_field) {
+    if call_kinds.contains(&node.kind()) {
+        if let Some(f) = callee_node(node, fn_field) {
             if let Ok(t) = f.utf8_text(src) {
                 calls.push(t.to_string());
             }
@@ -307,8 +385,16 @@ fn collect_facts(
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_facts(child, src, call_kind, fn_field, idents, calls);
+        collect_facts(child, src, call_kinds, fn_field, idents, calls);
     }
+}
+
+/// The callee node of a call: the `fn_field` child if the grammar names it,
+/// else the first named child. Swift and Kotlin `call_expression`s put the
+/// callee positionally (no field), so the fallback covers them.
+fn callee_node<'a>(call: Node<'a>, fn_field: &str) -> Option<Node<'a>> {
+    call.child_by_field_name(fn_field)
+        .or_else(|| call.named_child(0))
 }
 
 /// The name of `node` if it is an identifier, else the first identifier in its
@@ -332,8 +418,8 @@ fn first_identifier(node: Node, src: &[u8]) -> Option<String> {
 /// dotted sinks are recognizable downstream.
 fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
     let kind = node.kind();
-    if kind == spec.call_kind {
-        if let Some(callee) = node.child_by_field_name(spec.fn_field) {
+    if spec.call_kinds.contains(&kind) {
+        if let Some(callee) = callee_node(node, spec.fn_field) {
             if let Ok(name) = callee.utf8_text(src) {
                 let line = callee.start_position().row as u32 + 1;
                 ast.symbols.push(Symbol {
@@ -346,7 +432,7 @@ fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
                     collect_facts(
                         args,
                         src,
-                        spec.call_kind,
+                        spec.call_kinds,
                         spec.fn_field,
                         &mut arg_idents,
                         &mut arg_calls,
@@ -379,7 +465,7 @@ fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
                 collect_facts(
                     rhs,
                     src,
-                    spec.call_kind,
+                    spec.call_kinds,
                     spec.fn_field,
                     &mut rhs_idents,
                     &mut rhs_calls,
@@ -508,6 +594,36 @@ fn sink_for(name: &str) -> Option<Sink> {
             Severity::High,
             "CWE-95",
             "code evaluation",
+        ));
+    }
+    // Dart process execution (`Process.run`/`Process.start`/`Process.runSync`).
+    if name.contains("Process.run") || name.contains("Process.start") {
+        return Some(sink(
+            "ast-dart-process",
+            Severity::High,
+            "CWE-78",
+            "Dart process execution",
+        ));
+    }
+    // Kotlin/JVM `ProcessBuilder(...)` construction to run a command.
+    if name.contains("ProcessBuilder") {
+        return Some(sink(
+            "ast-process-builder",
+            Severity::High,
+            "CWE-78",
+            "ProcessBuilder execution",
+        ));
+    }
+    // Groovy / Jenkins pipeline `evaluate(...)` runs a string as Groovy code.
+    // (Jenkins `sh`/`bat` steps are command execution too, but those names
+    // collide with ordinary calls and can't be told from a literal argument
+    // without taint, so they are deliberately not flagged here.)
+    if last == "evaluate" {
+        return Some(sink(
+            "ast-groovy-evaluate",
+            Severity::High,
+            "CWE-95",
+            "Groovy dynamic evaluation",
         ));
     }
 
@@ -859,6 +975,80 @@ mod tests {
         assert!(rules.contains(&"ast-c-exec"), "{rules:?}");
         assert!(rules.contains(&"ast-eval"), "{rules:?}");
         assert_eq!(m.len(), 3, "print is not a sink: {m:?}");
+    }
+
+    #[test]
+    fn ruby_flags_system_and_eval() {
+        let m = findings("s.rb", "def r(c)\n  system(c)\n  eval(s)\nend\n");
+        let rules: Vec<&str> = m.iter().map(|x| x.rule.as_str()).collect();
+        assert!(rules.contains(&"ast-os-command"), "{rules:?}");
+        assert!(rules.contains(&"ast-eval"), "{rules:?}");
+    }
+
+    #[test]
+    fn ruby_taint_from_argv() {
+        // c = ARGV[0]; system(c) — ARGV is a source, system a sink.
+        let ast = ast_of("s.rb", "c = ARGV[0]\nsystem(c)\n");
+        let Artifact::Matches(m) = crate::taint::TaintScanner
+            .run(Path::new("s.rb"), &Artifact::Ast(ast))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            m.iter().any(|x| x.rule == "taint-command-injection"),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn dart_flags_process_run() {
+        let m = findings("m.dart", "main() {\n  Process.run('sh', ['-c', c]);\n}\n");
+        assert!(m.iter().any(|x| x.rule == "ast-dart-process"), "{m:?}");
+    }
+
+    #[test]
+    fn swift_flags_system() {
+        // Swift call_expression places the callee positionally — exercises the
+        // callee_node first-named-child fallback.
+        let m = findings("m.swift", "func r(c: String) {\n  system(c)\n}\n");
+        assert!(m.iter().any(|x| x.rule == "ast-os-command"), "{m:?}");
+    }
+
+    #[test]
+    fn kotlin_flags_process_builder() {
+        let m = findings(
+            "M.kt",
+            "fun r(c: String) {\n  val p = ProcessBuilder(c)\n}\n",
+        );
+        assert!(m.iter().any(|x| x.rule == "ast-process-builder"), "{m:?}");
+    }
+
+    #[test]
+    fn jenkinsfile_flags_groovy_evaluate() {
+        // Selected by the `Jenkinsfile` filename (no extension), parsed as
+        // Groovy; `evaluate(...)` is a dynamic-code sink.
+        let m = findings(
+            "Jenkinsfile",
+            "node {\n  def c = params.CMD\n  evaluate(c)\n}\n",
+        );
+        assert_eq!(spec_for(Path::new("Jenkinsfile")).unwrap().lang, "groovy");
+        assert!(m.iter().any(|x| x.rule == "ast-groovy-evaluate"), "{m:?}");
+    }
+
+    #[test]
+    fn new_languages_selected_by_extension() {
+        for (path, lang) in [
+            ("x.rb", "ruby"),
+            ("x.dart", "dart"),
+            ("x.swift", "swift"),
+            ("x.kt", "kotlin"),
+            ("x.kts", "kotlin"),
+            ("x.groovy", "groovy"),
+            ("x.gradle", "groovy"),
+        ] {
+            assert_eq!(spec_for(Path::new(path)).expect(path).lang, lang, "{path}");
+        }
     }
 
     #[test]

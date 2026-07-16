@@ -258,10 +258,7 @@ impl Reporter for JunitReporter {
                     .map(|c| format!(" ({c})"))
                     .unwrap_or_default()
             ));
-            writeln!(
-                w,
-                r#"    <testcase name="{name}" classname="{classname}">"#
-            )?;
+            writeln!(w, r#"    <testcase name="{name}" classname="{classname}">"#)?;
             writeln!(
                 w,
                 r#"      <failure message="{message}" type="{sev}">{}</failure>"#,

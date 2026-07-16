@@ -56,6 +56,11 @@ fn is_source(callee: &str) -> bool {
         || callee.contains("Request.Query")
         || callee.contains("Request.Form")
         || callee.contains("QueryString")
+        // Ruby: ARGV, ENV, gets, params (Rails)
+        || callee.contains("ARGV")
+        || callee.contains("ENV")
+        || last == "gets"
+        || callee.contains("params")
 }
 
 /// A taint sink: the rule and classification if untrusted data reaches it.

@@ -15,7 +15,8 @@ datasets = []
 # Languages parsed for structural analysis (auto-detected by extension).
 languages = [
   "python", "javascript", "typescript", "csharp", "rust", "go", "c", "cpp",
-  "java", "bash", "lua", "powershell",
+  "java", "bash", "lua", "powershell", "ruby", "dart", "swift", "kotlin",
+  "groovy",
 ]
 
 [plugins.yara]
