@@ -96,6 +96,15 @@ enum Command {
     Clean,
     /// Garbage-collect unreachable records.
     Gc,
+    /// Export the whole graph as a portable snapshot (CBOR or JSON).
+    Export {
+        /// Output file (default: stdout for json, required for cbor).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Format: cbor (DAG-CBOR-style binary) or json.
+        #[arg(short, long, default_value = "cbor")]
+        format: String,
+    },
     /// Run an MCP server on stdio for AI agents.
     Mcp,
     /// Open the mutt-style TUI: scan, browse, and query the graph live.
@@ -135,6 +144,8 @@ async fn main() -> Result<()> {
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
         Command::Gc => cmd_gc(&store_dir).await?,
+        Command::Enrich => cmd_enrich(&store_dir).await?,
+        Command::Export { out, format } => cmd_export(&store_dir, out, &format).await?,
         Command::Mcp => {
             let store = exfill_store::Store::open_findings(&store_dir).await?;
             exfill_mcp::serve(store).await?;
@@ -148,7 +159,6 @@ async fn main() -> Result<()> {
             let handle = tokio::runtime::Handle::current();
             tokio::task::spawn_blocking(move || tui::run(handle, &store_dir, keymap)).await??;
         }
-        _ => println!("not yet implemented — scaffolding in progress (see PLAN.md)"),
     }
     Ok(())
 }
@@ -448,6 +458,52 @@ async fn cmd_graph(store_dir: &std::path::Path, query: Option<String>, format: &
             println!("}}");
         }
         other => anyhow::bail!("unknown graph format {other:?} (use json or dot)"),
+    }
+    Ok(())
+}
+
+/// Enrich stored findings with triage notes. Uses the rule-based enricher by
+/// default; a downloaded offline model would supersede it via the same trait.
+async fn cmd_enrich(store_dir: &std::path::Path) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let enricher = exfill_llm::default_enricher();
+    let n = exfill_llm::run(&store, enricher.as_ref()).await?;
+    println!(
+        "enriched {n} finding(s) with {} triage notes",
+        enricher.name()
+    );
+    Ok(())
+}
+
+/// Export the whole graph as a portable snapshot in CBOR or JSON.
+async fn cmd_export(store_dir: &std::path::Path, out: Option<PathBuf>, format: &str) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let snapshot = store.export_snapshot().await?;
+    match format {
+        "json" => {
+            let text = serde_json::to_string_pretty(&snapshot)?;
+            match out {
+                Some(path) => std::fs::write(&path, text)
+                    .with_context(|| format!("write {}", path.display()))?,
+                None => println!("{text}"),
+            }
+        }
+        "cbor" => {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&snapshot, &mut bytes).context("encode CBOR")?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, &bytes)
+                        .with_context(|| format!("write {}", path.display()))?;
+                    eprintln!("wrote {} bytes to {}", bytes.len(), path.display());
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout().write_all(&bytes)?;
+                }
+            }
+        }
+        other => anyhow::bail!("unknown export format {other:?} (use cbor or json)"),
     }
     Ok(())
 }

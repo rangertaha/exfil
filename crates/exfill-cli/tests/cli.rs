@@ -185,11 +185,28 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 }
 
 #[test]
-fn unimplemented_commands_say_so() {
-    let sb = Sandbox::new("stub");
+fn enrich_and_export_commands() {
+    let sb = Sandbox::new("enrich");
+    let out = exfill(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // enrich writes a triage note to the finding.
     let out = exfill(&sb.store, &["enrich"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("enriched 1 finding(s)"),
+        "{}",
+        stdout(&out)
+    );
+
+    // export --format json includes the enriched triage field.
+    let out = exfill(&sb.store, &["export", "--format", "json"]);
     assert!(out.status.success());
-    assert!(stdout(&out).contains("not yet implemented"));
+    let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json snapshot");
+    let triage = snap["tables"]["finding"][0]["triage"]
+        .as_str()
+        .unwrap_or("");
+    assert!(triage.contains("credential"), "{triage}");
 }
 
 #[test]

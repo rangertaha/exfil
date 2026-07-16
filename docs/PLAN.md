@@ -48,7 +48,7 @@ exfill/
     exfill-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
     exfill-source/   Source trait + registry: builtin, file, http (reqwest)
     exfill-report/   ✅ Reporter trait: text, json, markdown
-    exfill-llm/      Llm trait + Candle engine + model management (no-op when absent)
+    exfill-llm/      ✅ Enricher trait + rule-based triage (Candle model = future impl); `enrich`
     exfill-config/   ✅ TOML config with embedded default + per-plugin decode
     exfill-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
     exfill-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)

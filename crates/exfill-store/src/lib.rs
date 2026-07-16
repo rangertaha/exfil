@@ -261,6 +261,48 @@ impl Store {
         Ok(rows)
     }
 
+    /// Export the whole graph as a portable snapshot: every record table and
+    /// every edge table, keyed by name. Content-addressed record ids make the
+    /// result stable and deduplicated — suitable for CBOR (or JSON) export and
+    /// diffing between hosts.
+    pub async fn export_snapshot(&self) -> Result<serde_json::Value> {
+        let mut tables = serde_json::Map::new();
+        // Record tables: keep every field, but stringify the RecordId id (which
+        // JSON can't represent as-is) so the snapshot is plain JSON/CBOR.
+        const RECORD_TABLES: &[&str] = &[
+            "file", "ast", "source", "dataset", "rule", "finding", "scan",
+        ];
+        for table in RECORD_TABLES {
+            let mut res = self
+                .db
+                .query(format!(
+                    "SELECT type::string(id) AS rid, * OMIT id FROM {table}"
+                ))
+                .await
+                .with_context(|| format!("export {table}"))?;
+            let rows: Vec<serde_json::Value> = res.take(0)?;
+            tables.insert((*table).to_string(), serde_json::Value::Array(rows));
+        }
+        // Edge tables: just the endpoints, stringified, keyed `from`/`to`.
+        for table in EDGE_TABLES {
+            let mut res = self
+                .db
+                .query(format!(
+                    "SELECT type::string(id) AS rid, type::string(`in`) AS `from`, \
+                     type::string(`out`) AS `to` FROM {table}"
+                ))
+                .await
+                .with_context(|| format!("export edge {table}"))?;
+            let rows: Vec<serde_json::Value> = res.take(0)?;
+            tables.insert((*table).to_string(), serde_json::Value::Array(rows));
+        }
+        Ok(serde_json::json!({
+            "version": 1,
+            "namespace": NAMESPACE,
+            "tables": tables,
+        }))
+    }
+
     /// Garbage-collect the findings store: keep only the most recent scan and
     /// delete everything not reachable from it — older scan records, file
     /// records they alone referenced (e.g. superseded content versions), and
@@ -946,6 +988,13 @@ mod tests {
         // Filtered graph narrows to one finding.
         let one = store.graph("rule=aws-key").await.unwrap();
         assert_eq!(one.nodes.iter().filter(|n| n.kind == "finding").count(), 1);
+
+        // Snapshot export includes the record and edge tables.
+        let snap = store.export_snapshot().await.unwrap();
+        assert_eq!(snap["version"], 1);
+        assert_eq!(snap["tables"]["file"].as_array().unwrap().len(), 2);
+        assert_eq!(snap["tables"]["finding"].as_array().unwrap().len(), 2);
+        assert!(snap["tables"].get("in_file").is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

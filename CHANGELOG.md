@@ -86,3 +86,8 @@ and this project adheres to
 - MCP server (`exfill mcp`): a hand-rolled JSON-RPC 2.0 stdio server exposing
   read-only tools (search/graph/neighbors/get/analyze) so AI agents can explore
   the findings graph.
+- DAG-CBOR/JSON export (`exfill export`): a portable snapshot of every record
+  and edge table (stringified ids), via Store::export_snapshot + ciborium.
+- Finding enrichment (`exfill enrich`, `exfill-llm`): an Enricher trait with a
+  model-free RuleBasedEnricher writing per-finding `triage` notes; the trait is
+  the seam for a future offline Candle model. All CLI commands now implemented.

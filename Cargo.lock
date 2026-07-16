@@ -1750,11 +1750,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "ciborium",
  "clap",
  "crossterm",
  "exfill-config",
  "exfill-core",
  "exfill-engine",
+ "exfill-llm",
  "exfill-mcp",
  "exfill-remote",
  "exfill-scan",
@@ -1804,6 +1806,18 @@ dependencies = [
  "serde_json",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "exfill-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exfill-core",
+ "exfill-store",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
