@@ -118,9 +118,7 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
 /// gauge on a terminal, plain match lines when piped.
 async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
-    let registry = exfill_scan::Registry::new().with(Box::new(exfill_scan::RegexScanner::new(
-        exfill_scan::builtin_rules(),
-    )?));
+    let registry = exfill_scan::default_registry()?;
     let store = exfill_store::Store::open_findings(store_dir).await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -131,8 +129,8 @@ async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<(
     let _ = renderer.join();
     let summary = result?;
     println!(
-        "scanned {} files: {} matches, {} unreadable",
-        summary.files, summary.matches, summary.errors
+        "scanned {} files ({} unchanged): {} new matches, {} unreadable",
+        summary.files, summary.unchanged, summary.matches, summary.errors
     );
     Ok(())
 }

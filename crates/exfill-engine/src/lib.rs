@@ -3,8 +3,9 @@
 //! as they are found, then upsert the results into the store and commit a
 //! scan record.
 //!
-//! Incremental rescans (stat fast-path against the previous scan) are the next
-//! step; today every file is read.
+//! Rescans are incremental: a stat fast-path (size + mtime against the stored
+//! file index) skips re-reading unchanged files, and re-scanned files have
+//! their findings replaced, not duplicated.
 //!
 //! # Rust notes
 //!
@@ -28,10 +29,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use exfill_core::{platform::ownership, FileMeta, Match};
 use exfill_scan::Registry;
-use exfill_store::{ScanRecord, Store};
+use exfill_store::{FileStat, ScanRecord, Store};
 use ignore::{WalkBuilder, WalkState};
 
 /// How much of a file's head to inspect for NUL bytes when deciding whether
@@ -41,10 +44,14 @@ const BINARY_SNIFF_LEN: usize = 8192;
 /// Result of one scan run.
 #[derive(Debug, Default, Clone)]
 pub struct Summary {
-    /// Regular files recorded.
+    /// Regular files recorded (including unchanged ones).
     pub files: u64,
-    /// Total matches found.
+    /// Matches found in files that were (re)scanned this run. Findings on
+    /// unchanged files are already in the store and are not re-counted.
     pub matches: u64,
+    /// Files skipped by the stat fast-path: same size and mtime as the last
+    /// scan, so their stored records and findings were reused unread.
+    pub unchanged: u64,
     /// Files that could not be read (permission, races); they are skipped.
     pub errors: u64,
 }
@@ -53,6 +60,17 @@ pub struct Summary {
 struct FileResult {
     meta: FileMeta,
     matches: Vec<Match>,
+}
+
+/// What a walker thread concluded about one file.
+enum WalkOutcome {
+    /// Read, hashed, and scanned; needs persisting.
+    Scanned(FileResult),
+    /// Stat fast-path hit: size+mtime match the stored record, so the file
+    /// was not read. The stored hash keeps it in this scan's `includes`.
+    Unchanged { hash: String },
+    /// The file could not be stat'ed or read.
+    Error,
 }
 
 /// Live progress events emitted while a scan runs.
@@ -117,6 +135,10 @@ pub async fn scan(
     if let Some(ev) = &events {
         let _ = ev.send(ScanEvent::Total(count_files(root, skip_dir)));
     }
+    // Stat cache from previous scans: files whose size+mtime still match are
+    // skipped without reading. Wrapped in Arc so every walker thread can
+    // share one read-only copy instead of cloning the whole map.
+    let index = std::sync::Arc::new(store.file_index().await.unwrap_or_default());
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -125,7 +147,7 @@ pub async fn scan(
 
     // Parallel walk: worker threads read/hash/scan and send results over a
     // channel; progress events stream immediately from the workers.
-    let (tx, rx) = mpsc::channel::<std::result::Result<FileResult, ()>>();
+    let (tx, rx) = mpsc::channel::<WalkOutcome>();
     let walker = walk_builder(root, skip_dir).build_parallel();
 
     walker.run(|| {
@@ -133,12 +155,13 @@ pub async fn scan(
         let host = host.clone();
         let registry = &registry;
         let events = events.clone();
+        let index = index.clone();
         Box::new(move |entry| {
             // `let-else`: unwrap the happy case or bail out of this closure.
             // `let _ =` deliberately ignores a Result we can't act on (if the
             // receiver hung up, this thread has nothing better to do anyway).
             let Ok(entry) = entry else {
-                let _ = tx.send(Err(()));
+                let _ = tx.send(WalkOutcome::Error);
                 return WalkState::Continue;
             };
             let Some(ft) = entry.file_type() else {
@@ -147,20 +170,21 @@ pub async fn scan(
             if !ft.is_file() {
                 return WalkState::Continue;
             }
-            match process_file(entry.path(), &host, registry) {
-                Ok(res) => {
-                    if let Some(ev) = &events {
-                        for m in &res.matches {
-                            let _ = ev.send(ScanEvent::Match(m.clone()));
-                        }
-                        let _ = ev.send(ScanEvent::FileDone);
+            let outcome = match process_file(entry.path(), &host, registry, &index) {
+                Ok(outcome) => outcome,
+                Err(_) => WalkOutcome::Error,
+            };
+            if let Some(ev) = &events {
+                if let WalkOutcome::Scanned(res) = &outcome {
+                    for m in &res.matches {
+                        let _ = ev.send(ScanEvent::Match(m.clone()));
                     }
-                    let _ = tx.send(Ok(res));
                 }
-                Err(_) => {
-                    let _ = tx.send(Err(()));
+                if !matches!(outcome, WalkOutcome::Error) {
+                    let _ = ev.send(ScanEvent::FileDone);
                 }
             }
+            let _ = tx.send(outcome);
             WalkState::Continue
         })
     });
@@ -173,16 +197,24 @@ pub async fn scan(
     let mut hashes = Vec::new();
     while let Ok(res) = rx.recv() {
         match res {
-            Ok(fr) => {
+            WalkOutcome::Scanned(fr) => {
                 summary.files += 1;
                 summary.matches += fr.matches.len() as u64;
                 store.upsert_file(&fr.meta).await?;
+                // Replace, don't append: stale findings from earlier scans of
+                // this content are removed before the fresh ones go in.
+                store.clear_findings(&fr.meta.hash).await?;
                 for m in &fr.matches {
                     store.add_finding(m, &fr.meta.hash).await?;
                 }
                 hashes.push(fr.meta.hash);
             }
-            Err(()) => summary.errors += 1,
+            WalkOutcome::Unchanged { hash } => {
+                summary.files += 1;
+                summary.unchanged += 1;
+                hashes.push(hash);
+            }
+            WalkOutcome::Error => summary.errors += 1,
         }
     }
 
@@ -201,13 +233,15 @@ pub async fn scan(
     Ok(summary)
 }
 
-/// Read, hash, and scan one regular file.
-fn process_file(path: &Path, host: &str, registry: &Registry) -> Result<FileResult> {
+/// Process one regular file: stat it, and either take the fast path (size and
+/// mtime match the stored record — reuse it unread) or read, hash, and scan.
+fn process_file(
+    path: &Path,
+    host: &str,
+    registry: &Registry,
+    index: &HashMap<String, FileStat>,
+) -> Result<WalkOutcome> {
     let md = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
-    let content = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let hash = blake3::hash(&content).to_hex().to_string();
-
-    let own = ownership(&md);
     let mtime = md
         .modified()
         .ok()
@@ -215,6 +249,19 @@ fn process_file(path: &Path, host: &str, registry: &Registry) -> Result<FileResu
         .map(|d| d.as_secs().to_string())
         .unwrap_or_default();
     let abs: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    // Stat fast-path: an unchanged file keeps its stored records and findings.
+    if let Some(prev) = index.get(&abs.display().to_string()) {
+        if prev.size == md.len() && prev.mtime == mtime && !mtime.is_empty() {
+            return Ok(WalkOutcome::Unchanged {
+                hash: prev.hash.clone(),
+            });
+        }
+    }
+
+    let content = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let hash = blake3::hash(&content).to_hex().to_string();
+    let own = ownership(&md);
 
     let meta = FileMeta {
         path: path.display().to_string(),
@@ -238,7 +285,7 @@ fn process_file(path: &Path, host: &str, registry: &Registry) -> Result<FileResu
         registry.scan_file(path, &md, &content)?
     };
 
-    Ok(FileResult { meta, matches })
+    Ok(WalkOutcome::Scanned(FileResult { meta, matches }))
 }
 
 #[cfg(test)]
@@ -302,6 +349,35 @@ mod tests {
             .unwrap()
             .expect("file record by content hash");
         assert!(rec["path"].as_str().unwrap().ends_with("leak.env"));
+
+        // Rescan without touching anything: every file takes the stat
+        // fast-path and findings do NOT duplicate.
+        let second = scan(&tree, &registry, &store, Some(&store_dir), None)
+            .await
+            .unwrap();
+        assert_eq!(second.files, 3);
+        assert_eq!(second.unchanged, 3, "nothing changed → nothing re-read");
+        assert_eq!(second.matches, 0, "no files re-scanned");
+        let found = store.search_findings("").await.unwrap();
+        assert_eq!(found.len(), 1, "rescan must not duplicate findings");
+
+        // Modify the leaky file: it is re-read and its findings replaced.
+        std::fs::write(
+            tree.join("sub/leak.env"),
+            "AWS_KEY=AKIA0123456789ABCDEF\ntoken = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"\n",
+        )
+        .unwrap();
+        let third = scan(&tree, &registry, &store, Some(&store_dir), None)
+            .await
+            .unwrap();
+        assert_eq!(third.unchanged, 2, "only the modified file is re-read");
+        assert_eq!(third.matches, 2, "both secrets in the new content");
+        let found = store.search_findings("").await.unwrap();
+        // The new content contributes exactly two findings; the old content's
+        // single finding stays attached to the now-orphaned old hash until gc.
+        assert_eq!(found.len(), 3, "{found:?}");
+        let github = found.iter().filter(|m| m.rule == "github-token").count();
+        assert_eq!(github, 1, "{found:?}");
 
         let _ = std::fs::remove_dir_all(&base);
     }

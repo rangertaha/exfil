@@ -311,9 +311,7 @@ impl App {
                 let store = self.store.clone();
                 let store_dir = self.store_dir.clone();
                 let task = handle.spawn(async move {
-                    let registry = exfill_scan::Registry::new().with(Box::new(
-                        exfill_scan::RegexScanner::new(exfill_scan::builtin_rules())?,
-                    ));
+                    let registry = exfill_scan::default_registry()?;
                     exfill_engine::scan(&root, &registry, &store, Some(&store_dir), Some(tx)).await
                 });
                 self.findings.clear();
@@ -350,8 +348,8 @@ impl App {
             let scan = self.scan.take().expect("scan present");
             self.message = match handle.block_on(scan.task) {
                 Ok(Ok(s)) => format!(
-                    "scanned {} files: {} matches, {} unreadable",
-                    s.files, s.matches, s.errors
+                    "scanned {} files ({} unchanged): {} new matches, {} unreadable",
+                    s.files, s.unchanged, s.matches, s.errors
                 ),
                 Ok(Err(e)) => format!("scan failed: {e:#}"),
                 Err(e) => format!("scan panicked: {e}"),

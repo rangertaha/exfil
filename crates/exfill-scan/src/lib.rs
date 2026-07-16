@@ -25,7 +25,9 @@
 //!   won't compile into the registry.
 
 pub mod builtin;
+pub mod supply;
 pub use builtin::builtin_rules;
+pub use supply::SupplyChainScanner;
 
 use std::fs::Metadata;
 use std::path::Path;
@@ -96,6 +98,14 @@ impl Registry {
         }
         Ok(out)
     }
+}
+
+/// The standard scanner lineup: regex over the built-in security ruleset plus
+/// supply-chain manifest checks. The CLI and TUI both scan with this.
+pub fn default_registry() -> Result<Registry> {
+    Ok(Registry::new()
+        .with(Box::new(RegexScanner::new(builtin_rules())?))
+        .with(Box::new(SupplyChainScanner)))
 }
 
 /// A compiled rule: its pattern plus the metadata carried onto every match.

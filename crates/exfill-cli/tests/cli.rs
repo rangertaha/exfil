@@ -59,7 +59,19 @@ fn scan_search_get_clean_roundtrip() {
     assert!(out.status.success(), "scan failed: {}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("aws-access-key-id"), "{text}");
-    assert!(text.contains("scanned 2 files: 1 matches"), "{text}");
+    assert!(
+        text.contains("scanned 2 files (0 unchanged): 1 new matches"),
+        "{text}"
+    );
+
+    // Rescan: unchanged files take the stat fast-path, findings don't duplicate.
+    let out = exfill(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "rescan failed: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("scanned 2 files (2 unchanged): 0 new matches"),
+        "{text}"
+    );
 
     // search with no query lists the finding.
     let out = exfill(&sb.store, &["search"]);

@@ -23,9 +23,16 @@ machine.
 - **Mutt-style TUI** — `exfill tui` is a live workbench: run scans (with a
   progress gauge and findings streaming in), browse the index, open a finding
   in the pager with its file record, `/` to limit, `:` for commands.
+- **Supply-chain compromise detection** — dependency manifests (`package.json`,
+  `requirements*.txt`, `Cargo.toml`) are checked for known-malicious packages,
+  typosquats (Damerau-Levenshtein against popular package names), malicious
+  install hooks, and cleartext dependency sources.
+- **Incremental rescans** — a stat fast-path (size + mtime) skips re-reading
+  unchanged files; re-scanned files have their findings replaced, never
+  duplicated.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits
-  behind registries; regex scanning ships today, tree-sitter AST, YARA, and
-  taint analysis are planned (see the [roadmap](docs/PLAN.md)).
+  behind registries; regex + supply-chain scanning ship today, tree-sitter AST,
+  YARA, and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.
 
 ## Install

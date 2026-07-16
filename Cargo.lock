@@ -1231,6 +1231,8 @@ dependencies = [
  "anyhow",
  "exfill-core",
  "regex",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

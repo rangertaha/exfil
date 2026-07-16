@@ -19,6 +19,7 @@
 //!   interpolation — same reason as SQL prepared statements: user-supplied
 //!   values can never change the query's structure (injection safety).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -125,6 +126,35 @@ impl Store {
         Ok(())
     }
 
+    /// A stat-cache index of every stored file: absolute path → (size, mtime,
+    /// content hash). The engine uses it to skip re-reading files whose size
+    /// and mtime are unchanged since the last scan.
+    pub async fn file_index(&self) -> Result<HashMap<String, FileStat>> {
+        let mut res = self
+            .db
+            .query("SELECT abs, size, mtime, hash FROM file")
+            .await
+            .context("load file index")?;
+        let rows: Vec<FileStat> = res.take(0)?;
+        Ok(rows.into_iter().map(|f| (f.abs.clone(), f)).collect())
+    }
+
+    /// Delete all findings attached to a file (and their edges), so a rescan
+    /// replaces them instead of piling up duplicates.
+    pub async fn clear_findings(&self, file_hash: &str) -> Result<()> {
+        self.db
+            .query(
+                "DELETE finding WHERE ->in_file->file CONTAINS $file; \
+                 DELETE in_file WHERE out = $file;",
+            )
+            .bind(("file", RecordId::from(("file", file_hash))))
+            .await
+            .context("clear findings")?
+            .check()
+            .context("clear findings statement failed")?;
+        Ok(())
+    }
+
     /// Create a finding record and relate it to the file it was found in.
     pub async fn add_finding(&self, m: &Match, file_hash: &str) -> Result<()> {
         self.db
@@ -203,6 +233,23 @@ impl Store {
         let rows: Vec<serde_json::Value> = res.take(0)?;
         Ok(rows.into_iter().next())
     }
+}
+
+/// The stat-cache row for one stored file, keyed by absolute path.
+///
+/// Size + mtime is the classic freshness heuristic (same one `make` and
+/// `rsync` use): if both are unchanged the content is assumed unchanged and
+/// the stored hash is reused without reading the file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileStat {
+    /// Absolute, canonicalized path.
+    pub abs: String,
+    /// File size in bytes at last scan.
+    pub size: u64,
+    /// Modification time (seconds since epoch, stringly) at last scan.
+    pub mtime: String,
+    /// blake3 content hash recorded at last scan.
+    pub hash: String,
 }
 
 /// One scan run: the root, host, and result counters.

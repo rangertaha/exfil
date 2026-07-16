@@ -18,6 +18,10 @@ and this project adheres to
   live `ScanEvent` progress streaming, store-directory exclusion.
 - Regex scanner with a built-in security ruleset (AWS keys, private keys,
   GitHub/Slack tokens, hard-coded secrets, credentials in URLs).
+- Supply-chain scanner over dependency manifests: known-malicious packages,
+  typosquat detection, npm install-hook analysis, insecure (http) sources.
+- Incremental rescans: stat fast-path skips unchanged files; findings are
+  replaced on rescan instead of duplicated.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
 - Ratatui progress gauge for `scan` (plain line output when piped).
 - Mutt-style `exfill tui`: findings index + pager, `/` limit, `:` commands,

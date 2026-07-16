@@ -252,6 +252,14 @@ ref = "https://…/model.gguf"
 - **Dataset management (CRUD)** — create, update, list, and view datasets per
   plugin: `exfill datasets` grows `add/edit/show/rm` (and TUI views), backed by
   the catalog store, so users can maintain their own rule/IOC collections.
+- **Supply-chain detection, dataset-driven** — v1 ships (offline heuristics in
+  `exfill-scan::supply`: known-malware list, typosquats, install hooks,
+  insecure sources); next step is feeding it OSV/malicious-package datasets via
+  `update` for version-aware compromise detection (e.g. `ua-parser-js`-style
+  hijacks).
+- **Plugin orchestration** — evaluate a pipeline/DAG model where plugins
+  declare inputs/outputs (bytes, AST, graph records) and the engine schedules
+  them in dependency order; see discussion in session notes.
 
 ## Resolved
 

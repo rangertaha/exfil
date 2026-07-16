@@ -8,6 +8,8 @@ license.workspace = true
 exfill-core = { workspace = true }
 anyhow = { workspace = true }
 regex = "1"
+serde_json = { workspace = true }
+toml = "0.8"
 
 [lints]
 workspace = true
