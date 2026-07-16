@@ -38,6 +38,8 @@ pub enum ArtifactKind {
     Files,
     /// A parsed abstract syntax tree.
     Ast,
+    /// Observables extracted from content (emails, domains, IPs, URLs, hashes).
+    Indicators,
     /// Security findings (a terminal output; may have many producers).
     Matches,
 }
@@ -86,6 +88,38 @@ pub struct Ast {
     pub assigns: Vec<Assign>,
 }
 
+/// Observables extracted from a file's content, for the graph and for checker
+/// plugins (DNS, whois, IOC, leak). Each list holds unique, normalized values.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Indicators {
+    /// Email addresses.
+    #[serde(default)]
+    pub emails: Vec<String>,
+    /// Domain names.
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// IPv4/IPv6 addresses.
+    #[serde(default)]
+    pub ips: Vec<String>,
+    /// URLs.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// Hex file hashes (md5/sha1/sha256, by length).
+    #[serde(default)]
+    pub hashes: Vec<String>,
+}
+
+impl Indicators {
+    /// Whether nothing was extracted (so the engine can skip persisting).
+    pub fn is_empty(&self) -> bool {
+        self.emails.is_empty()
+            && self.domains.is_empty()
+            && self.ips.is_empty()
+            && self.urls.is_empty()
+            && self.hashes.is_empty()
+    }
+}
+
 /// A typed value flowing between tasks. Each variant corresponds to one
 /// [`ArtifactKind`].
 #[derive(Debug, Clone)]
@@ -96,6 +130,8 @@ pub enum Artifact {
     Files(Vec<VirtualFile>),
     /// A parsed AST.
     Ast(Ast),
+    /// Observables extracted from content.
+    Indicators(Indicators),
     /// Security findings.
     Matches(Vec<Match>),
 }
@@ -107,6 +143,7 @@ impl Artifact {
             Artifact::Bytes(_) => ArtifactKind::Bytes,
             Artifact::Files(_) => ArtifactKind::Files,
             Artifact::Ast(_) => ArtifactKind::Ast,
+            Artifact::Indicators(_) => ArtifactKind::Indicators,
             Artifact::Matches(_) => ArtifactKind::Matches,
         }
     }
@@ -164,6 +201,8 @@ pub struct FileArtifacts {
     pub expanded: Vec<VirtualFile>,
     /// The parsed AST, if a language task produced one (for the `has_ast` edge).
     pub ast: Option<Ast>,
+    /// Observables extracted from this file, if an extractor produced any.
+    pub indicators: Option<Indicators>,
 }
 
 impl Pipeline {
@@ -212,6 +251,12 @@ impl Pipeline {
                     // downstream Ast → Matches tasks.
                     out.ast = Some(ast.clone());
                     available.insert(ArtifactKind::Ast, Artifact::Ast(ast));
+                }
+                Artifact::Indicators(ind) => {
+                    // Surface for persistence, and keep available for downstream
+                    // Indicators → Matches checkers (DNS/whois/IOC/leak).
+                    out.indicators = Some(ind.clone());
+                    available.insert(ArtifactKind::Indicators, Artifact::Indicators(ind));
                 }
                 other => {
                     available.insert(other.kind(), other);

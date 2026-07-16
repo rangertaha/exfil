@@ -59,13 +59,14 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The default viewer lineup: finding, file, ast, rule.
+    /// The default viewer lineup: finding, file, ast, indicators, rule.
     pub fn new() -> Self {
         Self {
             viewers: vec![
                 Box::new(FindingViewer),
                 Box::new(FileViewer),
                 Box::new(AstViewer),
+                Box::new(IndicatorViewer),
                 Box::new(RuleViewer),
             ],
         }
@@ -183,6 +184,44 @@ impl Viewer for AstViewer {
                 let line = s.get("line").and_then(Value::as_u64).unwrap_or(0);
                 out.push(format!("  {kind:<10} {name}  (line {line})"));
             }
+        }
+        out
+    }
+}
+
+/// Viewer for `indicators` nodes: the observables extracted from a file.
+pub struct IndicatorViewer;
+
+impl Viewer for IndicatorViewer {
+    fn name(&self) -> &str {
+        "indicators"
+    }
+    fn handles(&self, kind: &str) -> bool {
+        kind == "indicators"
+    }
+    fn render(&self, node: &Node) -> Vec<String> {
+        let mut out = Vec::new();
+        for (label, key) in [
+            ("Emails", "emails"),
+            ("Domains", "domains"),
+            ("IPs", "ips"),
+            ("URLs", "urls"),
+            ("Hashes", "hashes"),
+        ] {
+            if let Some(items) = node.data.get(key).and_then(Value::as_array) {
+                if !items.is_empty() {
+                    out.push(format!("{label} ({}):", items.len()));
+                    for v in items {
+                        if let Some(s) = v.as_str() {
+                            out.push(format!("  {s}"));
+                        }
+                    }
+                    out.push(String::new());
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push("(no indicators)".into());
         }
         out
     }

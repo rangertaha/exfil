@@ -41,6 +41,7 @@ const SCHEMA: &str = r#"
 -- record tables (content-hash ids where dedup matters)
 DEFINE TABLE IF NOT EXISTS file SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS ast SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS indicators SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS source SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS dataset SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS rule SCHEMALESS;
@@ -49,6 +50,7 @@ DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
 
 -- graph edges connecting the records
 DEFINE TABLE IF NOT EXISTS has_ast TYPE RELATION FROM file TO ast;
+DEFINE TABLE IF NOT EXISTS has_indicators TYPE RELATION FROM file TO indicators;
 DEFINE TABLE IF NOT EXISTS in_file TYPE RELATION FROM finding TO file;
 DEFINE TABLE IF NOT EXISTS at_ast TYPE RELATION FROM finding TO ast;
 DEFINE TABLE IF NOT EXISTS flagged_by TYPE RELATION FROM finding TO rule;
@@ -198,6 +200,29 @@ impl Store {
         Ok(())
     }
 
+    /// Store a file's extracted indicators (keyed by content hash) and relate
+    /// the file to them with `has_indicators`. Idempotent.
+    pub async fn upsert_indicators(
+        &self,
+        file_hash: &str,
+        indicators: &serde_json::Value,
+    ) -> Result<()> {
+        self.db
+            .query(
+                "UPSERT type::thing('indicators', $h) CONTENT $ind; \
+                 DELETE has_indicators WHERE in = $file; \
+                 RELATE $file->has_indicators->(type::thing('indicators', $h));",
+            )
+            .bind(("h", file_hash.to_string()))
+            .bind(("ind", indicators.clone()))
+            .bind(("file", RecordId::from(("file", file_hash))))
+            .await
+            .context("upsert indicators")?
+            .check()
+            .context("indicators statement failed")?;
+        Ok(())
+    }
+
     /// Create a finding record and relate it to the file it was found in.
     pub async fn add_finding(&self, m: &Match, file_hash: &str) -> Result<()> {
         self.db
@@ -270,7 +295,14 @@ impl Store {
         // Record tables: keep every field, but stringify the RecordId id (which
         // JSON can't represent as-is) so the snapshot is plain JSON/CBOR.
         const RECORD_TABLES: &[&str] = &[
-            "file", "ast", "source", "dataset", "rule", "finding", "scan",
+            "file",
+            "ast",
+            "indicators",
+            "source",
+            "dataset",
+            "rule",
+            "finding",
+            "scan",
         ];
         for table in RECORD_TABLES {
             let mut res = self
@@ -335,9 +367,11 @@ impl Store {
                  LET $live = (SELECT VALUE out FROM includes); \
                  DELETE in_file WHERE out NOT IN $live; \
                  DELETE has_ast WHERE in NOT IN $live; \
+                 DELETE has_indicators WHERE in NOT IN $live; \
                  DELETE contained_in WHERE in NOT IN $live OR out NOT IN $live; \
                  DELETE finding WHERE count(->in_file) = 0; \
                  DELETE ast WHERE count(<-has_ast) = 0; \
+                 DELETE indicators WHERE count(<-has_indicators) = 0; \
                  DELETE file WHERE id NOT IN $live;",
             )
             .bind(("latest", latest))
@@ -686,6 +720,7 @@ impl Store {
 /// The graph edge tables traversed by [`Store::neighbors`].
 const EDGE_TABLES: &[&str] = &[
     "has_ast",
+    "has_indicators",
     "in_file",
     "at_ast",
     "flagged_by",
@@ -728,6 +763,21 @@ pub fn node_label(kind: &str, data: &serde_json::Value) -> Option<String> {
         "file" => s("path").map(String::from),
         "rule" => s("name").map(String::from),
         "ast" => Some(format!("{} ast", s("lang").unwrap_or("?"))),
+        "indicators" => {
+            let count = |k: &str| {
+                data.get(k)
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len())
+            };
+            Some(format!(
+                "indicators ({}e {}d {}ip {}url {}h)",
+                count("emails"),
+                count("domains"),
+                count("ips"),
+                count("urls"),
+                count("hashes"),
+            ))
+        }
         "dataset" | "source" => s("name").map(String::from),
         "scan" => s("root").map(String::from),
         _ => None,

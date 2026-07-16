@@ -68,6 +68,8 @@ struct FileResult {
     matches: Vec<Match>,
     /// The parsed AST, when a language task produced one (for `has_ast`).
     ast: Option<exfill_task::Ast>,
+    /// Observables extracted from the file (for `has_indicators`).
+    indicators: Option<exfill_task::Indicators>,
     /// `Some(container_hash)` when this file was expanded from an archive.
     contained_in: Option<String>,
 }
@@ -227,6 +229,12 @@ pub async fn scan(
                             store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
                         }
                     }
+                    if let Some(ind) = &fr.indicators {
+                        if !ind.is_empty() {
+                            let value = serde_json::to_value(ind).unwrap_or_default();
+                            store.upsert_indicators(&fr.meta.hash, &value).await?;
+                        }
+                    }
                     if let Some(container) = &fr.contained_in {
                         store.relate_contained_in(&fr.meta.hash, container).await?;
                     }
@@ -326,6 +334,7 @@ pub async fn scan_remote(
             meta,
             matches: processed.matches,
             ast: processed.ast,
+            indicators: processed.indicators,
             contained_in: None,
         });
         expand_into(&hash, processed.expanded, &host, pipeline, 1, &mut results);
@@ -347,6 +356,12 @@ pub async fn scan_remote(
                 if !ast.symbols.is_empty() {
                     let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
                     store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
+                }
+            }
+            if let Some(ind) = &fr.indicators {
+                if !ind.is_empty() {
+                    let value = serde_json::to_value(ind).unwrap_or_default();
+                    store.upsert_indicators(&fr.meta.hash, &value).await?;
                 }
             }
             if let Some(container) = &fr.contained_in {
@@ -425,6 +440,7 @@ fn process_file(
         meta,
         matches: processed.matches,
         ast: processed.ast,
+        indicators: processed.indicators,
         contained_in: None,
     });
     expand_into(&hash, processed.expanded, host, pipeline, 1, &mut results);
@@ -438,6 +454,7 @@ struct Processed {
     matches: Vec<Match>,
     expanded: Vec<exfill_core::VirtualFile>,
     ast: Option<exfill_task::Ast>,
+    indicators: Option<exfill_task::Indicators>,
 }
 
 /// Run the pipeline over one file's bytes, skipping binary content (but still
@@ -471,6 +488,7 @@ fn run_pipeline(path: &Path, content: Vec<u8>, pipeline: &Pipeline) -> Processed
             matches: out.matches,
             expanded: out.expanded,
             ast: out.ast,
+            indicators: out.indicators,
         },
         Err(_) => Processed::default(),
     }
@@ -510,6 +528,7 @@ fn expand_into(
             },
             matches: processed.matches,
             ast: processed.ast,
+            indicators: processed.indicators,
             contained_in: Some(container_hash.to_string()),
         });
         expand_into(&hash, processed.expanded, host, pipeline, depth + 1, out);

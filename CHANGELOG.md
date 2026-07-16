@@ -115,3 +115,11 @@ and this project adheres to
   positional-callee fallback handles Swift/Kotlin. New sinks: Dart Process.run,
   Kotlin ProcessBuilder, Groovy evaluate. SQL was evaluated and deferred (no
   call-sink model; the sequel grammar fails to parse the T-SQL EXEC sink).
+- Added a PII scanner (offline): emails, US SSNs, credit cards (Luhn-validated),
+  phone numbers, IBANs (mod-97). Findings mask the matched value so the store
+  never holds raw PII.
+- Added an indicator extractor (Bytes -> Indicators): emails, domains, IPs,
+  URLs, and file hashes are extracted, normalized, deduped, and stored as an
+  `indicators` graph node linked to each file (`has_indicators`), viewable in
+  the TUI. New ArtifactKind::Indicators is the seam for future DNS/whois/IOC/
+  leak checker plugins.
