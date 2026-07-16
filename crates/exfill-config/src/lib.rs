@@ -39,6 +39,9 @@ pub struct Config {
     /// Datasets/model to (re)download on `exfill update`.
     #[serde(default)]
     pub update: Vec<Update>,
+    /// Optional `[keymap]` tables (e.g. `[keymap.nav]`) that remap TUI keys.
+    #[serde(default)]
+    pub keymap: Option<toml::Value>,
     /// Where this config was loaded from (not part of the file).
     #[serde(skip)]
     pub path: PathBuf,

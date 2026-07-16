@@ -15,6 +15,7 @@
 //!   prints the error (with its context chain) and exits nonzero — that's the
 //!   whole error-reporting strategy of the binary.
 
+mod keymap;
 mod progress;
 mod tui;
 
@@ -139,8 +140,9 @@ async fn main() -> Result<()> {
         Command::Tui => {
             // The TUI loop blocks on terminal input, so it runs on a blocking
             // thread with a runtime handle for its database calls.
+            let keymap = load_keymap(cli.config.as_deref());
             let handle = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || tui::run(handle, &store_dir)).await??;
+            tokio::task::spawn_blocking(move || tui::run(handle, &store_dir, keymap)).await??;
         }
         _ => println!("not yet implemented — scaffolding in progress (see PLAN.md)"),
     }
@@ -245,6 +247,17 @@ async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfill_task:
         );
     }
     Ok(pipeline)
+}
+
+/// Build the navigator keymap from config: vim defaults overlaid with any
+/// `[keymap.nav]` remappings. A missing/unreadable config yields the defaults.
+fn load_keymap(config: Option<&std::path::Path>) -> keymap::Keymap {
+    let nav = exfill_config::load(config)
+        .ok()
+        .and_then(|c| c.keymap)
+        .and_then(|k| k.get("nav").cloned())
+        .and_then(|v| v.as_table().cloned());
+    keymap::Keymap::from_config(nav.as_ref())
 }
 
 /// Read and concatenate the files listed in a plugin's string-array field

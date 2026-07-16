@@ -262,6 +262,18 @@ ref = "https://…/model.gguf"
   content-addressed export is ever needed).
 - **Store size on huge trees** — a record per file; incremental + `gc` bound it.
 
+
+## Graph-vim workbench (in progress)
+
+A layered "neovim for graph traversal/editing" over the findings graph:
+- ✅ M3 pluggable viewers (`exfill-view`): preview-per-node-kind registry.
+- ✅ M1 navigation core: two-pane edge-following navigator (Store::neighbors),
+  jumplist (</>), breadcrumbs, node view via viewers.
+- ✅ M2 CRUD: field edit (`c`), edge delete (`d`), undo/redo (`u`/`U`) via
+  reversible EditOps (Store::set_field/create_edge/delete_edge).
+- ✅ M4 keymaps: vim defaults, remappable via `[keymap.nav]` in config.
+- ⬜ M5 scripting (Rhai/Lua) — optional.
+
 ## Backlog (user-requested)
 
 **Done:** dataset sources + catalog + pull/CRUD, IOC feeds (hash + content), ClamAV-style signatures, SSH remote scanning, plugin orchestration.

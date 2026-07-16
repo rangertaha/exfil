@@ -265,12 +265,14 @@ struct App {
     viewers: exfill_view::Registry,
     /// Graph navigator state, present while in [`Mode::Nav`].
     nav: Option<NavState>,
+    /// Configurable navigator key bindings.
+    keymap: crate::keymap::Keymap,
     quit: bool,
 }
 
 impl App {
     /// Build a fresh app over an open store. Shared by [`run`] and tests.
-    fn new(store: Store, store_dir: PathBuf) -> Self {
+    fn new(store: Store, store_dir: PathBuf, keymap: crate::keymap::Keymap) -> Self {
         App {
             store,
             store_dir,
@@ -284,6 +286,7 @@ impl App {
             scan: None,
             viewers: exfill_view::Registry::new(),
             nav: None,
+            keymap,
             quit: false,
         }
     }
@@ -810,65 +813,46 @@ impl App {
     /// Navigator keys: two focusable panes (the node view and its neighbors)
     /// plus back/forward through the jumplist.
     fn on_nav_key(&mut self, handle: &Handle, code: KeyCode) {
-        // Global back/forward, independent of focus.
-        match code {
-            KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc => {
+        use crate::keymap::NavAction;
+        let Some(action) = self.keymap.nav_action(code) else {
+            return;
+        };
+        // Focus-independent actions.
+        match action {
+            NavAction::Quit => {
                 self.mode = Mode::Index;
                 self.nav = None;
                 return;
             }
-            KeyCode::Char('<') | KeyCode::Backspace => {
-                self.nav_back();
-                return;
-            }
-            KeyCode::Char('>') => {
-                self.nav_forward();
-                return;
-            }
-            // Editing: change a field, undo, redo.
-            KeyCode::Char('c') => {
+            NavAction::Back => return self.nav_back(),
+            NavAction::Forward => return self.nav_forward(),
+            NavAction::Edit => {
                 self.prompt = Some(Prompt::Edit(String::new()));
                 return;
             }
-            KeyCode::Char('u') => {
-                self.nav_undo(handle);
-                return;
-            }
-            KeyCode::Char('U') => {
-                self.nav_redo(handle);
-                return;
-            }
+            NavAction::DeleteEdge => return self.nav_delete_edge(handle),
+            NavAction::Undo => return self.nav_undo(handle),
+            NavAction::Redo => return self.nav_redo(handle),
             _ => {}
         }
 
+        // Motions, interpreted relative to the focused pane.
         let Some(nav) = &mut self.nav else { return };
-        match nav.focus {
-            NavFocus::View => match code {
-                KeyCode::Char('j') | KeyCode::Down => nav.scroll = nav.scroll.saturating_add(1),
-                KeyCode::Char('k') | KeyCode::Up => nav.scroll = nav.scroll.saturating_sub(1),
-                KeyCode::Char('l') | KeyCode::Tab | KeyCode::Right => {
-                    nav.focus = NavFocus::Neighbors
-                }
-                KeyCode::Char('h') | KeyCode::Left => self.nav_back(),
-                _ => {}
-            },
-            NavFocus::Neighbors => {
+        match (&nav.focus, action) {
+            (NavFocus::View, NavAction::Down) => nav.scroll = nav.scroll.saturating_add(1),
+            (NavFocus::View, NavAction::Up) => nav.scroll = nav.scroll.saturating_sub(1),
+            (NavFocus::View, NavAction::Descend) => nav.focus = NavFocus::Neighbors,
+            (NavFocus::View, NavAction::Ascend) => self.nav_back(),
+            (NavFocus::Neighbors, NavAction::Down) => {
                 let count = nav.current().neighbors.len();
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if count > 0 {
-                            nav.pick = (nav.pick + 1).min(count - 1);
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => nav.pick = nav.pick.saturating_sub(1),
-                    KeyCode::Char('h') | KeyCode::Tab | KeyCode::Left => nav.focus = NavFocus::View,
-                    KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Enter | KeyCode::Right => {
-                        self.nav_follow(handle)
-                    }
-                    KeyCode::Char('d') => self.nav_delete_edge(handle),
-                    _ => {}
+                if count > 0 {
+                    nav.pick = (nav.pick + 1).min(count - 1);
                 }
             }
+            (NavFocus::Neighbors, NavAction::Up) => nav.pick = nav.pick.saturating_sub(1),
+            (NavFocus::Neighbors, NavAction::Ascend) => nav.focus = NavFocus::View,
+            (NavFocus::Neighbors, NavAction::Descend) => self.nav_follow(handle),
+            _ => {}
         }
     }
 
@@ -937,12 +921,12 @@ fn bordered_focus(title: &str, focused: bool) -> Block<'_> {
 }
 
 /// Run the TUI until the user quits. Blocking; call from `spawn_blocking`.
-pub fn run(handle: Handle, store_dir: &Path) -> Result<()> {
+pub fn run(handle: Handle, store_dir: &Path, keymap: crate::keymap::Keymap) -> Result<()> {
     let store = handle
         .block_on(Store::open_findings(store_dir))
         .context("open findings store")?;
 
-    let mut app = App::new(store, store_dir.to_path_buf());
+    let mut app = App::new(store, store_dir.to_path_buf(), keymap);
     app.refresh_findings(&handle, "");
 
     enable_raw_mode().context("enable raw mode")?;
@@ -1114,7 +1098,7 @@ mod tests {
                 ))
                 .unwrap();
 
-            let mut app = App::new(store, store_dir.clone());
+            let mut app = App::new(store, store_dir.clone(), crate::keymap::Keymap::defaults());
             app.refresh_findings(&handle, "");
             assert!(!app.findings.is_empty(), "seeded findings load");
 
@@ -1251,7 +1235,7 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("exfill-tui-loop-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let store = handle.block_on(Store::open_findings(&dir)).unwrap();
-            let mut app = App::new(store, dir.clone());
+            let mut app = App::new(store, dir.clone(), crate::keymap::Keymap::defaults());
 
             // Scripted keys: move down, open a prompt and cancel it, then quit.
             let mut keys = vec![

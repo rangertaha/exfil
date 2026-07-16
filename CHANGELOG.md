@@ -81,3 +81,5 @@ and this project adheres to
   (field=value), `d` deletes an edge, `u`/`U` undo/redo. Backed by
   Store::set_field / create_edge / delete_edge with a reversible EditOp
   undo stack.
+- Configurable navigator keymap (M4): keys decoupled from actions via a
+  Keymap; vim defaults, remappable in `[keymap.nav]` (key = "Action").

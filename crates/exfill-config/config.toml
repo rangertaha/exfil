@@ -31,6 +31,12 @@ enabled = true
 enabled = false
 tasks = ["extract", "triage"]
 
+# Remap the graph navigator's keys (vim defaults otherwise). Each entry is
+# `key = "Action"`; actions: Up, Down, Ascend, Descend, Back, Forward, Edit,
+# DeleteEdge, Undo, Redo, Quit.
+# [keymap.nav]
+# x = "Edit"
+
 [[update]]
 name = "security"
 ref = "builtin://security"
