@@ -1,19 +1,14 @@
 [package]
-name = "exfill-scan"
+name = "exfill-report"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 exfill-core = { workspace = true }
-exfill-task = { workspace = true }
 anyhow = { workspace = true }
-regex = "1"
+serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "0.8"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-tar = "0.4"
-flate2 = "1"
 
 [lints]
 workspace = true

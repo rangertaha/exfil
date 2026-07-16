@@ -93,6 +93,21 @@ fn scan_search_get_clean_roundtrip() {
         stderr(&out)
     );
 
+    // analyze: renders a report over the graph in each format.
+    let out = exfill(&sb.store, &["analyze"]);
+    assert!(out.status.success(), "analyze failed: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("1 finding(s) across"),
+        "{}",
+        stdout(&out)
+    );
+    let out = exfill(&sb.store, &["analyze", "--format", "json"]);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json report");
+    assert_eq!(v["summary"]["findings"], 1);
+    let out = exfill(&sb.store, &["analyze", "-f", "xml"]);
+    assert!(!out.status.success(), "unknown format must error");
+
     // get: the file record is addressable by its content hash.
     let hash = blake3::hash(SECRET_LINE.as_bytes()).to_hex().to_string();
     let out = exfill(&sb.store, &["get", &format!("file:{hash}")]);

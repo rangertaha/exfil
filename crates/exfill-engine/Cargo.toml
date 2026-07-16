@@ -7,14 +7,19 @@ license.workspace = true
 [dependencies]
 exfill-core = { workspace = true }
 exfill-scan = { workspace = true }
+exfill-task = { workspace = true }
 exfill-store = { workspace = true }
+exfill-report = { workspace = true }
 anyhow = { workspace = true }
+async-trait = "0.1"
 blake3 = "1"
 ignore = "0.4"
 gethostname = "0.5"
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

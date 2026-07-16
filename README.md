@@ -30,9 +30,19 @@ machine.
 - **Incremental rescans** — a stat fast-path (size + mtime) skips re-reading
   unchanged files; re-scanned files have their findings replaced, never
   duplicated.
-- **Plugin architecture** — scanners, dataset sources, and reporters are traits
-  behind registries; regex + supply-chain scanning ship today, tree-sitter AST,
-  YARA, and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
+- **Archive-aware** — zip/jar/war/tar/tar.gz/gz are unpacked into virtual files
+  that flow through the same scanners (depth- and size-capped against bombs),
+  each linked to its container in the graph, so a secret inside `dist.zip →
+  app/.env` is found exactly as if it sat on disk.
+- **Plugin DAG orchestration** — plugins are tasks declaring the artifact kinds
+  they consume/produce (`Bytes → Ast → Matches`, `Bytes → Files`); a
+  topological scheduler wires them by dependency, so new analyzers slot in
+  without touching the engine. Run-level stages sequence fetch → scan → report.
+- **Multiple report formats** — `exfill analyze --format text|json|markdown`
+  renders the findings graph with severity tallies and a risk score.
+- **Plugin architecture** — scanners, dataset sources, and reporters are traits;
+  regex + supply-chain scanning and archive expansion ship today, tree-sitter
+  AST, YARA, and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.
 
 ## Install

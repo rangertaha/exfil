@@ -18,7 +18,6 @@
 //! e.g. `ua-parser-js`) needs version-aware IOC datasets and is tracked on
 //! the roadmap.
 
-use std::fs::Metadata;
 use std::path::Path;
 
 use anyhow::Result;
@@ -306,10 +305,7 @@ impl Scanner for SupplyChainScanner {
         "supply-chain"
     }
 
-    fn applies(&self, path: &Path, meta: &Metadata) -> bool {
-        if !meta.is_file() {
-            return false;
-        }
+    fn applies(&self, path: &Path) -> bool {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return false;
         };
@@ -349,13 +345,8 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
-        std::fs::write(&path, content).unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
         let scanner = SupplyChainScanner;
-        assert!(
-            scanner.applies(&path, &meta),
-            "scanner must apply to {name}"
-        );
+        assert!(scanner.applies(&path), "scanner must apply to {name}");
         let out = scanner.scan(&path, content.as_bytes()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         out
@@ -434,13 +425,9 @@ mod tests {
 
     #[test]
     fn does_not_apply_to_other_files() {
-        let dir = std::env::temp_dir().join(format!("exfill-supply-na-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("main.rs");
-        std::fs::write(&path, "fn main() {}").unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
-        assert!(!SupplyChainScanner.applies(&path, &meta));
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!SupplyChainScanner.applies(Path::new("src/main.rs")));
+        assert!(SupplyChainScanner.applies(Path::new("a/package.json")));
+        assert!(SupplyChainScanner.applies(Path::new("requirements-dev.txt")));
     }
 
     #[test]

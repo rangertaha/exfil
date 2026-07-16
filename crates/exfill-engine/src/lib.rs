@@ -25,21 +25,26 @@
 //! `tx`/`host` into that closure, so each thread owns its handles outright —
 //! the compiler will not let one thread borrow another's locals.
 
+pub mod run;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use exfill_core::{platform::ownership, FileMeta, Match};
-use exfill_scan::Registry;
 use exfill_store::{FileStat, ScanRecord, Store};
+use exfill_task::Pipeline;
 use ignore::{WalkBuilder, WalkState};
 
 /// How much of a file's head to inspect for NUL bytes when deciding whether
 /// it is binary (binary files are recorded but not scanned).
 const BINARY_SNIFF_LEN: usize = 8192;
+
+/// How deep archive-within-archive expansion recurses before stopping. Bounds
+/// work on hostile nested archives (a zip inside a zip inside a zip…).
+const MAX_EXPAND_DEPTH: u32 = 8;
 
 /// Result of one scan run.
 #[derive(Debug, Default, Clone)]
@@ -56,16 +61,20 @@ pub struct Summary {
     pub errors: u64,
 }
 
-/// One walked file: its metadata plus any matches.
+/// One processed file: its metadata, any matches, and — for files expanded
+/// from an archive — the content hash of the container they came from.
 struct FileResult {
     meta: FileMeta,
     matches: Vec<Match>,
+    /// `Some(container_hash)` when this file was expanded from an archive.
+    contained_in: Option<String>,
 }
 
-/// What a walker thread concluded about one file.
+/// What a walker thread concluded about one on-disk file. A single archive
+/// yields several results: the archive itself plus every file expanded from it.
 enum WalkOutcome {
-    /// Read, hashed, and scanned; needs persisting.
-    Scanned(FileResult),
+    /// Read, hashed, and scanned; the container plus any expanded descendants.
+    Scanned(Vec<FileResult>),
     /// Stat fast-path hit: size+mtime match the stored record, so the file
     /// was not read. The stored hash keeps it in this scan's `includes`.
     Unchanged { hash: String },
@@ -121,13 +130,13 @@ fn count_files(root: &Path, skip: Option<&Path>) -> u64 {
         .count() as u64
 }
 
-/// Walk `root` in parallel, scan every regular file with `registry`, and
-/// persist files, findings, and the scan record into `store`. Progress and
+/// Walk `root` in parallel, run the task `pipeline` over every regular file,
+/// and persist files, findings, and the scan record into `store`. Progress and
 /// matches stream over `events` when a sender is provided. `skip_dir` names
 /// a directory to exclude from the walk (the store itself).
 pub async fn scan(
     root: &Path,
-    registry: &Registry,
+    pipeline: &Pipeline,
     store: &Store,
     skip_dir: Option<&Path>,
     events: Option<mpsc::Sender<ScanEvent>>,
@@ -153,7 +162,7 @@ pub async fn scan(
     walker.run(|| {
         let tx = tx.clone();
         let host = host.clone();
-        let registry = &registry;
+        let pipeline = &pipeline;
         let events = events.clone();
         let index = index.clone();
         Box::new(move |entry| {
@@ -170,14 +179,16 @@ pub async fn scan(
             if !ft.is_file() {
                 return WalkState::Continue;
             }
-            let outcome = match process_file(entry.path(), &host, registry, &index) {
+            let outcome = match process_file(entry.path(), &host, pipeline, &index) {
                 Ok(outcome) => outcome,
                 Err(_) => WalkOutcome::Error,
             };
             if let Some(ev) = &events {
-                if let WalkOutcome::Scanned(res) = &outcome {
-                    for m in &res.matches {
-                        let _ = ev.send(ScanEvent::Match(m.clone()));
+                if let WalkOutcome::Scanned(results) = &outcome {
+                    for res in results {
+                        for m in &res.matches {
+                            let _ = ev.send(ScanEvent::Match(m.clone()));
+                        }
                     }
                 }
                 if !matches!(outcome, WalkOutcome::Error) {
@@ -197,17 +208,22 @@ pub async fn scan(
     let mut hashes = Vec::new();
     while let Ok(res) = rx.recv() {
         match res {
-            WalkOutcome::Scanned(fr) => {
-                summary.files += 1;
-                summary.matches += fr.matches.len() as u64;
-                store.upsert_file(&fr.meta).await?;
-                // Replace, don't append: stale findings from earlier scans of
-                // this content are removed before the fresh ones go in.
-                store.clear_findings(&fr.meta.hash).await?;
-                for m in &fr.matches {
-                    store.add_finding(m, &fr.meta.hash).await?;
+            WalkOutcome::Scanned(results) => {
+                for fr in results {
+                    summary.files += 1;
+                    summary.matches += fr.matches.len() as u64;
+                    store.upsert_file(&fr.meta).await?;
+                    // Replace, don't append: stale findings from earlier scans
+                    // of this content are removed before the fresh ones go in.
+                    store.clear_findings(&fr.meta.hash).await?;
+                    for m in &fr.matches {
+                        store.add_finding(m, &fr.meta.hash).await?;
+                    }
+                    if let Some(container) = &fr.contained_in {
+                        store.relate_contained_in(&fr.meta.hash, container).await?;
+                    }
+                    hashes.push(fr.meta.hash);
                 }
-                hashes.push(fr.meta.hash);
             }
             WalkOutcome::Unchanged { hash } => {
                 summary.files += 1;
@@ -238,7 +254,7 @@ pub async fn scan(
 fn process_file(
     path: &Path,
     host: &str,
-    registry: &Registry,
+    pipeline: &Pipeline,
     index: &HashMap<String, FileStat>,
 ) -> Result<WalkOutcome> {
     let md = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
@@ -274,24 +290,98 @@ fn process_file(
         group: own.group,
         size: md.len(),
         mtime,
-        hash,
+        hash: hash.clone(),
     };
+
+    // The container file plus everything expanded out of it (recursively).
+    let mut results = Vec::new();
+    let (matches, expanded) = run_pipeline(path, content, pipeline);
+    results.push(FileResult {
+        meta,
+        matches,
+        contained_in: None,
+    });
+    expand_into(&hash, expanded, host, pipeline, 1, &mut results);
+
+    Ok(WalkOutcome::Scanned(results))
+}
+
+/// Run the pipeline over one file's bytes, skipping binary content. Returns
+/// `(matches, expanded)` — the archive expander's output feeds re-processing.
+fn run_pipeline(
+    path: &Path,
+    content: Vec<u8>,
+    pipeline: &Pipeline,
+) -> (Vec<Match>, Vec<exfill_core::VirtualFile>) {
+    // An archive is a container: expand it, but never content-scan its raw
+    // bytes (that would match on compression artifacts and produce garbage
+    // findings). Its inner files are scanned individually after expansion.
+    let is_archive = pipeline
+        .tasks()
+        .iter()
+        .any(|t| t.provides() == exfill_task::ArtifactKind::Files && t.applies(path));
+    if is_archive {
+        let expanded = match pipeline.run_file(path, content) {
+            Ok(out) => out.expanded,
+            Err(_) => Vec::new(),
+        };
+        return (Vec::new(), expanded);
+    }
 
     // Binary files get a record (full VFS coverage) but are not scanned.
     let head = &content[..content.len().min(BINARY_SNIFF_LEN)];
-    let matches = if head.contains(&0) {
-        Vec::new()
-    } else {
-        registry.scan_file(path, &md, &content)?
-    };
+    if head.contains(&0) {
+        return (Vec::new(), Vec::new());
+    }
+    match pipeline.run_file(path, content) {
+        Ok(out) => (out.matches, out.expanded),
+        Err(_) => (Vec::new(), Vec::new()),
+    }
+}
 
-    Ok(WalkOutcome::Scanned(FileResult { meta, matches }))
+/// Turn expanded virtual files into [`FileResult`]s, recursing into nested
+/// archives up to [`MAX_EXPAND_DEPTH`]. Each result links to its container.
+fn expand_into(
+    container_hash: &str,
+    expanded: Vec<exfill_core::VirtualFile>,
+    host: &str,
+    pipeline: &Pipeline,
+    depth: u32,
+    out: &mut Vec<FileResult>,
+) {
+    if depth > MAX_EXPAND_DEPTH {
+        return;
+    }
+    for vf in expanded {
+        let hash = blake3::hash(&vf.content).to_hex().to_string();
+        let size = vf.content.len() as u64;
+        let vpath = PathBuf::from(&vf.path);
+        let (matches, nested) = run_pipeline(&vpath, vf.content, pipeline);
+        out.push(FileResult {
+            meta: FileMeta {
+                path: vf.path.clone(),
+                abs: vf.path,
+                host: host.to_string(),
+                mode: 0,
+                uid: 0,
+                gid: 0,
+                user: String::new(),
+                group: String::new(),
+                size,
+                mtime: String::new(),
+                hash: hash.clone(),
+            },
+            matches,
+            contained_in: Some(container_hash.to_string()),
+        });
+        expand_into(&hash, nested, host, pipeline, depth + 1, out);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exfill_scan::{builtin_rules, RegexScanner};
+    use exfill_scan::default_pipeline;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn scans_a_tree_and_persists_findings() {
@@ -307,12 +397,12 @@ mod tests {
         std::fs::write(tree.join("sub/leak.env"), "AWS_KEY=AKIA0123456789ABCDEF\n").unwrap();
         std::fs::write(tree.join("blob.bin"), [0u8, 159, 146, 150, 65]).unwrap();
 
-        let registry = Registry::new().with(Box::new(RegexScanner::new(builtin_rules()).unwrap()));
+        let pipeline = default_pipeline().unwrap();
         let store = Store::open_findings(&store_dir).await.unwrap();
 
         // With an event channel attached, the scan reports its progress live.
         let (ev_tx, ev_rx) = mpsc::channel();
-        let summary = scan(&tree, &registry, &store, Some(&store_dir), Some(ev_tx))
+        let summary = scan(&tree, &pipeline, &store, Some(&store_dir), Some(ev_tx))
             .await
             .unwrap();
         let events: Vec<ScanEvent> = ev_rx.try_iter().collect();
@@ -352,7 +442,7 @@ mod tests {
 
         // Rescan without touching anything: every file takes the stat
         // fast-path and findings do NOT duplicate.
-        let second = scan(&tree, &registry, &store, Some(&store_dir), None)
+        let second = scan(&tree, &pipeline, &store, Some(&store_dir), None)
             .await
             .unwrap();
         assert_eq!(second.files, 3);
@@ -367,7 +457,7 @@ mod tests {
             "AWS_KEY=AKIA0123456789ABCDEF\ntoken = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"\n",
         )
         .unwrap();
-        let third = scan(&tree, &registry, &store, Some(&store_dir), None)
+        let third = scan(&tree, &pipeline, &store, Some(&store_dir), None)
             .await
             .unwrap();
         assert_eq!(third.unchanged, 2, "only the modified file is re-read");
@@ -400,9 +490,9 @@ mod tests {
         std::fs::write(&locked, "secret\n").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let registry = Registry::new().with(Box::new(RegexScanner::new(builtin_rules()).unwrap()));
+        let pipeline = default_pipeline().unwrap();
         let store = Store::open_findings(&base.join("store")).await.unwrap();
-        let summary = scan(&tree, &registry, &store, None, None).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, None, None).await.unwrap();
 
         if nix_is_root() {
             // root reads everything; the error branch can't trigger.
@@ -424,5 +514,58 @@ mod tests {
                 m.uid() == 0
             })
             .unwrap_or(false)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scans_inside_archives_and_links_container() {
+        use std::io::Write;
+
+        let base =
+            std::env::temp_dir().join(format!("exfill-engine-test-zip-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+
+        // A zip containing a secret; the secret is not present anywhere on disk.
+        let mut zip_bytes = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+            w.start_file("app/.env", opts).unwrap();
+            w.write_all(b"AWS_KEY=AKIA0123456789ABCDEF\n").unwrap();
+            w.finish().unwrap();
+        }
+        std::fs::write(tree.join("dist.zip"), &zip_bytes).unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // The archive plus its one inner file are both recorded.
+        assert_eq!(summary.files, 2, "archive + inner file");
+        // The secret inside the archive is found.
+        let found = store.search_findings("aws-access-key-id").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].path.contains("dist.zip!"), "{:?}", found[0].path);
+
+        // The inner file is linked to its container via contained_in.
+        let inner_hash = blake3::hash(b"AWS_KEY=AKIA0123456789ABCDEF\n")
+            .to_hex()
+            .to_string();
+        let container_hash = blake3::hash(&zip_bytes).to_hex().to_string();
+        let mut res = store
+            .db()
+            .query(
+                "SELECT count() AS n FROM contained_in \
+                 WHERE in = type::thing('file', $i) AND out = type::thing('file', $c) GROUP ALL",
+            )
+            .bind(("i", inner_hash))
+            .bind(("c", container_hash))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows[0]["n"], 1, "inner file linked to container");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

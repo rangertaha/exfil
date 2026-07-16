@@ -311,8 +311,8 @@ impl App {
                 let store = self.store.clone();
                 let store_dir = self.store_dir.clone();
                 let task = handle.spawn(async move {
-                    let registry = exfill_scan::default_registry()?;
-                    exfill_engine::scan(&root, &registry, &store, Some(&store_dir), Some(tx)).await
+                    let pipeline = exfill_scan::default_pipeline()?;
+                    exfill_engine::scan(&root, &pipeline, &store, Some(&store_dir), Some(tx)).await
                 });
                 self.findings.clear();
                 self.list.select(None);

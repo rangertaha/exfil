@@ -55,6 +55,7 @@ DEFINE TABLE IF NOT EXISTS flagged_by TYPE RELATION FROM finding TO rule;
 DEFINE TABLE IF NOT EXISTS from_dataset TYPE RELATION FROM rule TO dataset;
 DEFINE TABLE IF NOT EXISTS from_source TYPE RELATION FROM dataset TO source;
 DEFINE TABLE IF NOT EXISTS includes TYPE RELATION FROM scan TO file;
+DEFINE TABLE IF NOT EXISTS contained_in TYPE RELATION FROM file TO file;
 
 -- lookup indexes for the common queries (search by cwe/severity, path)
 DEFINE INDEX IF NOT EXISTS finding_cwe ON finding FIELDS cwe;
@@ -155,6 +156,23 @@ impl Store {
         Ok(())
     }
 
+    /// Relate an expanded file to the container (archive) it came from, so the
+    /// graph records that `inner` lives inside `container`. Idempotent.
+    pub async fn relate_contained_in(&self, inner_hash: &str, container_hash: &str) -> Result<()> {
+        self.db
+            .query(
+                "DELETE contained_in WHERE in = $inner AND out = $container; \
+                 RELATE $inner->contained_in->$container;",
+            )
+            .bind(("inner", RecordId::from(("file", inner_hash))))
+            .bind(("container", RecordId::from(("file", container_hash))))
+            .await
+            .context("relate contained_in")?
+            .check()
+            .context("contained_in statement failed")?;
+        Ok(())
+    }
+
     /// Create a finding record and relate it to the file it was found in.
     pub async fn add_finding(&self, m: &Match, file_hash: &str) -> Result<()> {
         self.db
@@ -216,6 +234,21 @@ impl Store {
         }
         let rows: Vec<Match> = q.await.context("search findings")?.take(0)?;
         Ok(rows)
+    }
+
+    /// Whole-store counts for reports: `(files, scans)`.
+    pub async fn counts(&self) -> Result<(u64, u64)> {
+        let mut res = self
+            .db
+            .query("SELECT count() AS n FROM file GROUP ALL")
+            .query("SELECT count() AS n FROM scan GROUP ALL")
+            .await
+            .context("count store")?;
+        let files: Vec<serde_json::Value> = res.take(0)?;
+        let scans: Vec<serde_json::Value> = res.take(1)?;
+        let n =
+            |rows: Vec<serde_json::Value>| rows.first().and_then(|r| r["n"].as_u64()).unwrap_or(0);
+        Ok((n(files), n(scans)))
     }
 
     /// Fetch one record by full id (`table:key`) as JSON.

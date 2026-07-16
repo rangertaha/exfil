@@ -1,10 +1,11 @@
 //! Scanners: pluggable analyzers that turn file content into [`Match`]es.
 //!
 //! A [`Scanner`] decides which files it [`applies`](Scanner::applies) to and
-//! produces matches for the ones it handles. Scanners are registered in a
-//! [`Registry`]; the engine reads each file once and offers its bytes to every
-//! applicable scanner. This crate ships the [`RegexScanner`]; AST, taint, and
-//! YARA scanners join the registry as later milestones land.
+//! produces matches for the ones it handles. Each scanner is wrapped in a
+//! [`ScanTask`] (its `Bytes → Matches` edge) and placed in the task
+//! [`Pipeline`](exfill_task::Pipeline), which the engine drives per file. This
+//! crate ships the [`RegexScanner`], the [`SupplyChainScanner`], and the
+//! archive [`ArchiveExpander`]; AST, taint, and YARA scanners join later.
 //!
 //! # Rust notes
 //!
@@ -17,23 +18,23 @@
 //!   implementing `Scanner`, decided at runtime. `dyn` means calls are
 //!   dispatched through a vtable (like a virtual method); `Box` puts the
 //!   value on the heap because different scanners have different sizes.
-//!   The registry stores a `Vec<Box<dyn Scanner>>` — a list of mixed scanner
-//!   types behind one interface.
 //! - `Send + Sync` on the trait declares that scanners may be shared across
 //!   threads — required because the engine scans files in parallel. The
 //!   compiler *proves* this; a scanner holding non-thread-safe state simply
-//!   won't compile into the registry.
+//!   won't compile into the pipeline.
 
 pub mod builtin;
+pub mod expand;
 pub mod supply;
 pub use builtin::builtin_rules;
+pub use expand::ArchiveExpander;
 pub use supply::SupplyChainScanner;
 
-use std::fs::Metadata;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use exfill_core::{Match, Rule};
+use exfill_task::{Artifact, ArtifactKind, FileTask, Pipeline};
 use regex::Regex;
 
 /// A pluggable analyzer over a single file's bytes.
@@ -41,71 +42,55 @@ pub trait Scanner: Send + Sync {
     /// Stable identifier used in config and reports.
     fn name(&self) -> &str;
 
-    /// Whether this scanner wants to look at `path`. The engine still only reads
-    /// each file once; this just gates which scanners receive the bytes.
-    fn applies(&self, path: &Path, meta: &Metadata) -> bool;
+    /// Whether this scanner wants to look at `path`, by name/extension. The
+    /// engine only offers actual files (real or expanded from an archive), so
+    /// this is purely content-type gating, not a file-vs-directory check.
+    fn applies(&self, path: &Path) -> bool;
 
     /// Analyze `content` (the bytes of `path`) and return any matches.
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>>;
 }
 
-/// An ordered collection of scanners the engine drives per file.
-///
-/// `#[derive(Default)]` generates `Registry::default()` returning an empty
-/// registry (an empty `Vec`), which `new()` simply delegates to.
-#[derive(Default)]
-pub struct Registry {
-    scanners: Vec<Box<dyn Scanner>>,
-}
+/// Adapts a [`Scanner`] (bytes → matches) into a [`FileTask`] in the pipeline
+/// DAG. Scanners keep their simple trait; this is the `Bytes → Matches` edge.
+pub struct ScanTask<S: Scanner>(pub S);
 
-impl Registry {
-    /// An empty registry.
-    pub fn new() -> Self {
-        Self::default()
+impl<S: Scanner> FileTask for ScanTask<S> {
+    fn name(&self) -> &str {
+        self.0.name()
     }
 
-    /// Register a scanner, returning `self` for chaining.
-    ///
-    /// Taking `mut self` (by value, not by reference) *consumes* the registry
-    /// and hands back the modified one — the builder pattern:
-    /// `Registry::new().with(a).with(b)`.
-    pub fn with(mut self, scanner: Box<dyn Scanner>) -> Self {
-        self.scanners.push(scanner);
-        self
+    fn needs(&self) -> ArtifactKind {
+        ArtifactKind::Bytes
     }
 
-    /// Register a scanner in place.
-    pub fn register(&mut self, scanner: Box<dyn Scanner>) {
-        self.scanners.push(scanner);
+    fn provides(&self) -> ArtifactKind {
+        ArtifactKind::Matches
     }
 
-    /// The registered scanners.
-    pub fn scanners(&self) -> &[Box<dyn Scanner>] {
-        &self.scanners
+    fn applies(&self, path: &Path) -> bool {
+        self.0.applies(path)
     }
 
-    /// Run every applicable scanner over one file's bytes, concatenating their
-    /// matches. A single scanner erroring aborts the file.
-    pub fn scan_file(&self, path: &Path, meta: &Metadata, content: &[u8]) -> Result<Vec<Match>> {
-        let mut out = Vec::new();
-        for s in &self.scanners {
-            if s.applies(path, meta) {
-                out.extend(
-                    s.scan(path, content)
-                        .with_context(|| format!("scanner {:?} on {}", s.name(), path.display()))?,
-                );
-            }
-        }
-        Ok(out)
+    fn run(&self, path: &Path, input: &Artifact) -> Result<Artifact> {
+        let Artifact::Bytes(bytes) = input else {
+            anyhow::bail!("{}: expected Bytes input", self.0.name());
+        };
+        Ok(Artifact::Matches(self.0.scan(path, bytes)?))
     }
 }
 
-/// The standard scanner lineup: regex over the built-in security ruleset plus
+/// The standard plugin lineup as a pipeline: an archive expander (so scanners
+/// see files inside archives), regex over the built-in security ruleset, and
 /// supply-chain manifest checks. The CLI and TUI both scan with this.
-pub fn default_registry() -> Result<Registry> {
-    Ok(Registry::new()
-        .with(Box::new(RegexScanner::new(builtin_rules())?))
-        .with(Box::new(SupplyChainScanner)))
+/// Additional tasks (AST, taint) register here and the scheduler orders them by
+/// their declared dependencies.
+pub fn default_pipeline() -> Result<Pipeline> {
+    Pipeline::new(vec![
+        Box::new(ArchiveExpander::default()),
+        Box::new(ScanTask(RegexScanner::new(builtin_rules())?)),
+        Box::new(ScanTask(SupplyChainScanner)),
+    ])
 }
 
 /// A compiled rule: its pattern plus the metadata carried onto every match.
@@ -142,10 +127,10 @@ impl Scanner for RegexScanner {
         "regex"
     }
 
-    fn applies(&self, _path: &Path, meta: &Metadata) -> bool {
-        // Regex scanning targets regular files; content-type filtering (skip
-        // binaries) is applied by the engine before handing over bytes.
-        meta.is_file()
+    fn applies(&self, _path: &Path) -> bool {
+        // Regex scanning targets any text file; binary content is filtered out
+        // by the engine before bytes are handed over.
+        true
     }
 
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>> {
@@ -231,14 +216,14 @@ mod tests {
         assert!(matches.is_empty());
     }
 
-    /// A scanner that always errors, for exercising registry error handling.
+    /// A scanner that always errors, for exercising pipeline error handling.
     struct FailingScanner;
 
     impl Scanner for FailingScanner {
         fn name(&self) -> &str {
             "failing"
         }
-        fn applies(&self, _p: &Path, _m: &Metadata) -> bool {
+        fn applies(&self, _p: &Path) -> bool {
             true
         }
         fn scan(&self, _p: &Path, _c: &[u8]) -> Result<Vec<Match>> {
@@ -253,7 +238,7 @@ mod tests {
         fn name(&self) -> &str {
             "never"
         }
-        fn applies(&self, _p: &Path, _m: &Metadata) -> bool {
+        fn applies(&self, _p: &Path) -> bool {
             false
         }
         fn scan(&self, _p: &Path, _c: &[u8]) -> Result<Vec<Match>> {
@@ -261,47 +246,39 @@ mod tests {
         }
     }
 
-    fn file_fixture(name: &str) -> (std::path::PathBuf, Metadata) {
-        let path =
-            std::env::temp_dir().join(format!("exfill-scan-fixture-{}-{name}", std::process::id()));
-        std::fs::write(&path, "key = AKIA0123456789ABCDEF\n").unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
-        (path, meta)
-    }
-
     #[test]
-    fn registry_runs_applicable_scanners_and_skips_others() {
-        let (path, meta) = file_fixture("applies");
-        let mut registry = Registry::new().with(Box::new(
-            RegexScanner::new(vec![rule("aws-key", r"AKIA[0-9A-Z]{16}")]).unwrap(),
-        ));
-        registry.register(Box::new(NeverApplies));
-        assert_eq!(registry.scanners().len(), 2);
-        assert_eq!(registry.scanners()[0].name(), "regex");
-
-        let matches = registry
-            .scan_file(&path, &meta, &std::fs::read(&path).unwrap())
+    fn pipeline_runs_applicable_scanners_and_skips_others() {
+        let pipeline = Pipeline::new(vec![
+            Box::new(ScanTask(
+                RegexScanner::new(vec![rule("aws-key", r"AKIA[0-9A-Z]{16}")]).unwrap(),
+            )),
+            Box::new(ScanTask(NeverApplies)),
+        ])
+        .unwrap();
+        let out = pipeline
+            .run_file(Path::new("f"), b"key = AKIA0123456789ABCDEF\n".to_vec())
             .unwrap();
-        assert_eq!(matches.len(), 1);
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(out.matches.len(), 1);
+        assert_eq!(out.matches[0].rule, "aws-key");
     }
 
     #[test]
-    fn registry_error_names_the_scanner_and_file() {
-        let (path, meta) = file_fixture("error");
-        let registry = Registry::new().with(Box::new(FailingScanner));
-        let err = registry.scan_file(&path, &meta, b"x").unwrap_err();
+    fn pipeline_error_names_the_scanner_and_file() {
+        let pipeline = Pipeline::new(vec![Box::new(ScanTask(FailingScanner))]).unwrap();
+        let err = pipeline
+            .run_file(Path::new("victim.txt"), b"x".to_vec())
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("failing") && msg.contains("boom"), "{msg}");
-        let _ = std::fs::remove_file(&path);
+        assert!(msg.contains("victim.txt"), "{msg}");
     }
 
     #[test]
-    fn regex_scanner_skips_non_files() {
-        let scanner = RegexScanner::new(vec![]).unwrap();
-        let dir_meta = std::fs::metadata(std::env::temp_dir()).unwrap();
-        assert!(!scanner.applies(Path::new("/tmp"), &dir_meta));
-        assert_eq!(scanner.name(), "regex");
-        assert_eq!(scanner.rule_count(), 0);
+    fn default_pipeline_builds_and_names_are_stable() {
+        let pipeline = default_pipeline().unwrap();
+        let names: Vec<&str> = pipeline.tasks().iter().map(|t| t.name()).collect();
+        // Expander must precede the scanners so archive contents get scanned.
+        assert_eq!(names.first(), Some(&"archive-expand"));
+        assert!(names.contains(&"regex") && names.contains(&"supply-chain"));
     }
 }

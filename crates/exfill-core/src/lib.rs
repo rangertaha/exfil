@@ -117,6 +117,18 @@ pub struct Match {
     pub cve: Option<String>,
 }
 
+/// A file produced by an expander task rather than read from disk — e.g. an
+/// entry unpacked from an archive. It carries its own bytes and a display path
+/// (typically `archive.zip!inner/file.txt`) so downstream tasks treat it like
+/// any other file.
+#[derive(Debug, Clone)]
+pub struct VirtualFile {
+    /// Display path, usually `<container>!<inner path>`.
+    pub path: String,
+    /// The entry's decompressed content.
+    pub content: Vec<u8>,
+}
+
 /// One element of a file's AST: a declaration, import, or call site.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {

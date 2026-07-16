@@ -61,7 +61,13 @@ enum Command {
     /// Emit the findings graph.
     Graph { query: Option<String> },
     /// Analyze the whole findings graph and render a report.
-    Analyze { query: Option<String> },
+    Analyze {
+        /// Optional finding filter (same syntax as `search`).
+        query: Option<String>,
+        /// Report format: text, json, or markdown.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
     /// Run the offline LLM enrichment pass over the stored graph.
     Enrich,
     /// Show the resolved config path and contents.
@@ -86,6 +92,7 @@ async fn main() -> Result<()> {
         Command::Config => cmd_config(cli.config.as_deref())?,
         Command::Scan { path } => cmd_scan(&store_dir, path).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
+        Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
         Command::Rules => cmd_rules()?,
         Command::Clean => cmd_clean(&store_dir)?,
@@ -118,12 +125,12 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
 /// gauge on a terminal, plain match lines when piped.
 async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
-    let registry = exfill_scan::default_registry()?;
+    let pipeline = exfill_scan::default_pipeline()?;
     let store = exfill_store::Store::open_findings(store_dir).await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
-    let result = exfill_engine::scan(&target, &registry, &store, Some(store_dir), Some(tx)).await;
+    let result = exfill_engine::scan(&target, &pipeline, &store, Some(store_dir), Some(tx)).await;
     // The engine dropped its sender, so the renderer is finishing; wait for it
     // before printing the summary under the (now final) progress bar.
     let _ = renderer.join();
@@ -147,6 +154,22 @@ async fn cmd_search(store_dir: &std::path::Path, query: Option<String>) -> Resul
     }
     println!("{} finding(s)", findings.len());
     Ok(())
+}
+
+/// Render a report over the stored findings graph in the chosen format.
+async fn cmd_analyze(
+    store_dir: &std::path::Path,
+    query: Option<String>,
+    format: &str,
+) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    exfill_engine::run::analyze(
+        store_dir,
+        query.as_deref().unwrap_or(""),
+        format,
+        &mut stdout,
+    )
+    .await
 }
 
 /// Print one stored record (`table:key`) as JSON.

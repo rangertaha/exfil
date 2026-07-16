@@ -42,17 +42,40 @@ This document supersedes the Go prototype and the earlier Go plan.
 exfill/
   Cargo.toml                 # workspace
   crates/
-    exfill-core/     domain types: FileMeta, Symbol, Rule, Dataset, Match, Finding, Severity
+    exfill-core/     domain types: FileMeta, Symbol, Rule, Dataset, Match, VirtualFile, Severity
+    exfill-task/     ✅ plugin DAG: Artifact/ArtifactKind, FileTask, Pipeline (toposort)
     exfill-store/    SurrealDB graph store: schema, upsert, queries, DAG-CBOR export
-    exfill-scan/     Scanner trait + registry: regex, ast (tree-sitter), taint, yara
+    exfill-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand; ast/taint/yara planned
     exfill-source/   Source trait + registry: builtin, file, http (reqwest)
-    exfill-report/   Reporter trait + registry: text, json, markdown
+    exfill-report/   ✅ Reporter trait: text, json, markdown
     exfill-llm/      Llm trait + Candle engine + model management (no-op when absent)
-    exfill-config/   HCL config (hcl-rs) with embedded default + per-plugin decode
+    exfill-config/   ✅ TOML config with embedded default + per-plugin decode
     exfill-mcp/      MCP server (stdio JSON-RPC; `rmcp` or hand-rolled)
-    exfill-engine/   orchestration: walk, workers, incremental, commit, enrich
-  crates/exfill-cli/ (bin "exfill")  clap commands wiring the above
+    exfill-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
+  crates/exfill-cli/ (bin "exfill")  ✅ clap commands + progress + mutt-style TUI
 ```
+
+## Plugin orchestration (implemented)
+
+Two levels of dependency-ordered orchestration replace the old fixed
+"read then scan" sequence:
+
+- **Per-file DAG** (`exfill-task`) — plugins are `FileTask`s declaring the
+  `ArtifactKind` they consume/produce (`Bytes`, `Files`, `Ast`, `Matches`). A
+  `Pipeline` topologically sorts them (Kahn's algorithm) and fails fast on
+  cycles or missing producers. This is how the archive expander (`Bytes →
+  Files`) runs before scanners, and how a future AST scanner (`Bytes → Ast`)
+  will slot in ahead of taint (`Ast → Matches`) automatically.
+- **Data retrieval / unpack / expand** — the `archive-expand` task turns a
+  container's bytes into `VirtualFile`s; the engine re-runs the pipeline over
+  them (depth-capped, zip-bomb-bounded) and links each to its container with a
+  `contained_in` graph edge, so scanners see files inside zip/jar/tar/gz with
+  no changes.
+- **Run-level stages** (`exfill-engine::run`) — `RunStage`s sequence a whole
+  invocation **fetch → scan → report**, sharing the graph through `RunCtx` and
+  communicating *through* it (scan writes findings, report reads them). Fetch
+  is a declared stub until sources (M2) land; reporting is live via
+  `exfill-report` (`exfill analyze --format text|json|markdown`).
 
 Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 

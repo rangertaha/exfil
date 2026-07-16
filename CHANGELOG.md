@@ -22,6 +22,16 @@ and this project adheres to
   typosquat detection, npm install-hook analysis, insecure (http) sources.
 - Incremental rescans: stat fast-path skips unchanged files; findings are
   replaced on rescan instead of duplicated.
+- Plugin orchestration DAG (`exfill-task`): typed artifacts, `FileTask`
+  needs/provides, topologically-sorted `Pipeline` with cycle/missing-producer
+  detection. Scanners migrated onto it.
+- Archive expansion: `archive-expand` task unpacks zip/jar/war/tar/tar.gz/gz
+  into virtual files that flow through the pipeline (depth- and size-capped),
+  linked to their container by a `contained_in` graph edge.
+- Reporters (`exfill-report`): text, json, and markdown; `exfill analyze
+  [query] --format <fmt>` renders the findings graph.
+- Run-level orchestration (`exfill-engine::run`): `RunStage` sequence
+  fetch → scan → report sharing the graph through `RunCtx`.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
 - Ratatui progress gauge for `scan` (plain line output when piped).
 - Mutt-style `exfill tui`: findings index + pager, `/` limit, `:` commands,
