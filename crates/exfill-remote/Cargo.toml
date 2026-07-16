@@ -1,0 +1,16 @@
+[package]
+name = "exfill-remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfill-engine = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true }
+russh = "0.45"
+russh-sftp = "2"
+
+[lints]
+workspace = true

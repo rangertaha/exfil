@@ -61,3 +61,6 @@ and this project adheres to
 - ClamAV-style scanning (`exfill-scan::clamav`): pure-Rust matcher for hash
   signatures (.hdb/.hsb) and literal body signatures (.ndb) via Aho–Corasick,
   loaded from `[plugins.clamav]`.
+- Remote scanning over SSH/SFTP (`exfill-remote`, pure-Rust russh):
+  `exfill scan-remote user@host:/path` walks a host and runs the full
+  pipeline on its files (RemoteFs trait + engine::scan_remote).

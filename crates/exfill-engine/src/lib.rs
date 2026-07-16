@@ -257,6 +257,123 @@ pub async fn scan(
     Ok(summary)
 }
 
+/// A remote filesystem the engine can scan: enumerate files under a root and
+/// read their bytes. Implemented over SSH/SFTP (see the `exfill-remote` crate)
+/// or in memory for tests. This is how a scanner runs against another host —
+/// the scanners never know the bytes came from the network.
+#[async_trait::async_trait]
+pub trait RemoteFs: Send + Sync {
+    /// The host these files live on (stored on every file record).
+    fn host(&self) -> &str;
+
+    /// List the regular files under `root` (recursively), as remote paths.
+    async fn list(&self, root: &str) -> Result<Vec<String>>;
+
+    /// Read one remote file's bytes.
+    async fn read(&self, path: &str) -> Result<Vec<u8>>;
+}
+
+/// Scan a remote host's files with `pipeline`, persisting file and finding
+/// records (tagged with the remote host) into `store`. Archives expand and all
+/// scanners run exactly as for a local scan; there is no incremental fast-path
+/// (every remote file is read). Files that fail to read are counted, not fatal.
+pub async fn scan_remote(
+    fs: &dyn RemoteFs,
+    root: &str,
+    pipeline: &Pipeline,
+    store: &Store,
+    events: Option<mpsc::Sender<ScanEvent>>,
+) -> Result<Summary> {
+    let host = fs.host().to_string();
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let paths = fs.list(root).await.context("list remote files")?;
+    if let Some(ev) = &events {
+        let _ = ev.send(ScanEvent::Total(paths.len() as u64));
+    }
+
+    let mut summary = Summary::default();
+    let mut hashes = Vec::new();
+    for path in paths {
+        let content = match fs.read(&path).await {
+            Ok(c) => c,
+            Err(_) => {
+                summary.errors += 1;
+                continue;
+            }
+        };
+        let hash = blake3::hash(&content).to_hex().to_string();
+        let meta = FileMeta {
+            path: path.clone(),
+            abs: format!("{host}:{path}"),
+            host: host.clone(),
+            mode: 0,
+            uid: 0,
+            gid: 0,
+            user: String::new(),
+            group: String::new(),
+            size: content.len() as u64,
+            mtime: String::new(),
+            hash: hash.clone(),
+        };
+
+        let mut results = Vec::new();
+        let processed = run_pipeline(Path::new(&path), content, pipeline);
+        results.push(FileResult {
+            meta,
+            matches: processed.matches,
+            ast: processed.ast,
+            contained_in: None,
+        });
+        expand_into(&hash, processed.expanded, &host, pipeline, 1, &mut results);
+
+        for fr in results {
+            summary.files += 1;
+            summary.matches += fr.matches.len() as u64;
+            if let Some(ev) = &events {
+                for m in &fr.matches {
+                    let _ = ev.send(ScanEvent::Match(m.clone()));
+                }
+            }
+            store.upsert_file(&fr.meta).await?;
+            store.clear_findings(&fr.meta.hash).await?;
+            for m in &fr.matches {
+                store.add_finding(m, &fr.meta.hash).await?;
+            }
+            if let Some(ast) = &fr.ast {
+                if !ast.symbols.is_empty() {
+                    let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
+                    store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
+                }
+            }
+            if let Some(container) = &fr.contained_in {
+                store.relate_contained_in(&fr.meta.hash, container).await?;
+            }
+            hashes.push(fr.meta.hash);
+        }
+        if let Some(ev) = &events {
+            let _ = ev.send(ScanEvent::FileDone);
+        }
+    }
+
+    store
+        .commit_scan(
+            &ScanRecord {
+                root: format!("{host}:{root}"),
+                host,
+                started_at,
+                files: summary.files,
+                matches: summary.matches,
+            },
+            &hashes,
+        )
+        .await?;
+    Ok(summary)
+}
+
 /// Process one regular file: stat it, and either take the fast path (size and
 /// mtime match the stored record — reuse it unread) or read, hash, and scan.
 fn process_file(
@@ -524,6 +641,105 @@ mod tests {
         }
 
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An in-memory RemoteFs for testing scan_remote without a network.
+    struct MemoryFs {
+        host: String,
+        files: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteFs for MemoryFs {
+        fn host(&self) -> &str {
+            &self.host
+        }
+        async fn list(&self, root: &str) -> Result<Vec<String>> {
+            Ok(self
+                .files
+                .keys()
+                .filter(|p| p.starts_with(root))
+                .cloned()
+                .collect())
+        }
+        async fn read(&self, path: &str) -> Result<Vec<u8>> {
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no such remote file {path}"))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scan_remote_finds_and_tags_host() {
+        let base = std::env::temp_dir().join(format!("exfill-remote-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            "/srv/app/.env".to_string(),
+            b"AWS=AKIA0123456789ABCDEF\n".to_vec(),
+        );
+        files.insert("/srv/app/readme.md".to_string(), b"nothing\n".to_vec());
+        let fs = MemoryFs {
+            host: "prod-web-1".into(),
+            files,
+        };
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base).await.unwrap();
+        let summary = scan_remote(&fs, "/srv", &pipeline, &store, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.files, 2);
+        assert_eq!(summary.matches, 1);
+
+        // The finding is recorded, tagged with the remote host on its file.
+        let found = store.search_findings("aws-access-key-id").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "/srv/app/.env");
+        let hash = blake3::hash(b"AWS=AKIA0123456789ABCDEF\n")
+            .to_hex()
+            .to_string();
+        let rec = store
+            .get_record(&format!("file:{hash}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec["host"], "prod-web-1");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scan_remote_counts_unreadable_files() {
+        let base = std::env::temp_dir().join(format!("exfill-remote-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // list() reports a file that read() then fails on.
+        struct FlakyFs;
+        #[async_trait::async_trait]
+        impl RemoteFs for FlakyFs {
+            fn host(&self) -> &str {
+                "host"
+            }
+            async fn list(&self, _root: &str) -> Result<Vec<String>> {
+                Ok(vec!["/a".into(), "/b".into()])
+            }
+            async fn read(&self, path: &str) -> Result<Vec<u8>> {
+                if path == "/a" {
+                    Ok(b"ok\n".to_vec())
+                } else {
+                    anyhow::bail!("permission denied")
+                }
+            }
+        }
+        let store = Store::open_findings(&base).await.unwrap();
+        let pipeline = default_pipeline().unwrap();
+        let summary = scan_remote(&FlakyFs, "/", &pipeline, &store, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.files, 1);
+        assert_eq!(summary.errors, 1);
         let _ = std::fs::remove_dir_all(&base);
     }
 

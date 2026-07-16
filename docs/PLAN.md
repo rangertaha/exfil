@@ -262,7 +262,10 @@ ref = "https://…/model.gguf"
   content-addressed export is ever needed).
 - **Store size on huge trees** — a record per file; incremental + `gc` bound it.
 
-## Backlog (user-requested, not yet scheduled)
+## Backlog (user-requested)
+
+**Done:** dataset sources + catalog + pull/CRUD, IOC feeds (hash + content), ClamAV-style signatures, SSH remote scanning, plugin orchestration.
+
 
 - **ClamAV malware scanning** — a `clamav` scanner plugin: match files against
   ClamAV signature databases (CVD/CLD; the `clamav-rs` bindings need libclamav,

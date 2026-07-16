@@ -58,6 +58,17 @@ enum Command {
     Rules,
     /// Scan a directory tree for patterns and security issues.
     Scan { path: Option<String> },
+    /// Scan a remote host over SSH/SFTP (`[user@]host:/path`).
+    ScanRemote {
+        /// Remote target, e.g. `deploy@web1:/srv`.
+        target: String,
+        /// SSH port.
+        #[arg(short, long, default_value_t = 22)]
+        port: u16,
+        /// Private key file (default: password auth via $EXFILL_SSH_PASSWORD).
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+    },
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph.
@@ -109,6 +120,9 @@ async fn main() -> Result<()> {
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(action).await?,
         Command::Scan { path } => cmd_scan(&store_dir, cli.config.as_deref(), path).await?,
+        Command::ScanRemote { target, port, key } => {
+            cmd_scan_remote(&store_dir, cli.config.as_deref(), &target, port, key).await?
+        }
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -160,6 +174,42 @@ async fn cmd_scan(
     println!(
         "scanned {} files ({} unchanged): {} new matches, {} unreadable",
         summary.files, summary.unchanged, summary.matches, summary.errors
+    );
+    Ok(())
+}
+
+/// Scan a remote host over SSH/SFTP: connect, walk its files, and run the same
+/// pipeline as a local scan, tagging findings with the remote host.
+async fn cmd_scan_remote(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    target: &str,
+    port: u16,
+    key: Option<PathBuf>,
+) -> Result<()> {
+    let target = exfill_remote::RemoteTarget::parse(target, port)?;
+    let auth = match key {
+        Some(path) => exfill_remote::SshAuth::Key(path, None),
+        None => exfill_remote::SshAuth::Password(
+            std::env::var("EXFILL_SSH_PASSWORD")
+                .context("no --key given and $EXFILL_SSH_PASSWORD is not set for password auth")?,
+        ),
+    };
+
+    let pipeline = build_pipeline(config).await?;
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let fs = exfill_remote::SshFs::connect(&target, &auth)
+        .await
+        .with_context(|| format!("connect to {}@{}", target.user, target.host))?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfill_engine::scan_remote(&fs, &target.path, &pipeline, &store, Some(tx)).await;
+    let _ = renderer.join();
+    let summary = result?;
+    println!(
+        "scanned {}:{} — {} files: {} matches, {} unreadable",
+        target.host, target.path, summary.files, summary.matches, summary.errors
     );
     Ok(())
 }

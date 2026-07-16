@@ -55,6 +55,9 @@ machine.
 - **Malware signatures** — a pure-Rust ClamAV-signature scanner matches files
   against `.hdb`/`.hsb` hash signatures and literal `.ndb` body signatures
   (configured under `[plugins.clamav]`), no libclamav needed.
+- **Remote scanning** — `exfill scan-remote user@host:/path` walks a host over
+  SSH/SFTP (pure-Rust russh) and runs every scanner against its files, tagging
+  findings with the remote host.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
   regex, supply-chain, archive expansion, tree-sitter AST, taint, IOC, and
   ClamAV scanning ship today, YARA is planned (see the [roadmap](docs/PLAN.md)).
