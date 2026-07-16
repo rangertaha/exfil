@@ -84,7 +84,7 @@ enum Command {
     Analyze {
         /// Optional finding filter (same syntax as `search`).
         query: Option<String>,
-        /// Report format: text, json, or markdown.
+        /// Report format: text, json, markdown, or junit.
         #[arg(short, long, default_value = "text")]
         format: String,
     },

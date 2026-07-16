@@ -100,3 +100,6 @@ and this project adheres to
   fields (Java's method_invocation uses `name`); new cross-language sinks
   (process::Command, exec.Command, popen/exec*, Runtime.exec) and taint sources
   (env::var, os.Getenv/Args, FormValue). C# awaits an ABI-compatible grammar.
+- Added a JUnit XML report format (`analyze -f junit`). Each finding becomes a
+  failing `<testcase>`, so CI systems that ingest JUnit can gate a build on
+  findings; a clean scan is a passing suite. XML metacharacters are escaped.

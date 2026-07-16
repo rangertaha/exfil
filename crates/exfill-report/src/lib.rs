@@ -84,12 +84,13 @@ pub fn reporter_for(format: &str) -> Option<Box<dyn Reporter>> {
         "text" | "txt" => Some(Box::new(TextReporter)),
         "json" => Some(Box::new(JsonReporter)),
         "markdown" | "md" => Some(Box::new(MarkdownReporter)),
+        "junit" | "junit-xml" => Some(Box::new(JunitReporter)),
         _ => None,
     }
 }
 
 /// The format names [`reporter_for`] accepts (canonical spellings).
-pub const FORMATS: &[&str] = &["text", "json", "markdown"];
+pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit"];
 
 /// Human-readable plain-text report.
 pub struct TextReporter;
@@ -200,6 +201,80 @@ impl Reporter for MarkdownReporter {
     }
 }
 
+/// JUnit XML report: each finding becomes a failing `<testcase>`, so CI systems
+/// that ingest JUnit (Jenkins, GitLab CI, GitHub Actions test reporters) can gate
+/// a build on findings. A scan with no findings is a passing suite (zero
+/// failures), so the build goes green when clean.
+pub struct JunitReporter;
+
+/// Escape the five XML metacharacters so a rule name or snippet can't break the
+/// document or inject markup. Used for both element text and attribute values.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+impl Reporter for JunitReporter {
+    fn name(&self) -> &str {
+        "junit"
+    }
+
+    fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
+        let total = a.findings.len();
+        writeln!(w, r#"<?xml version="1.0" encoding="UTF-8"?>"#)?;
+        writeln!(
+            w,
+            r#"<testsuites name="exfill" tests="{total}" failures="{total}">"#
+        )?;
+        writeln!(
+            w,
+            r#"  <testsuite name="exfill" tests="{total}" failures="{total}">"#
+        )?;
+        for m in &a.findings {
+            let sev = m
+                .severity
+                .map(|s| format!("{s:?}").to_lowercase())
+                .unwrap_or_else(|| "info".into());
+            // Testcase name identifies the finding; classname carries its file
+            // so CI groups findings by file.
+            let name = xml_escape(&format!("{} at {}:{}:{}", m.rule, m.path, m.line, m.col));
+            let classname = xml_escape(&m.path);
+            let message = xml_escape(&format!(
+                "[{}] {}{}",
+                m.rule,
+                sev,
+                m.cwe
+                    .as_deref()
+                    .map(|c| format!(" ({c})"))
+                    .unwrap_or_default()
+            ));
+            writeln!(
+                w,
+                r#"    <testcase name="{name}" classname="{classname}">"#
+            )?;
+            writeln!(
+                w,
+                r#"      <failure message="{message}" type="{sev}">{}</failure>"#,
+                xml_escape(&m.snippet)
+            )?;
+            writeln!(w, "    </testcase>")?;
+        }
+        writeln!(w, "  </testsuite>")?;
+        writeln!(w, "</testsuites>")?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +377,50 @@ mod tests {
         assert_eq!(TextReporter.name(), "text");
         assert_eq!(JsonReporter.name(), "json");
         assert_eq!(MarkdownReporter.name(), "markdown");
-        assert_eq!(FORMATS, ["text", "json", "markdown"]);
+        assert_eq!(JunitReporter.name(), "junit");
+        assert_eq!(FORMATS, ["text", "json", "markdown", "junit"]);
+    }
+
+    #[test]
+    fn junit_is_selectable_by_name_and_alias() {
+        assert_eq!(reporter_for("junit").unwrap().name(), "junit");
+        assert_eq!(reporter_for("junit-xml").unwrap().name(), "junit");
+    }
+
+    #[test]
+    fn junit_report_has_one_failing_testcase_per_finding() {
+        let out = render(&JunitReporter, &sample());
+        assert!(out.starts_with("<?xml version=\"1.0\""));
+        assert!(out.contains(r#"<testsuites name="exfill" tests="3" failures="3">"#));
+        // One testcase per finding, each carrying a failure.
+        assert_eq!(out.matches("<testcase ").count(), 3);
+        assert_eq!(out.matches("<failure ").count(), 3);
+        assert!(out.contains(r#"type="critical""#));
+        // The pipe in the snippet is fine in XML but must be inside the element.
+        assert!(out.contains("k = v | x</failure>"));
+    }
+
+    #[test]
+    fn junit_escapes_xml_metacharacters() {
+        let mut m = finding("rule<&>\"'", Severity::High);
+        m.snippet = "a < b && c > d \"q\"".into();
+        m.path = "x&y.env".into();
+        let a = Analysis {
+            findings: vec![m],
+            files: 1,
+            scans: 1,
+        };
+        let out = render(&JunitReporter, &a);
+        // No raw metacharacter survives inside values/text.
+        assert!(out.contains("a &lt; b &amp;&amp; c &gt; d &quot;q&quot;"));
+        assert!(out.contains("x&amp;y.env"));
+        assert!(!out.contains("rule<&>"));
+    }
+
+    #[test]
+    fn junit_clean_scan_is_a_passing_suite() {
+        let out = render(&JunitReporter, &Analysis::default());
+        assert!(out.contains(r#"tests="0" failures="0""#));
+        assert!(!out.contains("<testcase"));
     }
 }
