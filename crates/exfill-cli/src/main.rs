@@ -226,8 +226,10 @@ async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfill_task:
             }
         }
     }
-    let clamav_signatures = load_clamav_signatures(config);
-    let (pipeline, skipped) = exfill_scan::pipeline_with_rules(rules, &clamav_signatures)?;
+    let clamav_signatures = load_plugin_files(config, "clamav", "signatures");
+    let yara_rules = load_plugin_files(config, "yara", "rules");
+    let (pipeline, skipped) =
+        exfill_scan::pipeline_with_rules(rules, &clamav_signatures, &yara_rules)?;
     if !skipped.is_empty() {
         eprintln!(
             "skipped {} rule(s) with unsupported patterns",
@@ -237,24 +239,23 @@ async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfill_task:
     Ok(pipeline)
 }
 
-/// Read and concatenate the ClamAV signature files configured under
-/// `[plugins.clamav] signatures = [...]`. Missing files are skipped silently;
-/// a missing/unreadable config yields no signatures.
-fn load_clamav_signatures(config: Option<&std::path::Path>) -> String {
-    #[derive(serde::Deserialize)]
-    struct ClamavCfg {
-        #[serde(default)]
-        signatures: Vec<String>,
-    }
+/// Read and concatenate the files listed in a plugin's string-array field
+/// (e.g. `[plugins.clamav] signatures = [...]` or `[plugins.yara] rules =
+/// [...]`). Missing files are skipped silently; a missing/unreadable config or
+/// absent field yields an empty string.
+fn load_plugin_files(config: Option<&std::path::Path>, plugin: &str, field: &str) -> String {
     let Ok(cfg) = exfill_config::load(config) else {
         return String::new();
     };
-    let Ok(Some(clamav)) = cfg.plugin::<ClamavCfg>("clamav") else {
+    let Ok(Some(table)) = cfg.plugin::<toml::Value>(plugin) else {
+        return String::new();
+    };
+    let Some(paths) = table.get(field).and_then(|v| v.as_array()) else {
         return String::new();
     };
     let mut text = String::new();
-    for path in clamav.signatures {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
+    for path in paths.iter().filter_map(|v| v.as_str()) {
+        if let Ok(contents) = std::fs::read_to_string(path) {
             text.push_str(&contents);
             text.push('\n');
         }

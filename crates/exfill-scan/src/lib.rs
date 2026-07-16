@@ -30,6 +30,7 @@ pub mod expand;
 pub mod ioc;
 pub mod supply;
 pub mod taint;
+pub mod yara;
 pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;
 pub use clamav::ClamavScanner;
@@ -37,6 +38,7 @@ pub use expand::ArchiveExpander;
 pub use ioc::HashIocScanner;
 pub use supply::SupplyChainScanner;
 pub use taint::TaintScanner;
+pub use yara::YaraScanner;
 
 use std::path::Path;
 
@@ -114,15 +116,18 @@ pub fn default_pipeline() -> Result<Pipeline> {
 pub fn pipeline_with_rules(
     rules: Vec<Rule>,
     clamav_signatures: &str,
+    yara_rules: &str,
 ) -> Result<(Pipeline, Vec<String>)> {
     let ioc = HashIocScanner::new(&rules);
     let (clamav, _clamav_skipped) = ClamavScanner::from_signatures(clamav_signatures);
+    let yara = YaraScanner::from_sources(yara_rules)?;
     let (regex, skipped) = RegexScanner::new_lenient(rules);
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(ScanTask(regex)),
         Box::new(ScanTask(ioc)),
         Box::new(ScanTask(clamav)),
+        Box::new(ScanTask(yara)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),

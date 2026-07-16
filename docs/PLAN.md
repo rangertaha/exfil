@@ -45,7 +45,7 @@ exfill/
     exfill-core/     domain types: FileMeta, Symbol, Rule, Dataset, Match, VirtualFile, Severity
     exfill-task/     ✅ plugin DAG: Artifact/ArtifactKind, FileTask, Pipeline (toposort)
     exfill-store/    SurrealDB graph store: schema, upsert, queries, DAG-CBOR export
-    exfill-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint; yara planned
+    exfill-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
     exfill-source/   Source trait + registry: builtin, file, http (reqwest)
     exfill-report/   ✅ Reporter trait: text, json, markdown
     exfill-llm/      Llm trait + Candle engine + model management (no-op when absent)

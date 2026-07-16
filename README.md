@@ -55,6 +55,8 @@ machine.
 - **Malware signatures** — a pure-Rust ClamAV-signature scanner matches files
   against `.hdb`/`.hsb` hash signatures and literal `.ndb` body signatures
   (configured under `[plugins.clamav]`), no libclamav needed.
+- **YARA** — pure-Rust `yara-x` matches files against YARA rules configured
+  under `[plugins.yara]`, with severity/CWE read from each rule's `meta` block.
 - **Remote scanning** — `exfill scan-remote user@host:/path` walks a host over
   SSH/SFTP (pure-Rust russh) and runs every scanner against its files, tagging
   findings with the remote host.

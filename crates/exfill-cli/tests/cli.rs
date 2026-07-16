@@ -324,6 +324,43 @@ fn clamav_signatures_from_config() {
 }
 
 #[test]
+fn yara_rules_from_config() {
+    let sb = Sandbox::new("yara");
+    std::fs::write(sb.tree.join("suspect.bin"), "has EVILMARKER in it\n").unwrap();
+
+    let rules = sb.base.join("rules.yar");
+    std::fs::write(
+        &rules,
+        "rule Detect_Evil {\n  meta:\n    severity = \"critical\"\n  strings:\n    $a = \"EVILMARKER\"\n  condition:\n    $a\n}\n",
+    )
+    .unwrap();
+    let cfg = sb.base.join("exfill.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "store = \".exfill\"\n[plugins.yara]\nrules = [{:?}]\n",
+            rules.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_exfill"))
+        .arg("--store")
+        .arg(&sb.store)
+        .arg("--config")
+        .arg(&cfg)
+        .args(["scan", sb.tree.to_str().unwrap()])
+        .output()
+        .expect("run exfill");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("yara:Detect_Evil"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn dataset_crud_subcommands() {
     let sb = Sandbox::new("dscrud");
     let catalog = sb.base.join("catalog");

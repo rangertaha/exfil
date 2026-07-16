@@ -64,3 +64,5 @@ and this project adheres to
 - Remote scanning over SSH/SFTP (`exfill-remote`, pure-Rust russh):
   `exfill scan-remote user@host:/path` walks a host and runs the full
   pipeline on its files (RemoteFs trait + engine::scan_remote).
+- YARA scanning (`exfill-scan::yara`): pure-Rust yara-x matcher; rules from
+  `[plugins.yara]`, severity/CWE read from each rule's meta block.
