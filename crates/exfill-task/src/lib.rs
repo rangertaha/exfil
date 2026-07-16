@@ -42,13 +42,48 @@ pub enum ArtifactKind {
     Matches,
 }
 
-/// A parsed abstract syntax tree: the symbols a language scanner extracted.
+/// A call site: the callee plus the flat facts a taint pass needs — the
+/// identifier arguments and the callees of any calls nested in the arguments.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Call {
+    /// Full callee text, e.g. `os.system` or `child_process.exec`.
+    pub callee: String,
+    /// 1-based line of the call.
+    pub line: u32,
+    /// Identifier arguments (variable names passed to the call).
+    pub arg_idents: Vec<String>,
+    /// Callees of any calls nested inside the arguments (for direct-nesting,
+    /// e.g. `os.system(input())`).
+    pub arg_calls: Vec<String>,
+}
+
+/// An assignment `target = <rhs>`, flattened to what a taint pass needs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Assign {
+    /// The assigned variable name.
+    pub target: String,
+    /// 1-based line of the assignment.
+    pub line: u32,
+    /// Identifiers referenced on the right-hand side.
+    pub rhs_idents: Vec<String>,
+    /// Callees of any calls on the right-hand side.
+    pub rhs_calls: Vec<String>,
+}
+
+/// A parsed abstract syntax tree: the symbols a language scanner extracted,
+/// plus call and assignment facts for data-flow (taint) analysis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ast {
     /// Detected language, e.g. `rust` or `python`.
     pub lang: String,
     /// Declarations, imports, and call sites found in the file.
     pub symbols: Vec<Symbol>,
+    /// Call sites with argument facts (for taint analysis).
+    #[serde(default)]
+    pub calls: Vec<Call>,
+    /// Assignments with right-hand-side facts (for taint analysis).
+    #[serde(default)]
+    pub assigns: Vec<Assign>,
 }
 
 /// A typed value flowing between tasks. Each variant corresponds to one
@@ -239,7 +274,7 @@ mod tests {
             match self.provides {
                 ArtifactKind::Ast => Ok(Artifact::Ast(Ast {
                     lang: "test".into(),
-                    symbols: vec![],
+                    ..Ast::default()
                 })),
                 ArtifactKind::Matches => Ok(Artifact::Matches(vec![Match {
                     rule: self.name.into(),

@@ -168,7 +168,7 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn unimplemented_commands_say_so() {
     let sb = Sandbox::new("stub");
-    for cmd in ["sources", "datasets", "update", "enrich", "gc", "mcp"] {
+    for cmd in ["sources", "pull", "datasets", "enrich", "gc", "mcp"] {
         let out = exfill(&sb.store, &[cmd]);
         assert!(out.status.success(), "{cmd}");
         assert!(stdout(&out).contains("not yet implemented"), "{cmd}");

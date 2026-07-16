@@ -44,9 +44,13 @@ machine.
   checked for dangerous calls (`eval`, `os.system`, `child_process.exec`,
   `pickle.loads`, …) over the syntax tree, so the same word in a comment or
   string is not a false positive the way a regex would make it.
+- **Taint analysis** — tracks untrusted input (`input()`, `request.args`,
+  `process.argv`, env) through variable assignments into command/code-injection
+  sinks, so `os.system(request.args['cmd'])` is flagged while `os.system('ls')`
+  is not — the attacker-controlled flow, not just the dangerous call.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
-  regex, supply-chain, archive expansion, and tree-sitter AST scanning ship
-  today, YARA and taint analysis are planned (see the [roadmap](docs/PLAN.md)).
+  regex, supply-chain, archive expansion, tree-sitter AST, and taint analysis
+  ship today, YARA is planned (see the [roadmap](docs/PLAN.md)).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.
 
 ## Install

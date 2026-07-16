@@ -37,6 +37,16 @@ and this project adheres to
   dangerous sinks (eval/exec/os.system/subprocess/child_process.exec/
   pickle.loads/yaml.load) from the parse tree, so words in comments and
   strings are not false-positives. ASTs are persisted with a `has_ast` edge.
+- Taint analysis (`exfill-scan::taint`): `TaintScanner` (Ast→Matches) tracks
+  untrusted input (input/request.*/getenv/os.environ/process.argv/env) through
+  variable assignments into command/code-injection sinks, flagging only flows
+  that are actually attacker-controlled. The AST is enriched with call and
+  assignment facts so taint reuses the extractor's parse.
+
+### Changed
+
+- Folded `exfill update` into `exfill pull`: `pull <ref>` fetches one dataset,
+  `pull` (no argument) fetches every configured `[[update]]`.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
 - Ratatui progress gauge for `scan` (plain line output when piped).
 - Mutt-style `exfill tui`: findings index + pager, `/` limit, `:` commands,

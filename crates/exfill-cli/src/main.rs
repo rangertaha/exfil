@@ -46,10 +46,9 @@ struct Cli {
 enum Command {
     /// List the available dataset source plugins.
     Sources,
-    /// Download a pattern dataset into the store.
-    Pull { reference: String },
-    /// Download configured dataset/model updates.
-    Update,
+    /// Download datasets: a specific `reference`, or every configured
+    /// `[[update]]` (datasets + LLM model) when no reference is given.
+    Pull { reference: Option<String> },
     /// List datasets stored in the catalog.
     Datasets,
     /// Show the rules a scan would apply.

@@ -21,12 +21,12 @@ use std::path::Path;
 
 use anyhow::Result;
 use exfill_core::{Match, Severity, Symbol};
-use exfill_task::{Artifact, ArtifactKind, Ast, FileTask};
+use exfill_task::{Artifact, ArtifactKind, Assign, Ast, Call, FileTask};
 use tree_sitter::{Node, Parser};
 
 /// A supported language: how to load its grammar and the node kinds that name
-/// its call expressions and function definitions.
-struct LangSpec {
+/// its call expressions, function definitions, and assignments.
+pub(crate) struct LangSpec {
     /// Language tag stored on the [`Ast`].
     lang: &'static str,
     /// File extensions that select this language.
@@ -38,6 +38,9 @@ struct LangSpec {
     call_kind: &'static str,
     /// Grammar node kind for a function definition (its `name` field).
     func_kind: &'static str,
+    /// Grammar node kinds for assignments (their target/rhs are read by
+    /// [`assignment_parts`]).
+    assign_kinds: &'static [&'static str],
 }
 
 /// The languages this build understands.
@@ -49,6 +52,7 @@ fn specs() -> &'static [LangSpec] {
             language: || tree_sitter_python::LANGUAGE.into(),
             call_kind: "call",
             func_kind: "function_definition",
+            assign_kinds: &["assignment"],
         },
         LangSpec {
             lang: "javascript",
@@ -56,69 +60,148 @@ fn specs() -> &'static [LangSpec] {
             language: || tree_sitter_javascript::LANGUAGE.into(),
             call_kind: "call_expression",
             func_kind: "function_declaration",
+            assign_kinds: &["assignment_expression", "variable_declarator"],
         },
     ]
 }
 
 /// The language spec for a path's extension, if supported.
-fn spec_for(path: &Path) -> Option<&'static LangSpec> {
+pub(crate) fn spec_for(path: &Path) -> Option<&'static LangSpec> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     specs()
         .iter()
         .find(|s| s.extensions.contains(&ext.as_str()))
 }
 
-/// Parses supported source files into an [`Ast`] of call and function symbols.
+/// Parse `content` in `spec`'s language into an [`Ast`]. Shared by the AST
+/// extractor and the taint scanner.
+pub(crate) fn parse(spec: &LangSpec, content: &[u8]) -> Ast {
+    let mut parser = Parser::new();
+    if parser.set_language(&(spec.language)()).is_err() {
+        return Ast::default();
+    }
+    let Some(tree) = parser.parse(content, None) else {
+        return Ast::default();
+    };
+    let mut ast = Ast {
+        lang: spec.lang.to_string(),
+        ..Ast::default()
+    };
+    walk(tree.root_node(), content, spec, &mut ast);
+    ast
+}
+
+/// Parses supported source files into an [`Ast`] of symbols, calls, and
+/// assignments.
 pub struct AstExtractor;
 
-impl AstExtractor {
-    /// Parse `content` under `spec` and collect its symbols.
-    fn extract(spec: &LangSpec, content: &[u8]) -> Ast {
-        let mut parser = Parser::new();
-        if parser.set_language(&(spec.language)()).is_err() {
-            return Ast::default();
+/// Split an assignment node into `(target, rhs)`, handling the per-grammar
+/// field names (`left`/`right` for assignments, `name`/`value` for JS
+/// variable declarators).
+fn assignment_parts<'a>(node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+    let target = node
+        .child_by_field_name("left")
+        .or_else(|| node.child_by_field_name("name"))?;
+    let rhs = node
+        .child_by_field_name("right")
+        .or_else(|| node.child_by_field_name("value"))?;
+    Some((target, rhs))
+}
+
+/// Collect, within `node`'s subtree: plain identifier names into `idents`, and
+/// into `calls` both nested-call callees and attribute/member accesses (e.g.
+/// `process.argv`, `request.args`). Member accesses matter because most taint
+/// sources are member reads, not calls, so treating them as source-check
+/// candidates lets `process.argv[2]` be recognized as untrusted.
+fn collect_facts(
+    node: Node,
+    src: &[u8],
+    call_kind: &str,
+    idents: &mut Vec<String>,
+    calls: &mut Vec<String>,
+) {
+    match node.kind() {
+        "identifier" => {
+            if let Ok(t) = node.utf8_text(src) {
+                idents.push(t.to_string());
+            }
         }
-        let Some(tree) = parser.parse(content, None) else {
-            return Ast::default();
-        };
-        let mut symbols = Vec::new();
-        walk(tree.root_node(), content, spec, &mut symbols);
-        Ast {
-            lang: spec.lang.to_string(),
-            symbols,
+        // Python `attribute` / JS `member_expression`: `a.b.c`.
+        "attribute" | "member_expression" => {
+            if let Ok(t) = node.utf8_text(src) {
+                calls.push(t.to_string());
+            }
         }
+        _ => {}
+    }
+    if node.kind() == call_kind {
+        if let Some(f) = node.child_by_field_name("function") {
+            if let Ok(t) = f.utf8_text(src) {
+                calls.push(t.to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_facts(child, src, call_kind, idents, calls);
     }
 }
 
-/// Depth-first walk collecting call and function-definition symbols. A call's
-/// name is the full callee text (`os.system`, `child_process.exec`), so dotted
-/// sinks are recognizable downstream.
-fn walk(node: Node, src: &[u8], spec: &LangSpec, out: &mut Vec<Symbol>) {
+/// Depth-first walk collecting symbols, call facts, and assignment facts. A
+/// call's name is the full callee text (`os.system`, `child_process.exec`), so
+/// dotted sinks are recognizable downstream.
+fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
     let kind = node.kind();
     if kind == spec.call_kind {
         if let Some(callee) = node.child_by_field_name("function") {
             if let Ok(name) = callee.utf8_text(src) {
-                out.push(Symbol {
+                let line = callee.start_position().row as u32 + 1;
+                ast.symbols.push(Symbol {
                     kind: "call".into(),
                     name: name.to_string(),
-                    line: callee.start_position().row as u32 + 1,
+                    line,
+                });
+                let (mut arg_idents, mut arg_calls) = (Vec::new(), Vec::new());
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    collect_facts(args, src, spec.call_kind, &mut arg_idents, &mut arg_calls);
+                }
+                ast.calls.push(Call {
+                    callee: name.to_string(),
+                    line,
+                    arg_idents,
+                    arg_calls,
                 });
             }
         }
     } else if kind == spec.func_kind {
         if let Some(name_node) = node.child_by_field_name("name") {
             if let Ok(name) = name_node.utf8_text(src) {
-                out.push(Symbol {
+                ast.symbols.push(Symbol {
                     kind: "function".into(),
                     name: name.to_string(),
                     line: name_node.start_position().row as u32 + 1,
                 });
             }
         }
+    } else if spec.assign_kinds.contains(&kind) {
+        if let Some((target, rhs)) = assignment_parts(node) {
+            if target.kind() == "identifier" {
+                if let Ok(name) = target.utf8_text(src) {
+                    let (mut rhs_idents, mut rhs_calls) = (Vec::new(), Vec::new());
+                    collect_facts(rhs, src, spec.call_kind, &mut rhs_idents, &mut rhs_calls);
+                    ast.assigns.push(Assign {
+                        target: name.to_string(),
+                        line: target.start_position().row as u32 + 1,
+                        rhs_idents,
+                        rhs_calls,
+                    });
+                }
+            }
+        }
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk(child, src, spec, out);
+        walk(child, src, spec, ast);
     }
 }
 
@@ -146,7 +229,7 @@ impl FileTask for AstExtractor {
         let Some(spec) = spec_for(path) else {
             return Ok(Artifact::Ast(Ast::default()));
         };
-        Ok(Artifact::Ast(Self::extract(spec, bytes)))
+        Ok(Artifact::Ast(parse(spec, bytes)))
     }
 }
 
@@ -274,7 +357,7 @@ mod tests {
 
     fn ast_of(path: &str, src: &str) -> Ast {
         let spec = spec_for(Path::new(path)).expect("supported language");
-        AstExtractor::extract(spec, src.as_bytes())
+        parse(spec, src.as_bytes())
     }
 
     fn findings(path: &str, src: &str) -> Vec<Match> {
