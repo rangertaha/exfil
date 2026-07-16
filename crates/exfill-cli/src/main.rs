@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         Command::Sources => cmd_sources(),
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(action).await?,
-        Command::Scan { path } => cmd_scan(&store_dir, path).await?,
+        Command::Scan { path } => cmd_scan(&store_dir, cli.config.as_deref(), path).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -141,9 +141,13 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
 /// Walk the target tree, scan it with the registered scanners, and persist
 /// files + findings into the local store. Progress renders live: a ratatui
 /// gauge on a terminal, plain match lines when piped.
-async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<()> {
+async fn cmd_scan(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    path: Option<String>,
+) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
-    let pipeline = build_pipeline().await?;
+    let pipeline = build_pipeline(config).await?;
     let store = exfill_store::Store::open_findings(store_dir).await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -160,10 +164,10 @@ async fn cmd_scan(store_dir: &std::path::Path, path: Option<String>) -> Result<(
     Ok(())
 }
 
-/// Build the scan pipeline. If the catalog holds datasets, scan with their
-/// rules (leniently compiled) plus the built-in set; otherwise the built-ins
-/// alone. Non-compiling external patterns are reported and skipped.
-async fn build_pipeline() -> Result<exfill_task::Pipeline> {
+/// Build the scan pipeline: built-in rules plus any catalog datasets, plus
+/// ClamAV signatures from files listed under `[plugins.clamav]` in config.
+/// Non-compiling external regex patterns are reported and skipped.
+async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfill_task::Pipeline> {
     let mut rules = exfill_scan::builtin_rules();
     if let Ok(dir) = exfill_config::catalog_dir() {
         if dir.exists() {
@@ -172,7 +176,8 @@ async fn build_pipeline() -> Result<exfill_task::Pipeline> {
             }
         }
     }
-    let (pipeline, skipped) = exfill_scan::pipeline_with_rules(rules)?;
+    let clamav_signatures = load_clamav_signatures(config);
+    let (pipeline, skipped) = exfill_scan::pipeline_with_rules(rules, &clamav_signatures)?;
     if !skipped.is_empty() {
         eprintln!(
             "skipped {} rule(s) with unsupported patterns",
@@ -180,6 +185,31 @@ async fn build_pipeline() -> Result<exfill_task::Pipeline> {
         );
     }
     Ok(pipeline)
+}
+
+/// Read and concatenate the ClamAV signature files configured under
+/// `[plugins.clamav] signatures = [...]`. Missing files are skipped silently;
+/// a missing/unreadable config yields no signatures.
+fn load_clamav_signatures(config: Option<&std::path::Path>) -> String {
+    #[derive(serde::Deserialize)]
+    struct ClamavCfg {
+        #[serde(default)]
+        signatures: Vec<String>,
+    }
+    let Ok(cfg) = exfill_config::load(config) else {
+        return String::new();
+    };
+    let Ok(Some(clamav)) = cfg.plugin::<ClamavCfg>("clamav") else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for path in clamav.signatures {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            text.push_str(&contents);
+            text.push('\n');
+        }
+    }
+    text
 }
 
 /// List the available dataset source plugins.

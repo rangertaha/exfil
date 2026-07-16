@@ -54,3 +54,10 @@ and this project adheres to
 - TOML configuration with an embedded default written on first run.
 - CI (fmt, clippy, tests on Linux/macOS/Windows) and tag-driven release
   workflow building binaries for all three platforms.
+- Dataset sources & catalog (`exfill-source`): builtin/file/http(s) sources;
+  `pull`/`sources`/`datasets` (list/add/show/rm); scans apply catalog rules.
+- IOC feeds: content indicators as regex rules, file-hash indicators via a
+  hash scanner (`sha256:…` rule patterns); an IOC feed is just a dataset.
+- ClamAV-style scanning (`exfill-scan::clamav`): pure-Rust matcher for hash
+  signatures (.hdb/.hsb) and literal body signatures (.ndb) via Aho–Corasick,
+  loaded from `[plugins.clamav]`.

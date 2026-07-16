@@ -25,12 +25,14 @@
 
 pub mod ast;
 pub mod builtin;
+pub mod clamav;
 pub mod expand;
 pub mod ioc;
 pub mod supply;
 pub mod taint;
 pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;
+pub use clamav::ClamavScanner;
 pub use expand::ArchiveExpander;
 pub use ioc::HashIocScanner;
 pub use supply::SupplyChainScanner;
@@ -104,16 +106,23 @@ pub fn default_pipeline() -> Result<Pipeline> {
     ])
 }
 
-/// Build the standard pipeline but with an explicit regex ruleset (leniently
-/// compiled), for scanning with catalog-loaded datasets instead of only the
-/// built-in rules. Returns the pipeline and the names of any skipped patterns.
-pub fn pipeline_with_rules(rules: Vec<Rule>) -> Result<(Pipeline, Vec<String>)> {
+/// Build the standard pipeline with an explicit regex ruleset (leniently
+/// compiled) and ClamAV signature text, for scanning with catalog-loaded
+/// datasets and malware signatures instead of only the built-in rules.
+/// `clamav_signatures` may be empty (that scanner then does nothing). Returns
+/// the pipeline and the names of any skipped regex patterns.
+pub fn pipeline_with_rules(
+    rules: Vec<Rule>,
+    clamav_signatures: &str,
+) -> Result<(Pipeline, Vec<String>)> {
     let ioc = HashIocScanner::new(&rules);
+    let (clamav, _clamav_skipped) = ClamavScanner::from_signatures(clamav_signatures);
     let (regex, skipped) = RegexScanner::new_lenient(rules);
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(ScanTask(regex)),
         Box::new(ScanTask(ioc)),
+        Box::new(ScanTask(clamav)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),

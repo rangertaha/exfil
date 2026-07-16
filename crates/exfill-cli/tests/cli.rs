@@ -276,6 +276,54 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn clamav_signatures_from_config() {
+    let sb = Sandbox::new("clam");
+
+    // A file whose sha256 we'll list as a hash signature, and a file with a
+    // literal body signature ("MALSTRING" = 4d414c535452494e47).
+    let payload = b"clamav sample payload\n";
+    std::fs::write(sb.tree.join("mal.bin"), payload).unwrap();
+    std::fs::write(sb.tree.join("body.txt"), "junk MALSTRING junk\n").unwrap();
+
+    use sha2::{Digest, Sha256};
+    let sha = hex_encode(&Sha256::digest(payload));
+    let sigs = sb.base.join("sigs.hdb");
+    std::fs::write(
+        &sigs,
+        format!(
+            "{sha}:{}:Test.Sample.Hash\nTest.Body.Sig:0:*:4d414c535452494e47\n",
+            payload.len()
+        ),
+    )
+    .unwrap();
+    let cfg = sb.base.join("exfill.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "store = \".exfill\"\n[plugins.clamav]\nsignatures = [{:?}]\n",
+            sigs.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_exfill"))
+        .arg("--store")
+        .arg(&sb.store)
+        .arg("--config")
+        .arg(&cfg)
+        .args(["scan", sb.tree.to_str().unwrap()])
+        .output()
+        .expect("run exfill");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("clamav:Test.Sample.Hash"),
+        "hash sig:\n{text}"
+    );
+    assert!(text.contains("clamav:Test.Body.Sig"), "body sig:\n{text}");
+}
+
+#[test]
 fn dataset_crud_subcommands() {
     let sb = Sandbox::new("dscrud");
     let catalog = sb.base.join("catalog");

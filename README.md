@@ -48,9 +48,16 @@ machine.
   `process.argv`, env) through variable assignments into command/code-injection
   sinks, so `os.system(request.args['cmd'])` is flagged while `os.system('ls')`
   is not — the attacker-controlled flow, not just the dangerous call.
+- **Datasets & IOC feeds** — `exfill pull <ref>` downloads rule/IOC datasets
+  (builtin, local file, or `https://`) into a catalog; `exfill datasets`
+  add/show/rm/list manages them. IOCs ride the same pipeline: content
+  indicators are regex rules, file-hash indicators (`sha256:…`) match digests.
+- **Malware signatures** — a pure-Rust ClamAV-signature scanner matches files
+  against `.hdb`/`.hsb` hash signatures and literal `.ndb` body signatures
+  (configured under `[plugins.clamav]`), no libclamav needed.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
-  regex, supply-chain, archive expansion, tree-sitter AST, and taint analysis
-  ship today, YARA is planned (see the [roadmap](docs/PLAN.md)).
+  regex, supply-chain, archive expansion, tree-sitter AST, taint, IOC, and
+  ClamAV scanning ship today, YARA is planned (see the [roadmap](docs/PLAN.md)).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.
 
 ## Install

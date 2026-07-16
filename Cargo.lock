@@ -1233,6 +1233,7 @@ dependencies = [
  "exfill-store",
  "exfill-task",
  "ratatui",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
@@ -1289,6 +1290,7 @@ dependencies = [
 name = "exfill-scan"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "exfill-core",
  "exfill-task",

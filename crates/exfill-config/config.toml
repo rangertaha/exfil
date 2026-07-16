@@ -2,7 +2,7 @@
 #
 # Each plugin is configured by a [plugins.<name>] table whose fields are
 # specific to that plugin. `update` entries list datasets (and the LLM model)
-# to (re)download when `exfill update` runs.
+# to (re)download when `exfill pull` runs (no argument = pull all entries).
 
 # Location of the local findings store (removed by `exfill clean`).
 store = ".exfill"
@@ -18,6 +18,10 @@ languages = ["go", "python", "javascript", "rust"]
 [plugins.yara]
 # YARA rule files or directories.
 rules = []
+
+[plugins.clamav]
+# ClamAV-format signature files (.hdb/.hsb hash sigs, .ndb literal body sigs).
+signatures = []
 
 [plugins.taint]
 enabled = true
