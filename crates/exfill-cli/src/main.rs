@@ -49,8 +49,11 @@ enum Command {
     /// Download datasets: a specific `reference`, or every configured
     /// `[[update]]` (datasets + LLM model) when no reference is given.
     Pull { reference: Option<String> },
-    /// List datasets stored in the catalog.
-    Datasets,
+    /// Manage catalog datasets (list by default; add/show/rm subcommands).
+    Datasets {
+        #[command(subcommand)]
+        action: Option<DatasetCmd>,
+    },
     /// Show the rules a scan would apply.
     Rules,
     /// Scan a directory tree for patterns and security issues.
@@ -83,6 +86,19 @@ enum Command {
     Get { id: String },
 }
 
+/// Catalog dataset management actions.
+#[derive(Subcommand)]
+enum DatasetCmd {
+    /// List stored datasets and their rule counts (the default).
+    List,
+    /// Show a dataset's rules.
+    Show { name: String },
+    /// Add (or replace) a named dataset from a source reference.
+    Add { name: String, reference: String },
+    /// Remove a dataset from the catalog.
+    Rm { name: String },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -91,7 +107,7 @@ async fn main() -> Result<()> {
         Command::Config => cmd_config(cli.config.as_deref())?,
         Command::Sources => cmd_sources(),
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
-        Command::Datasets => cmd_datasets().await?,
+        Command::Datasets { action } => cmd_datasets(action).await?,
         Command::Scan { path } => cmd_scan(&store_dir, path).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
@@ -214,19 +230,62 @@ async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -
     Ok(())
 }
 
-/// List datasets stored in the catalog.
-async fn cmd_datasets() -> Result<()> {
+/// Manage catalog datasets: list (default), show, add, or remove.
+async fn cmd_datasets(action: Option<DatasetCmd>) -> Result<()> {
     let dir = exfill_config::catalog_dir()?;
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
     let catalog = exfill_store::Store::open_catalog(&dir).await?;
-    let datasets = catalog.list_datasets().await?;
-    if datasets.is_empty() {
-        println!("no datasets — run `exfill pull` to download some");
-        return Ok(());
+
+    match action.unwrap_or(DatasetCmd::List) {
+        DatasetCmd::List => {
+            let datasets = catalog.list_datasets().await?;
+            if datasets.is_empty() {
+                println!("no datasets — run `exfill pull` to download some");
+                return Ok(());
+            }
+            for (name, rules) in &datasets {
+                println!("{name:<24} {rules} rules");
+            }
+            println!("{} dataset(s)", datasets.len());
+        }
+        DatasetCmd::Show { name } => match catalog.get_dataset(&name).await? {
+            Some(ds) => {
+                println!("# dataset {:?} ({} rules)", ds.name, ds.rules.len());
+                for r in &ds.rules {
+                    let sev = r
+                        .severity
+                        .map(|s| format!("{s:?}").to_lowercase())
+                        .unwrap_or_else(|| "-".into());
+                    println!(
+                        "{:<28} {:<8} {:<10} {}",
+                        r.name,
+                        sev,
+                        r.cwe.as_deref().unwrap_or("-"),
+                        r.pattern
+                    );
+                }
+            }
+            None => println!("no dataset {name:?}"),
+        },
+        DatasetCmd::Add { name, reference } => {
+            let mut dataset = exfill_source::Registry::new().fetch(&reference).await?;
+            dataset.name = name; // store under the user-chosen name
+            let n = catalog.upsert_dataset(&dataset).await?;
+            println!(
+                "added dataset {:?} ({} rules) from {reference}",
+                dataset.name, n
+            );
+        }
+        DatasetCmd::Rm { name } => {
+            if catalog.remove_dataset(&name).await? {
+                println!("removed dataset {name:?}");
+            } else {
+                println!("no dataset {name:?}");
+            }
+        }
     }
-    for (name, rules) in &datasets {
-        println!("{name:<24} {rules} rules");
-    }
-    println!("{} dataset(s)", datasets.len());
     Ok(())
 }
 

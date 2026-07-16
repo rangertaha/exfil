@@ -235,3 +235,37 @@ fn sources_pull_datasets_flow() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("acme-token"), "{}", stdout(&out));
 }
+
+#[test]
+fn dataset_crud_subcommands() {
+    let sb = Sandbox::new("dscrud");
+    let catalog = sb.base.join("catalog");
+
+    // add a named dataset from a builtin reference.
+    let out = exfill_catalog(
+        &sb.store,
+        &catalog,
+        &["datasets", "add", "sec", "builtin://security"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("added dataset \"sec\""),
+        "{}",
+        stdout(&out)
+    );
+
+    // show lists its rules.
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets", "show", "sec"]);
+    let text = stdout(&out);
+    assert!(text.contains("aws-access-key-id"), "{text}");
+
+    // show of a missing dataset is graceful.
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets", "show", "nope"]);
+    assert!(stdout(&out).contains("no dataset"), "{}", stdout(&out));
+
+    // rm removes it; a second rm reports absence.
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets", "rm", "sec"]);
+    assert!(stdout(&out).contains("removed dataset"), "{}", stdout(&out));
+    let out = exfill_catalog(&sb.store, &catalog, &["datasets", "rm", "sec"]);
+    assert!(stdout(&out).contains("no dataset"), "{}", stdout(&out));
+}
