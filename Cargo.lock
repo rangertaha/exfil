@@ -1755,6 +1755,7 @@ dependencies = [
  "exfill-config",
  "exfill-core",
  "exfill-engine",
+ "exfill-mcp",
  "exfill-remote",
  "exfill-scan",
  "exfill-source",
@@ -1803,6 +1804,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "exfill-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "exfill-core",
+ "exfill-report",
+ "exfill-store",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -135,6 +135,10 @@ async fn main() -> Result<()> {
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
         Command::Gc => cmd_gc(&store_dir).await?,
+        Command::Mcp => {
+            let store = exfill_store::Store::open_findings(&store_dir).await?;
+            exfill_mcp::serve(store).await?;
+        }
         Command::Rules => cmd_rules()?,
         Command::Clean => cmd_clean(&store_dir)?,
         Command::Tui => {

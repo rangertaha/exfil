@@ -7,10 +7,14 @@ use std::process::{Command, Output};
 const SECRET_LINE: &str = "export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF\n";
 
 fn exfill(store: &Path, args: &[&str]) -> Output {
+    // Point the catalog at a non-existent dir so scans use only the built-in
+    // rules — never the developer's real ~/.config/exfill/catalog.
+    let no_catalog = store.parent().unwrap_or(store).join("no-catalog");
     Command::new(env!("CARGO_BIN_EXE_exfill"))
         .arg("--store")
         .arg(store)
         .args(args)
+        .env("EXFILL_CATALOG_DIR", no_catalog)
         .output()
         .expect("run exfill")
 }
@@ -183,11 +187,50 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn unimplemented_commands_say_so() {
     let sb = Sandbox::new("stub");
-    for cmd in ["enrich", "mcp"] {
-        let out = exfill(&sb.store, &[cmd]);
-        assert!(out.status.success(), "{cmd}");
-        assert!(stdout(&out).contains("not yet implemented"), "{cmd}");
-    }
+    let out = exfill(&sb.store, &["enrich"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("not yet implemented"));
+}
+
+#[test]
+fn mcp_server_answers_over_stdio() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let sb = Sandbox::new("mcp");
+    let out = exfill(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_exfill"))
+        .arg("--store")
+        .arg(&sb.store)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp");
+    let requests = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":""}}}"#,
+        "\n",
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(requests.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let init: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(init["result"]["serverInfo"]["name"], "exfill");
+    let call: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert!(call["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("aws-access-key-id"));
 }
 
 /// Run exfill with an isolated catalog dir (so tests never touch the real one).

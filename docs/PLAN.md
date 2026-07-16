@@ -50,7 +50,7 @@ exfill/
     exfill-report/   ✅ Reporter trait: text, json, markdown
     exfill-llm/      Llm trait + Candle engine + model management (no-op when absent)
     exfill-config/   ✅ TOML config with embedded default + per-plugin decode
-    exfill-mcp/      MCP server (stdio JSON-RPC; `rmcp` or hand-rolled)
+    exfill-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
     exfill-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
   crates/exfill-cli/ (bin "exfill")  ✅ clap commands + progress + mutt-style TUI
 ```

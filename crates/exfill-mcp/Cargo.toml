@@ -1,0 +1,19 @@
+[package]
+name = "exfill-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfill-store = { workspace = true }
+exfill-report = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "io-util"] }
+
+[dev-dependencies]
+exfill-core = { workspace = true }
+
+[lints]
+workspace = true

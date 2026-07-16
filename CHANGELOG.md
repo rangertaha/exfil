@@ -83,3 +83,6 @@ and this project adheres to
   undo stack.
 - Configurable navigator keymap (M4): keys decoupled from actions via a
   Keymap; vim defaults, remappable in `[keymap.nav]` (key = "Action").
+- MCP server (`exfill mcp`): a hand-rolled JSON-RPC 2.0 stdio server exposing
+  read-only tools (search/graph/neighbors/get/analyze) so AI agents can explore
+  the findings graph.
