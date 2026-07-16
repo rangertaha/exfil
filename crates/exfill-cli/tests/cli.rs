@@ -399,6 +399,56 @@ fn clamav_signatures_from_config() {
 }
 
 #[test]
+fn script_enricher_from_config() {
+    let sb = Sandbox::new("script");
+    let out = exfill(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let script = sb.base.join("enrich.rhai");
+    std::fs::write(
+        &script,
+        r#"if finding.severity == "critical" { "SCRIPTED: " + finding.rule } else { () }"#,
+    )
+    .unwrap();
+    let cfg = sb.base.join("exfill.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "store = \".exfill\"\n[plugins.script]\nenrich = {:?}\n",
+            script.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    // enrich runs the user script.
+    let out = exfill_cfg(&sb.store, &cfg, &["enrich"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("enrich.rhai"), "{}", stdout(&out));
+
+    // The scripted triage note landed on the finding.
+    let out = exfill(&sb.store, &["export", "--format", "json"]);
+    let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let triage = snap["tables"]["finding"][0]["triage"]
+        .as_str()
+        .unwrap_or("");
+    assert!(triage.contains("SCRIPTED: aws-access-key-id"), "{triage}");
+}
+
+/// Run exfill with an explicit config file (and an isolated catalog).
+fn exfill_cfg(store: &Path, cfg: &Path, args: &[&str]) -> Output {
+    let no_catalog = store.parent().unwrap_or(store).join("no-catalog");
+    Command::new(env!("CARGO_BIN_EXE_exfill"))
+        .arg("--store")
+        .arg(store)
+        .arg("--config")
+        .arg(cfg)
+        .args(args)
+        .env("EXFILL_CATALOG_DIR", no_catalog)
+        .output()
+        .expect("run exfill")
+}
+
+#[test]
 fn yara_rules_from_config() {
     let sb = Sandbox::new("yara");
     std::fs::write(sb.tree.join("suspect.bin"), "has EVILMARKER in it\n").unwrap();

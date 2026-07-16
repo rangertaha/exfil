@@ -30,6 +30,7 @@ exfill-report = { path = "crates/exfill-report" }
 exfill-view = { path = "crates/exfill-view" }
 exfill-mcp = { path = "crates/exfill-mcp" }
 exfill-llm = { path = "crates/exfill-llm" }
+exfill-script = { path = "crates/exfill-script" }
 exfill-engine = { path = "crates/exfill-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

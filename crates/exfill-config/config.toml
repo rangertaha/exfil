@@ -23,6 +23,12 @@ rules = []
 # ClamAV-format signature files (.hdb/.hsb hash sigs, .ndb literal body sigs).
 signatures = []
 
+[plugins.script]
+# A Rhai script that computes a triage note per finding (`exfill enrich`).
+# The script sees `finding` (rule/path/line/severity/cwe/snippet) and returns
+# a string note or () to skip. Empty = use the built-in rule-based enricher.
+# enrich = "enrich.rhai"
+
 [plugins.taint]
 enabled = true
 

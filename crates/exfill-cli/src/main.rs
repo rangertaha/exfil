@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
         Command::Gc => cmd_gc(&store_dir).await?,
-        Command::Enrich => cmd_enrich(&store_dir).await?,
+        Command::Enrich => cmd_enrich(&store_dir, cli.config.as_deref()).await?,
         Command::Export { out, format } => cmd_export(&store_dir, out, &format).await?,
         Command::Mcp => {
             let store = exfill_store::Store::open_findings(&store_dir).await?;
@@ -462,17 +462,28 @@ async fn cmd_graph(store_dir: &std::path::Path, query: Option<String>, format: &
     Ok(())
 }
 
-/// Enrich stored findings with triage notes. Uses the rule-based enricher by
-/// default; a downloaded offline model would supersede it via the same trait.
-async fn cmd_enrich(store_dir: &std::path::Path) -> Result<()> {
+/// Enrich stored findings with triage notes. A Rhai script configured under
+/// `[plugins.script] enrich = "…"` supersedes the built-in rule-based enricher;
+/// a downloaded offline model could too, via the same trait.
+async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path>) -> Result<()> {
     let store = exfill_store::Store::open_findings(store_dir).await?;
-    let enricher = exfill_llm::default_enricher();
+    let enricher: Box<dyn exfill_llm::Enricher> = match enrich_script_path(config) {
+        Some(path) => Box::new(exfill_script::ScriptEnricher::from_file(&path)?),
+        None => exfill_llm::default_enricher(),
+    };
     let n = exfill_llm::run(&store, enricher.as_ref()).await?;
-    println!(
-        "enriched {n} finding(s) with {} triage notes",
-        enricher.name()
-    );
+    println!("enriched {n} finding(s) via {}", enricher.name());
     Ok(())
+}
+
+/// The `[plugins.script] enrich = "path"` script path, if configured.
+fn enrich_script_path(config: Option<&std::path::Path>) -> Option<String> {
+    let cfg = exfill_config::load(config).ok()?;
+    let table = cfg.plugin::<toml::Value>("script").ok()??;
+    table
+        .get("enrich")
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 /// Export the whole graph as a portable snapshot in CBOR or JSON.

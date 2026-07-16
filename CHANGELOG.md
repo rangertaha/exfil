@@ -91,3 +91,7 @@ and this project adheres to
 - Finding enrichment (`exfill enrich`, `exfill-llm`): an Enricher trait with a
   model-free RuleBasedEnricher writing per-finding `triage` notes; the trait is
   the seam for a future offline Candle model. All CLI commands now implemented.
+- Rhai scripting (`exfill-script`, M5): a sandboxed pure-Rust script engine;
+  `ScriptEnricher` runs a user `.rhai` script (configured via `[plugins.script]
+  enrich`) over each finding to compute a triage note, plugging into the same
+  Enricher trait.

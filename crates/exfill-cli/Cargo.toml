@@ -20,6 +20,7 @@ exfill-engine = { workspace = true }
 exfill-view = { workspace = true }
 exfill-mcp = { workspace = true }
 exfill-llm = { workspace = true }
+exfill-script = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
 anyhow = { workspace = true }

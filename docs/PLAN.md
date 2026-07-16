@@ -272,7 +272,7 @@ A layered "neovim for graph traversal/editing" over the findings graph:
 - ✅ M2 CRUD: field edit (`c`), edge delete (`d`), undo/redo (`u`/`U`) via
   reversible EditOps (Store::set_field/create_edge/delete_edge).
 - ✅ M4 keymaps: vim defaults, remappable via `[keymap.nav]` in config.
-- ⬜ M5 scripting (Rhai/Lua) — optional.
+- ✅ M5 scripting: Rhai script enricher (`exfill-script`, `[plugins.script] enrich`).
 
 ## Backlog (user-requested)
 
