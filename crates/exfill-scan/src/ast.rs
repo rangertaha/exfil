@@ -14,8 +14,11 @@
 //! scanner automatically, purely from their declared artifact kinds — nobody
 //! wires them together by hand.
 //!
-//! Languages today: Python and JavaScript. Adding one is a single [`LangSpec`]
-//! entry (a grammar plus the two node-kind names its calls and functions use).
+//! Languages today: Python, JavaScript, TypeScript, Rust, Go, C, C++, and Java.
+//! Adding one is a single [`LangSpec`] entry (a grammar plus the node-kind and
+//! field names its calls, functions, and assignments use). Bash, Lua, and
+//! PowerShell need per-language call handling (different node shapes); C#/VB
+//! await an ABI-compatible tree-sitter grammar.
 
 use std::path::Path;
 
@@ -33,9 +36,13 @@ pub(crate) struct LangSpec {
     extensions: &'static [&'static str],
     /// Load the tree-sitter grammar.
     language: fn() -> tree_sitter::Language,
-    /// Grammar node kind for a call expression (its `function` field is the
-    /// callee).
+    /// Grammar node kind for a call expression.
     call_kind: &'static str,
+    /// Field on a call node holding the callee (usually `function`; Java's
+    /// `method_invocation` uses `name`).
+    fn_field: &'static str,
+    /// Field on a call node holding its argument list (usually `arguments`).
+    args_field: &'static str,
     /// Grammar node kind for a function definition (its `name` field).
     func_kind: &'static str,
     /// Grammar node kinds for assignments (their target/rhs are read by
@@ -43,7 +50,13 @@ pub(crate) struct LangSpec {
     assign_kinds: &'static [&'static str],
 }
 
-/// The languages this build understands.
+/// The default call-callee field (`function`) and argument-list field
+/// (`arguments`) shared by most C-family grammars.
+const DEFAULT_FN_FIELD: &str = "function";
+const DEFAULT_ARGS_FIELD: &str = "arguments";
+
+/// The languages this build understands. Most are C-family and share the
+/// `function`/`arguments` call fields; the exceptions set `fn_field`.
 fn specs() -> &'static [LangSpec] {
     &[
         LangSpec {
@@ -51,6 +64,8 @@ fn specs() -> &'static [LangSpec] {
             extensions: &["py", "pyi"],
             language: || tree_sitter_python::LANGUAGE.into(),
             call_kind: "call",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_definition",
             assign_kinds: &["assignment"],
         },
@@ -59,7 +74,70 @@ fn specs() -> &'static [LangSpec] {
             extensions: &["js", "jsx", "mjs", "cjs"],
             language: || tree_sitter_javascript::LANGUAGE.into(),
             call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
             func_kind: "function_declaration",
+            assign_kinds: &["assignment_expression", "variable_declarator"],
+        },
+        LangSpec {
+            lang: "typescript",
+            extensions: &["ts", "tsx", "mts", "cts"],
+            language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_declaration",
+            assign_kinds: &["assignment_expression", "variable_declarator"],
+        },
+        LangSpec {
+            lang: "rust",
+            extensions: &["rs"],
+            language: || tree_sitter_rust::LANGUAGE.into(),
+            call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_item",
+            assign_kinds: &["let_declaration", "assignment_expression"],
+        },
+        LangSpec {
+            lang: "go",
+            extensions: &["go"],
+            language: || tree_sitter_go::LANGUAGE.into(),
+            call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_declaration",
+            assign_kinds: &["short_var_declaration", "assignment_statement"],
+        },
+        LangSpec {
+            lang: "c",
+            extensions: &["c", "h"],
+            language: || tree_sitter_c::LANGUAGE.into(),
+            call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_definition",
+            assign_kinds: &["init_declarator", "assignment_expression"],
+        },
+        LangSpec {
+            lang: "cpp",
+            extensions: &["cc", "cpp", "cxx", "hpp", "hh"],
+            language: || tree_sitter_cpp::LANGUAGE.into(),
+            call_kind: "call_expression",
+            fn_field: DEFAULT_FN_FIELD,
+            args_field: DEFAULT_ARGS_FIELD,
+            func_kind: "function_definition",
+            assign_kinds: &["init_declarator", "assignment_expression"],
+        },
+        // Java's `method_invocation` names the callee via the `name` field.
+        LangSpec {
+            lang: "java",
+            extensions: &["java"],
+            language: || tree_sitter_java::LANGUAGE.into(),
+            call_kind: "method_invocation",
+            fn_field: "name",
+            args_field: "arguments",
+            func_kind: "method_declaration",
             assign_kinds: &["assignment_expression", "variable_declarator"],
         },
     ]
@@ -99,9 +177,12 @@ pub struct AstExtractor;
 /// field names (`left`/`right` for assignments, `name`/`value` for JS
 /// variable declarators).
 fn assignment_parts<'a>(node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+    // Target field: `left` (assignments), `name` (JS declarators), `pattern`
+    // (Rust `let`). RHS field: `right` or `value`.
     let target = node
         .child_by_field_name("left")
-        .or_else(|| node.child_by_field_name("name"))?;
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| node.child_by_field_name("pattern"))?;
     let rhs = node
         .child_by_field_name("right")
         .or_else(|| node.child_by_field_name("value"))?;
@@ -117,6 +198,7 @@ fn collect_facts(
     node: Node,
     src: &[u8],
     call_kind: &str,
+    fn_field: &str,
     idents: &mut Vec<String>,
     calls: &mut Vec<String>,
 ) {
@@ -126,8 +208,18 @@ fn collect_facts(
                 idents.push(t.to_string());
             }
         }
-        // Python `attribute` / JS `member_expression`: `a.b.c`.
-        "attribute" | "member_expression" => {
+        // Member/path access — `a.b.c` (Python `attribute`, JS
+        // `member_expression`, Go `selector_expression`) and `a::b::c` (Rust
+        // `scoped_identifier`/`field_expression`). Treated as source-check
+        // candidates so member-read sources (os.Args, r.FormValue, env::var)
+        // are recognized.
+        "attribute"
+        | "member_expression"
+        | "selector_expression"
+        | "scoped_identifier"
+        | "field_expression"
+        | "member_access_expression"
+        | "qualified_name" => {
             if let Ok(t) = node.utf8_text(src) {
                 calls.push(t.to_string());
             }
@@ -135,7 +227,7 @@ fn collect_facts(
         _ => {}
     }
     if node.kind() == call_kind {
-        if let Some(f) = node.child_by_field_name("function") {
+        if let Some(f) = node.child_by_field_name(fn_field) {
             if let Ok(t) = f.utf8_text(src) {
                 calls.push(t.to_string());
             }
@@ -143,8 +235,24 @@ fn collect_facts(
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_facts(child, src, call_kind, idents, calls);
+        collect_facts(child, src, call_kind, fn_field, idents, calls);
     }
+}
+
+/// The name of `node` if it is an identifier, else the first identifier in its
+/// subtree — so a wrapped assignment target (Go `expression_list`, a pattern)
+/// still yields a variable name.
+fn first_identifier(node: Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "identifier" {
+        return node.utf8_text(src).ok().map(String::from);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(name) = first_identifier(child, src) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Depth-first walk collecting symbols, call facts, and assignment facts. A
@@ -153,7 +261,7 @@ fn collect_facts(
 fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
     let kind = node.kind();
     if kind == spec.call_kind {
-        if let Some(callee) = node.child_by_field_name("function") {
+        if let Some(callee) = node.child_by_field_name(spec.fn_field) {
             if let Ok(name) = callee.utf8_text(src) {
                 let line = callee.start_position().row as u32 + 1;
                 ast.symbols.push(Symbol {
@@ -162,8 +270,15 @@ fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
                     line,
                 });
                 let (mut arg_idents, mut arg_calls) = (Vec::new(), Vec::new());
-                if let Some(args) = node.child_by_field_name("arguments") {
-                    collect_facts(args, src, spec.call_kind, &mut arg_idents, &mut arg_calls);
+                if let Some(args) = node.child_by_field_name(spec.args_field) {
+                    collect_facts(
+                        args,
+                        src,
+                        spec.call_kind,
+                        spec.fn_field,
+                        &mut arg_idents,
+                        &mut arg_calls,
+                    );
                 }
                 ast.calls.push(Call {
                     callee: name.to_string(),
@@ -185,17 +300,24 @@ fn walk(node: Node, src: &[u8], spec: &LangSpec, ast: &mut Ast) {
         }
     } else if spec.assign_kinds.contains(&kind) {
         if let Some((target, rhs)) = assignment_parts(node) {
-            if target.kind() == "identifier" {
-                if let Ok(name) = target.utf8_text(src) {
-                    let (mut rhs_idents, mut rhs_calls) = (Vec::new(), Vec::new());
-                    collect_facts(rhs, src, spec.call_kind, &mut rhs_idents, &mut rhs_calls);
-                    ast.assigns.push(Assign {
-                        target: name.to_string(),
-                        line: target.start_position().row as u32 + 1,
-                        rhs_idents,
-                        rhs_calls,
-                    });
-                }
+            // The target may be a bare identifier or wrap one (Go's
+            // `expression_list`, a Rust pattern); take the first identifier.
+            if let Some(name) = first_identifier(target, src) {
+                let (mut rhs_idents, mut rhs_calls) = (Vec::new(), Vec::new());
+                collect_facts(
+                    rhs,
+                    src,
+                    spec.call_kind,
+                    spec.fn_field,
+                    &mut rhs_idents,
+                    &mut rhs_calls,
+                );
+                ast.assigns.push(Assign {
+                    target: name,
+                    line: target.start_position().row as u32 + 1,
+                    rhs_idents,
+                    rhs_calls,
+                });
             }
         }
     }
@@ -252,6 +374,42 @@ fn sink_for(name: &str) -> Option<Sink> {
         cwe,
         what,
     };
+    // Cross-language command-execution sinks (Rust/Go/C#), matched on the full
+    // callee text before the generic last-component arms below.
+    if name.contains("Command::new") || name.contains("process::Command") {
+        return Some(sink(
+            "ast-process-command",
+            Severity::High,
+            "CWE-78",
+            "process execution",
+        ));
+    }
+    if name.contains("exec.Command") || name.contains("exec.CommandContext") {
+        return Some(sink(
+            "ast-exec-command",
+            Severity::High,
+            "CWE-78",
+            "os/exec command",
+        ));
+    }
+    if name.contains("Process.Start") {
+        return Some(sink(
+            "ast-process-start",
+            Severity::High,
+            "CWE-78",
+            "Process.Start execution",
+        ));
+    }
+    // C/C++ process execution: popen and the exec* family.
+    if last == "popen" || last.starts_with("execl") || last.starts_with("execv") {
+        return Some(sink(
+            "ast-c-exec",
+            Severity::High,
+            "CWE-78",
+            "C process execution",
+        ));
+    }
+
     // Full-name-specific sinks are matched before the generic last-component
     // ones, so `child_process.exec` is a child-process sink, not a bare `exec`.
     match (name, last) {
@@ -505,6 +663,66 @@ mod tests {
             .run(Path::new("m.py"), &Artifact::Bytes(vec![]))
             .unwrap_err();
         assert!(e2.to_string().contains("expected Ast"), "{e2}");
+    }
+
+    #[test]
+    fn go_flags_exec_command() {
+        let m = findings(
+            "m.go",
+            "func run(c string) {\n  exec.Command(\"sh\", \"-c\", c)\n}\n",
+        );
+        assert!(m.iter().any(|x| x.rule == "ast-exec-command"), "{m:?}");
+    }
+
+    #[test]
+    fn rust_flags_process_command() {
+        let m = findings(
+            "m.rs",
+            "fn run(c: &str) {\n  std::process::Command::new(c);\n}\n",
+        );
+        assert!(m.iter().any(|x| x.rule == "ast-process-command"), "{m:?}");
+    }
+
+    #[test]
+    fn java_flags_runtime_exec() {
+        let m = findings(
+            "M.java",
+            "class M { void r(String c) { Runtime.getRuntime().exec(c); } }",
+        );
+        assert!(m.iter().any(|x| x.rule == "ast-exec"), "{m:?}");
+    }
+
+    #[test]
+    fn c_flags_system_and_popen() {
+        let m = findings("m.c", "void r(char* c){ system(c); popen(c, \"r\"); }");
+        let rules: Vec<&str> = m.iter().map(|x| x.rule.as_str()).collect();
+        assert!(rules.contains(&"ast-os-command"), "{rules:?}");
+        assert!(rules.contains(&"ast-c-exec"), "{rules:?}");
+    }
+
+    #[test]
+    fn typescript_flags_child_process() {
+        let m = findings("s.ts", "function r(c: string) { child_process.exec(c); }");
+        assert!(m.iter().any(|x| x.rule == "ast-child-process"), "{m:?}");
+    }
+
+    #[test]
+    fn go_taint_from_form_value() {
+        // Go: r.FormValue is a source; passing it to exec.Command is injection.
+        let ast = ast_of(
+            "h.go",
+            "func h(r int) {\n  c := r.FormValue(\"cmd\")\n  exec.Command(c)\n}\n",
+        );
+        let Artifact::Matches(m) = crate::taint::TaintScanner
+            .run(Path::new("h.go"), &Artifact::Ast(ast))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            m.iter().any(|x| x.rule == "taint-command-injection"),
+            "{m:?}"
+        );
     }
 
     #[test]

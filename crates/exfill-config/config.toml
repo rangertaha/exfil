@@ -12,8 +12,8 @@ store = ".exfill"
 datasets = []
 
 [plugins.ast]
-# Languages to parse for structural analysis.
-languages = ["go", "python", "javascript", "rust"]
+# Languages parsed for structural analysis (auto-detected by extension).
+languages = ["python", "javascript", "typescript", "rust", "go", "c", "cpp", "java"]
 
 [plugins.yara]
 # YARA rule files or directories.

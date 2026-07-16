@@ -95,3 +95,8 @@ and this project adheres to
   `ScriptEnricher` runs a user `.rhai` script (configured via `[plugins.script]
   enrich`) over each finding to compute a triage note, plugging into the same
   Enricher trait.
+- AST/taint language coverage expanded from Python+JavaScript to also cover
+  TypeScript, Rust, Go, C, C++, and Java. LangSpec gained configurable call
+  fields (Java's method_invocation uses `name`); new cross-language sinks
+  (process::Command, exec.Command, popen/exec*, Runtime.exec) and taint sources
+  (env::var, os.Getenv/Args, FormValue). C# awaits an ABI-compatible grammar.

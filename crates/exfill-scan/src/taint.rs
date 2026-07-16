@@ -31,7 +31,8 @@ use anyhow::Result;
 use exfill_core::{Match, Severity};
 use exfill_task::{Artifact, ArtifactKind, Ast, FileTask};
 
-/// Whether a callee name denotes an untrusted-input source.
+/// Whether a callee name denotes an untrusted-input source. Covers Python, JS,
+/// Go, Rust, and C# input surfaces.
 fn is_source(callee: &str) -> bool {
     let last = callee.rsplit('.').next().unwrap_or(callee);
     matches!(last, "input" | "raw_input" | "getenv")
@@ -42,6 +43,19 @@ fn is_source(callee: &str) -> bool {
         || callee.contains("req.body")
         || callee.contains("req.query")
         || callee.contains("req.params")
+        // Go: os.Args, os.Getenv, r.FormValue, r.URL.Query, r.PostFormValue
+        || callee.contains("os.Args")
+        || callee.contains("os.Getenv")
+        || callee.contains("FormValue")
+        || callee.contains("URL.Query")
+        // Rust: std::env::var, std::env::args
+        || callee.contains("env::var")
+        || callee.contains("env::args")
+        // C#: Console.ReadLine, Request.Query, Request.Form, .QueryString
+        || callee.contains("Console.ReadLine")
+        || callee.contains("Request.Query")
+        || callee.contains("Request.Form")
+        || callee.contains("QueryString")
 }
 
 /// A taint sink: the rule and classification if untrusted data reaches it.
@@ -55,6 +69,22 @@ struct TaintSink {
 fn taint_sink(callee: &str) -> Option<TaintSink> {
     let last = callee.rsplit('.').next().unwrap_or(callee);
     let sink = |rule, cwe, what| TaintSink { rule, cwe, what };
+    // Cross-language command-execution sinks (Go/Rust/C#/C), whose last
+    // component isn't `exec`/`system`, matched on the full callee first.
+    if callee.contains("exec.Command")
+        || callee.contains("Command::new")
+        || callee.contains("process::Command")
+        || callee.contains("Process.Start")
+        || last == "popen"
+        || last.starts_with("execl")
+        || last.starts_with("execv")
+    {
+        return Some(sink(
+            "taint-command-injection",
+            "CWE-78",
+            "process execution",
+        ));
+    }
     match (callee, last) {
         ("child_process.exec" | "child_process.execSync", _) | (_, "execSync") => Some(sink(
             "taint-command-injection",
