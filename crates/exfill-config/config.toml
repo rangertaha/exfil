@@ -1,0 +1,32 @@
+# exfill default configuration (TOML).
+#
+# Each plugin is configured by a [plugins.<name>] table whose fields are
+# specific to that plugin. `update` entries list datasets (and the LLM model)
+# to (re)download when `exfill update` runs.
+
+# Location of the local findings store (removed by `exfill clean`).
+store = ".exfill"
+
+[plugins.regex]
+# Datasets to apply. Empty = all stored, falling back to the built-in set.
+datasets = []
+
+[plugins.ast]
+# Languages to parse for structural analysis.
+languages = ["go", "python", "javascript", "rust"]
+
+[plugins.yara]
+# YARA rule files or directories.
+rules = []
+
+[plugins.taint]
+enabled = true
+
+[llm]
+# Offline LLM enrichment. No-op until a model is downloaded via `exfill update`.
+enabled = false
+tasks = ["extract", "triage"]
+
+[[update]]
+name = "security"
+ref = "builtin://security"

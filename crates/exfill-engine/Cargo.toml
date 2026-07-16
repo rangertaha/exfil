@@ -1,0 +1,20 @@
+[package]
+name = "exfill-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfill-core = { workspace = true }
+exfill-scan = { workspace = true }
+exfill-store = { workspace = true }
+anyhow = { workspace = true }
+blake3 = "1"
+ignore = "0.4"
+gethostname = "0.5"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

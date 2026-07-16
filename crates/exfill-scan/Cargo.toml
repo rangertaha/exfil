@@ -1,0 +1,13 @@
+[package]
+name = "exfill-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfill-core = { workspace = true }
+anyhow = { workspace = true }
+regex = "1"
+
+[lints]
+workspace = true
