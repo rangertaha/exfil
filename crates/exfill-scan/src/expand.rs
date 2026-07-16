@@ -327,4 +327,115 @@ mod tests {
         let files = run("broken.zip", b"not a real zip".to_vec());
         assert!(files.is_empty());
     }
+
+    /// Build a tar archive of `(name, bytes)` entries.
+    fn tar_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, *data).unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn expands_tar_entries() {
+        let files = run(
+            "bundle.tar",
+            tar_of(&[("etc/app.conf", b"secret=1"), ("readme", b"hi")]),
+        );
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|f| f.path == "bundle.tar!etc/app.conf"));
+    }
+
+    #[test]
+    fn expands_tar_gz_and_tgz() {
+        let tar = tar_of(&[("inner.txt", b"AKIA0123456789ABCDEF")]);
+        let mut gz = Vec::new();
+        {
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+            enc.write_all(&tar).unwrap();
+            enc.finish().unwrap();
+        }
+        for name in ["release.tar.gz", "release.tgz"] {
+            let files = run(name, gz.clone());
+            assert_eq!(files.len(), 1, "{name}");
+            assert_eq!(files[0].path, format!("{name}!inner.txt"));
+            assert!(files[0].content.starts_with(b"AKIA"));
+        }
+    }
+
+    #[test]
+    fn total_cap_stops_expansion() {
+        // Three 400-byte entries with a 900-byte total budget: the third
+        // pushes past the cap and is dropped.
+        let e = vec![b'x'; 400];
+        let bytes = zip_of(&[("a", &e), ("b", &e), ("c", &e)]);
+        let exp = ArchiveExpander::with_limits(Limits {
+            per_entry: 1 << 20,
+            total: 900,
+            max_entries: 100,
+        });
+        let Artifact::Files(files) = exp
+            .run(Path::new("z.zip"), &Artifact::Bytes(bytes))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(files.len(), 2, "third entry exceeds total cap");
+    }
+
+    #[test]
+    fn max_entries_cap_limits_count() {
+        let e = b"x".as_slice();
+        let bytes = tar_of(&[("a", e), ("b", e), ("c", e)]);
+        let exp = ArchiveExpander::with_limits(Limits {
+            per_entry: 1 << 20,
+            total: 1 << 20,
+            max_entries: 2,
+        });
+        let Artifact::Files(files) = exp
+            .run(Path::new("z.tar"), &Artifact::Bytes(bytes))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(files.len(), 2, "capped at max_entries");
+    }
+
+    #[test]
+    fn empty_gzip_yields_nothing() {
+        let mut gz = Vec::new();
+        {
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+            enc.write_all(b"").unwrap();
+            enc.finish().unwrap();
+        }
+        assert!(run("empty.gz", gz).is_empty());
+    }
+
+    #[test]
+    fn non_archive_run_returns_no_files() {
+        // A path the expander doesn't recognize produces an empty Files set.
+        let exp = ArchiveExpander::default();
+        let Artifact::Files(files) = exp
+            .run(Path::new("plain.txt"), &Artifact::Bytes(b"data".to_vec()))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn wrong_artifact_input_errors() {
+        let exp = ArchiveExpander::default();
+        let err = exp
+            .run(Path::new("a.zip"), &Artifact::Matches(vec![]))
+            .unwrap_err();
+        assert!(err.to_string().contains("expected Bytes"), "{err}");
+    }
 }

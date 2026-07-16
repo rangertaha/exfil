@@ -175,6 +175,23 @@ struct App {
 }
 
 impl App {
+    /// Build a fresh app over an open store. Shared by [`run`] and tests.
+    fn new(store: Store, store_dir: PathBuf) -> Self {
+        App {
+            store,
+            store_dir,
+            findings: Vec::new(),
+            list: ListState::default(),
+            mode: Mode::Index,
+            pager: Vec::new(),
+            message: "ready — :scan to scan, / to limit, q to quit".into(),
+            prompt: None,
+            limit: String::new(),
+            scan: None,
+            quit: false,
+        }
+    }
+
     fn selected(&self) -> Option<&Match> {
         self.list.selected().and_then(|i| self.findings.get(i))
     }
@@ -487,45 +504,50 @@ pub fn run(handle: Handle, store_dir: &Path) -> Result<()> {
         .block_on(Store::open_findings(store_dir))
         .context("open findings store")?;
 
-    let mut app = App {
-        store,
-        store_dir: store_dir.to_path_buf(),
-        findings: Vec::new(),
-        list: ListState::default(),
-        mode: Mode::Index,
-        pager: Vec::new(),
-        message: "ready — :scan to scan, / to limit, q to quit".into(),
-        prompt: None,
-        limit: String::new(),
-        scan: None,
-        quit: false,
-    };
+    let mut app = App::new(store, store_dir.to_path_buf());
     app.refresh_findings(&handle, "");
 
     enable_raw_mode().context("enable raw mode")?;
     crossterm::execute!(std::io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
 
-    // Always restore the terminal, even if the loop errors.
-    let result = (|| -> Result<()> {
-        while !app.quit {
-            app.pump_scan(&handle);
-            terminal.draw(|f| app.draw(f))?;
-            // Poll with a timeout so scan progress redraws even without input.
-            if crossterm::event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = crossterm::event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        app.on_key(&handle, key.code);
-                    }
+    // Always restore the terminal, even if the loop errors. The key source
+    // polls crossterm; the loop body itself lives in `event_loop` so it can be
+    // tested against a scripted source and a `TestBackend`.
+    let result = event_loop(&mut app, &handle, &mut terminal, || {
+        if crossterm::event::poll(Duration::from_millis(100)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = crossterm::event::read() {
+                if key.kind == KeyEventKind::Press {
+                    return Some(key.code);
                 }
             }
         }
-        Ok(())
-    })();
+        None
+    });
 
     crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
     result
+}
+
+/// The TUI's main loop, factored out of [`run`] so it is backend-generic and
+/// takes its keys from an injectable source. Each tick pumps scan progress,
+/// redraws, then applies one key (if the source yields one). Ends when the
+/// user quits.
+fn event_loop<B: ratatui::backend::Backend>(
+    app: &mut App,
+    handle: &Handle,
+    terminal: &mut Terminal<B>,
+    mut next_key: impl FnMut() -> Option<KeyCode>,
+) -> Result<()> {
+    while !app.quit {
+        app.pump_scan(handle);
+        terminal.draw(|f| app.draw(f))?;
+        if let Some(code) = next_key() {
+            app.on_key(handle, code);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -597,5 +619,164 @@ mod tests {
         assert_eq!(severity_flag(Some(Severity::Critical)), 'C');
         assert_eq!(severity_flag(Some(Severity::Info)), 'I');
         assert_eq!(severity_flag(None), ' ');
+    }
+
+    use ratatui::backend::TestBackend;
+
+    /// Render the app once into a TestBackend and return the screen text.
+    fn screen(app: &mut App) -> String {
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    fn type_str(app: &mut App, handle: &Handle, s: &str) {
+        for c in s.chars() {
+            app.on_key(handle, KeyCode::Char(c));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn app_drives_index_pager_prompts_and_commands() {
+        let handle = Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let base = std::env::temp_dir().join(format!("exfill-tui-test-{}", std::process::id()));
+            let tree = base.join("tree");
+            let store_dir = base.join("store");
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&tree).unwrap();
+            std::fs::write(tree.join("leak.env"), "AWS=AKIA0123456789ABCDEF\n").unwrap();
+
+            // Seed the store by scanning the tree.
+            let store = handle.block_on(Store::open_findings(&store_dir)).unwrap();
+            let pipeline = exfill_scan::default_pipeline().unwrap();
+            handle
+                .block_on(exfill_engine::scan(
+                    &tree,
+                    &pipeline,
+                    &store,
+                    Some(&store_dir),
+                    None,
+                ))
+                .unwrap();
+
+            let mut app = App::new(store, store_dir.clone());
+            app.refresh_findings(&handle, "");
+            assert!(!app.findings.is_empty(), "seeded findings load");
+
+            // Index navigation and a render.
+            app.on_key(&handle, KeyCode::Char('j'));
+            app.on_key(&handle, KeyCode::Char('k'));
+            app.on_key(&handle, KeyCode::Char('G'));
+            app.on_key(&handle, KeyCode::Char('g'));
+            app.on_key(&handle, KeyCode::Down);
+            app.on_key(&handle, KeyCode::Up);
+            assert!(screen(&mut app).contains("exfill:"), "status bar renders");
+
+            // Enter the pager, scroll, and leave it; render in pager mode too.
+            app.on_key(&handle, KeyCode::Enter);
+            assert!(matches!(app.mode, Mode::Pager(_)));
+            assert!(screen(&mut app).contains("file record") || !app.pager.is_empty());
+            app.on_key(&handle, KeyCode::Char('j'));
+            app.on_key(&handle, KeyCode::Char('k'));
+            app.on_key(&handle, KeyCode::Char('q'));
+            assert!(matches!(app.mode, Mode::Index));
+
+            // `:rules` command opens the pager with the ruleset.
+            app.on_key(&handle, KeyCode::Char(':'));
+            type_str(&mut app, &handle, "rules");
+            app.on_key(&handle, KeyCode::Enter);
+            assert!(matches!(app.mode, Mode::Pager(_)));
+            assert!(app.pager.iter().any(|l| l.contains("aws-access-key-id")));
+            app.on_key(&handle, KeyCode::Char('i')); // back to index
+
+            // `/severity=low` limits to nothing; the limit shows in the status.
+            app.on_key(&handle, KeyCode::Char('/'));
+            type_str(&mut app, &handle, "severity=low");
+            app.on_key(&handle, KeyCode::Enter);
+            assert!(app.findings.is_empty());
+            assert_eq!(app.limit, "severity=low");
+            app.on_key(&handle, KeyCode::Char('r')); // reload keeps the limit
+
+            // Prompt editing: type, backspace, escape.
+            app.on_key(&handle, KeyCode::Char(':'));
+            app.on_key(&handle, KeyCode::Char('x'));
+            app.on_key(&handle, KeyCode::Backspace);
+            app.on_key(&handle, KeyCode::Esc);
+            assert!(app.prompt.is_none());
+
+            // get (miss) and an invalid command set the message line.
+            app.execute(&handle, Action::Get("file:doesnotexist".into()));
+            assert!(app.message.contains("no record"));
+            app.execute(&handle, Action::Invalid("boom".into()));
+            assert_eq!(app.message, "boom");
+
+            // Enter on an empty index reports nothing selected.
+            app.list.select(None);
+            app.open_pager(&handle);
+            assert!(app.message.contains("no finding selected"));
+
+            // Start a scan of the tree, then pressing 's' hits the
+            // already-running guard; pump until it finishes.
+            app.execute(&handle, Action::Scan(tree.clone()));
+            assert!(app.scan.is_some());
+            app.on_key(&handle, KeyCode::Char('s'));
+            assert!(app.message.contains("already running"));
+            for _ in 0..200 {
+                app.pump_scan(&handle);
+                let _ = screen(&mut app); // exercise the scanning-gauge header
+                if app.scan.is_none() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(app.scan.is_none(), "scan finished");
+            assert!(app.message.contains("scanned"), "{}", app.message);
+
+            // Clean empties the findings via the graph.
+            app.execute(&handle, Action::Clean);
+            assert!(app.findings.is_empty());
+            assert!(app.message.contains("cleared"));
+
+            // Quit.
+            app.on_key(&handle, KeyCode::Char('q'));
+            assert!(app.quit);
+
+            let _ = std::fs::remove_dir_all(&base);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_loop_runs_until_quit() {
+        let handle = Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let dir = std::env::temp_dir().join(format!("exfill-tui-loop-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let store = handle.block_on(Store::open_findings(&dir)).unwrap();
+            let mut app = App::new(store, dir.clone());
+
+            // Scripted keys: move down, open a prompt and cancel it, then quit.
+            let mut keys = vec![
+                KeyCode::Char('j'),
+                KeyCode::Char(':'),
+                KeyCode::Esc,
+                KeyCode::Char('q'),
+            ]
+            .into_iter();
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            event_loop(&mut app, &handle, &mut terminal, || keys.next()).unwrap();
+            assert!(app.quit, "loop exits when quit is set");
+
+            let _ = std::fs::remove_dir_all(&dir);
+        })
+        .await
+        .unwrap();
     }
 }

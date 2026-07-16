@@ -286,5 +286,23 @@ mod tests {
         // Expander must precede the scanners so archive contents get scanned.
         assert_eq!(names.first(), Some(&"archive-expand"));
         assert!(names.contains(&"regex") && names.contains(&"supply-chain"));
+        // The AST chain is present and ordered extractor-before-consumer.
+        let ast = names.iter().position(|n| *n == "ast").unwrap();
+        let danger = names.iter().position(|n| *n == "ast-danger").unwrap();
+        assert!(ast < danger, "{names:?}");
+    }
+
+    #[test]
+    fn scan_task_metadata_and_wrong_input() {
+        let task = ScanTask(RegexScanner::new(vec![rule("r", "x")]).unwrap());
+        assert_eq!(FileTask::name(&task), "regex");
+        assert_eq!(task.needs(), ArtifactKind::Bytes);
+        assert_eq!(task.provides(), ArtifactKind::Matches);
+        assert!(FileTask::applies(&task, Path::new("any.txt")));
+        // An Ast input where Bytes is expected is a hard error.
+        let err = task
+            .run(Path::new("f"), &Artifact::Matches(vec![]))
+            .unwrap_err();
+        assert!(err.to_string().contains("expected Bytes"), "{err}");
     }
 }

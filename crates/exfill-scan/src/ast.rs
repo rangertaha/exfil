@@ -358,4 +358,79 @@ mod tests {
         let m = findings("m.py", ")(*&^%$ not python @@@");
         assert!(m.is_empty());
     }
+
+    #[test]
+    fn subprocess_and_bare_exec_and_system() {
+        let m = findings(
+            "m.py",
+            "subprocess.Popen(cmd)\nsubprocess.check_output(cmd)\nexec(src)\nsystem(cmd)\n",
+        );
+        let rules: Vec<&str> = m.iter().map(|x| x.rule.as_str()).collect();
+        assert!(rules.contains(&"ast-subprocess"), "{rules:?}");
+        assert!(rules.contains(&"ast-exec"), "{rules:?}");
+        assert!(rules.contains(&"ast-os-command"), "{rules:?}");
+        // Two subprocess calls (Popen + check_output) plus exec + system.
+        assert_eq!(m.len(), 4, "{m:?}");
+    }
+
+    #[test]
+    fn yaml_load_is_flagged() {
+        let m = findings("m.py", "cfg = yaml.load(text)\n");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].rule, "ast-yaml-load");
+        assert_eq!(m[0].severity, Some(Severity::Medium));
+    }
+
+    #[test]
+    fn safe_calls_produce_nothing() {
+        let m = findings("m.py", "print(x)\nfoo.bar(y)\njson.dumps(z)\n");
+        assert!(m.is_empty(), "{m:?}");
+    }
+
+    #[test]
+    fn javascript_extracts_functions() {
+        let ast = ast_of("s.js", "function greet(name) { return name; }\n");
+        assert_eq!(ast.lang, "javascript");
+        assert!(ast
+            .symbols
+            .iter()
+            .any(|s| s.kind == "function" && s.name == "greet"));
+    }
+
+    #[test]
+    fn extractor_run_on_unsupported_path_is_empty_ast() {
+        let Artifact::Ast(ast) = AstExtractor
+            .run(
+                Path::new("notes.txt"),
+                &Artifact::Bytes(b"eval(x)".to_vec()),
+            )
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(ast.symbols.is_empty());
+        assert!(ast.lang.is_empty());
+    }
+
+    #[test]
+    fn tasks_reject_wrong_artifact_inputs() {
+        let e1 = AstExtractor
+            .run(Path::new("m.py"), &Artifact::Matches(vec![]))
+            .unwrap_err();
+        assert!(e1.to_string().contains("expected Bytes"), "{e1}");
+        let e2 = DangerousCallScanner
+            .run(Path::new("m.py"), &Artifact::Bytes(vec![]))
+            .unwrap_err();
+        assert!(e2.to_string().contains("expected Ast"), "{e2}");
+    }
+
+    #[test]
+    fn task_metadata_is_stable() {
+        assert_eq!(AstExtractor.name(), "ast");
+        assert_eq!(AstExtractor.needs(), ArtifactKind::Bytes);
+        assert_eq!(AstExtractor.provides(), ArtifactKind::Ast);
+        assert_eq!(DangerousCallScanner.name(), "ast-danger");
+        assert_eq!(DangerousCallScanner.needs(), ArtifactKind::Ast);
+        assert_eq!(DangerousCallScanner.provides(), ArtifactKind::Matches);
+    }
 }

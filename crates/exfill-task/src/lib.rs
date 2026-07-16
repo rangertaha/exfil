@@ -319,5 +319,88 @@ mod tests {
             rules.contains(&"regex") && rules.contains(&"taint"),
             "{rules:?}"
         );
+        // The captured AST is surfaced for persistence.
+        assert!(out.ast.is_some());
+        assert_eq!(out.ast.unwrap().lang, "test");
+    }
+
+    /// A task that always produces a fixed artifact, optionally not applying.
+    struct Producer {
+        name: &'static str,
+        needs: ArtifactKind,
+        output: fn() -> Artifact,
+        applies: bool,
+    }
+
+    impl FileTask for Producer {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn needs(&self) -> ArtifactKind {
+            self.needs
+        }
+        fn provides(&self) -> ArtifactKind {
+            (self.output)().kind()
+        }
+        fn applies(&self, _p: &Path) -> bool {
+            self.applies
+        }
+        fn run(&self, _p: &Path, _i: &Artifact) -> Result<Artifact> {
+            Ok((self.output)())
+        }
+    }
+
+    #[test]
+    fn artifact_kind_tags_match_variants() {
+        assert_eq!(Artifact::Bytes(vec![]).kind(), ArtifactKind::Bytes);
+        assert_eq!(Artifact::Files(vec![]).kind(), ArtifactKind::Files);
+        assert_eq!(Artifact::Ast(Ast::default()).kind(), ArtifactKind::Ast);
+        assert_eq!(Artifact::Matches(vec![]).kind(), ArtifactKind::Matches);
+    }
+
+    #[test]
+    fn run_file_collects_expanded_files() {
+        let pipeline = Pipeline::new(vec![Box::new(Producer {
+            name: "expand",
+            needs: ArtifactKind::Bytes,
+            output: || {
+                Artifact::Files(vec![VirtualFile {
+                    path: "a.zip!inner".into(),
+                    content: b"x".to_vec(),
+                }])
+            },
+            applies: true,
+        })])
+        .unwrap();
+        let out = pipeline
+            .run_file(Path::new("a.zip"), b"pk".to_vec())
+            .unwrap();
+        assert_eq!(out.expanded.len(), 1);
+        assert_eq!(out.expanded[0].path, "a.zip!inner");
+    }
+
+    #[test]
+    fn run_file_skips_tasks_that_do_not_apply() {
+        let pipeline = Pipeline::new(vec![Box::new(Producer {
+            name: "regex",
+            needs: ArtifactKind::Bytes,
+            output: || Artifact::Matches(vec![]),
+            applies: false, // never runs
+        })])
+        .unwrap();
+        let out = pipeline.run_file(Path::new("f"), b"data".to_vec()).unwrap();
+        assert!(out.matches.is_empty());
+    }
+
+    #[test]
+    fn pipeline_debug_lists_task_names() {
+        let pipeline = Pipeline::new(vec![task(
+            "regex",
+            ArtifactKind::Bytes,
+            ArtifactKind::Matches,
+        )])
+        .unwrap();
+        let dbg = format!("{pipeline:?}");
+        assert!(dbg.contains("regex"), "{dbg}");
     }
 }

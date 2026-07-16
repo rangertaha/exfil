@@ -288,4 +288,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&JsonReporter, &empty)).unwrap();
         assert_eq!(v["findings"].as_array().unwrap().len(), 0);
     }
+
+    #[test]
+    fn empty_markdown_omits_tables() {
+        let out = render(&MarkdownReporter, &Analysis::default());
+        assert!(out.contains("# exfill findings"));
+        assert!(!out.contains("| Severity | Count |"));
+        assert!(!out.contains("| Rule |"));
+    }
+
+    #[test]
+    fn reporter_names_and_formats_are_stable() {
+        assert_eq!(TextReporter.name(), "text");
+        assert_eq!(JsonReporter.name(), "json");
+        assert_eq!(MarkdownReporter.name(), "markdown");
+        assert_eq!(FORMATS, ["text", "json", "markdown"]);
+    }
 }

@@ -208,6 +208,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_stage_and_analyze_convenience() {
+        let base = std::env::temp_dir().join(format!("exfill-run-conv-{}", std::process::id()));
+        let tree = base.join("tree");
+        let store_dir = base.join("store");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("leak.env"), "AWS=AKIA0123456789ABCDEF\n").unwrap();
+
+        // Fetch stage is a declared no-op today.
+        let store = Arc::new(Store::open_findings(&store_dir).await.unwrap());
+        let ctx = RunCtx {
+            store: store.clone(),
+            events: None,
+        };
+        assert_eq!(FetchStage.name(), "fetch");
+        FetchStage.run(&ctx).await.unwrap();
+
+        // Seed then use the analyze() convenience over a text sink.
+        exfill_engine_scan(&tree, &store, &store_dir).await;
+        let mut buf: Vec<u8> = Vec::new();
+        analyze(&store_dir, "", "text", &mut buf).await.unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("finding(s) across"), "{out}");
+
+        // Unknown format errors through the convenience path too.
+        let mut sink = Vec::new();
+        let err = analyze(&store_dir, "", "xml", &mut sink).await.unwrap_err();
+        assert!(err.to_string().contains("unknown report format"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Scan `tree` into `store` with the default pipeline (test helper).
+    async fn exfill_engine_scan(tree: &Path, store: &Store, store_dir: &Path) {
+        let pipeline = exfill_scan::default_pipeline().unwrap();
+        crate::scan(tree, &pipeline, store, Some(store_dir), None)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn report_stage_rejects_unknown_format() {
         let base = std::env::temp_dir().join(format!("exfill-run-badfmt-{}", std::process::id()));
