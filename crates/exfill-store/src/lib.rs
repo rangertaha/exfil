@@ -506,6 +506,49 @@ impl Store {
         Ok(graph)
     }
 
+    /// The nodes directly connected to `node_id` (`table:key`) by any graph
+    /// edge, each tagged with the relation and direction. This is the motion
+    /// primitive for graph navigation — "go to a neighbor by following an edge".
+    pub async fn neighbors(&self, node_id: &str) -> Result<Vec<Neighbor>> {
+        let Some((table, key)) = node_id.split_once(':') else {
+            bail!("node id must look like table:key, got {node_id:?}");
+        };
+        let node = RecordId::from((table, key));
+        let mut out = Vec::new();
+        // (edge table, the field holding the *other* endpoint, the field to
+        // filter on, and whether that direction is outgoing from `node`).
+        for edge in EDGE_TABLES {
+            for (other, filter, outgoing) in [("out", "in", true), ("in", "out", false)] {
+                let q = format!("SELECT VALUE {other} FROM {edge} WHERE {filter} = $n");
+                let mut res = self
+                    .db
+                    .query(q)
+                    .bind(("n", node.clone()))
+                    .await
+                    .with_context(|| format!("neighbors via {edge}"))?;
+                let ids: Vec<RecordId> = res.take(0)?;
+                for nid in ids {
+                    let id_str = nid.to_string();
+                    let kind = id_str.split(':').next().unwrap_or("").to_string();
+                    let data = self
+                        .get_record(&id_str)
+                        .await?
+                        .unwrap_or(serde_json::Value::Null);
+                    let label = node_label(&kind, &data).unwrap_or_else(|| id_str.clone());
+                    out.push(Neighbor {
+                        rel: (*edge).to_string(),
+                        outgoing,
+                        id: id_str,
+                        kind,
+                        label,
+                        data,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Fetch one record by full id (`table:key`) as JSON.
     pub async fn get_record(&self, id: &str) -> Result<Option<serde_json::Value>> {
         let Some((table, key)) = id.split_once(':') else {
@@ -520,6 +563,57 @@ impl Store {
             .with_context(|| format!("get {id}"))?;
         let rows: Vec<serde_json::Value> = res.take(0)?;
         Ok(rows.into_iter().next())
+    }
+}
+
+/// The graph edge tables traversed by [`Store::neighbors`].
+const EDGE_TABLES: &[&str] = &[
+    "has_ast",
+    "in_file",
+    "at_ast",
+    "flagged_by",
+    "from_dataset",
+    "from_source",
+    "includes",
+    "contained_in",
+];
+
+/// A node reachable from another by one edge: the relation, its direction, and
+/// the neighbor's id/kind/label/data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Neighbor {
+    /// The edge relation (`in_file`, `flagged_by`, …).
+    pub rel: String,
+    /// True if the edge points *from* the queried node *to* this neighbor.
+    pub outgoing: bool,
+    /// Neighbor record id (`table:key`).
+    pub id: String,
+    /// Neighbor kind (the record table).
+    pub kind: String,
+    /// Short display label for the neighbor.
+    pub label: String,
+    /// The neighbor record's fields.
+    pub data: serde_json::Value,
+}
+
+/// A short human label for a node of `kind` from its `data`, if derivable.
+/// Used for breadcrumbs and neighbor lists in the graph navigator.
+pub fn node_label(kind: &str, data: &serde_json::Value) -> Option<String> {
+    let s = |k: &str| data.get(k).and_then(|v| v.as_str());
+    let n = |k: &str| data.get(k).and_then(|v| v.as_u64());
+    match kind {
+        "finding" => Some(format!(
+            "{} @ {}:{}",
+            s("rule").unwrap_or("?"),
+            s("path").unwrap_or("?"),
+            n("line").unwrap_or(0)
+        )),
+        "file" => s("path").map(String::from),
+        "rule" => s("name").map(String::from),
+        "ast" => Some(format!("{} ast", s("lang").unwrap_or("?"))),
+        "dataset" | "source" => s("name").map(String::from),
+        "scan" => s("root").map(String::from),
+        _ => None,
     }
 }
 

@@ -3,13 +3,12 @@
 //! The layout follows mutt: a one-line **help bar** at the top, the full-width
 //! **index** of findings below it, a reverse-video **status bar**, and a
 //! **message/prompt line** at the very bottom. `Enter` opens the selected
-//! finding in a full-screen **pager** (its fields plus the file record it was
-//! found in — a hop through the graph), and `q`/`i` returns to the index.
+//! finding in the **graph navigator**, and `q`/`i` returns to the index.
 //!
 //! ## Keys (index)
 //!
 //! - `j`/`k`, arrows — move; `g`/`G` — first/last
-//! - `Enter` — open the finding in the pager (with its file record)
+//! - `Enter` — open the finding's file in the graph navigator
 //! - `/` — *limit* the index (mutt-style filter): empty shows all,
 //!   `severity=high`, `cwe=CWE-798`, `path=...`, or free text on rule names
 //! - `:` — command: `scan [path]`, `rules`, `get <id>`, `clean`, `quit`
@@ -17,9 +16,16 @@
 //! - `r` — reload findings from the store
 //! - `q` — quit
 //!
-//! ## Keys (pager)
+//! ## Keys (graph navigator)
 //!
-//! - `j`/`k`, arrows — scroll; `q`/`i`/`Esc` — back to the index
+//! Two panes — the node's rendered view (via the pluggable viewers) and its
+//! **edges** (neighbors). Vim-style motions follow edges through the graph:
+//!
+//! - `j`/`k` — scroll the view / move the edge cursor (depending on focus)
+//! - `h`/`l` (or `Tab`, arrows) — switch focus between view and edges
+//! - `Enter`/`l` on an edge — **follow it** to the neighbor node
+//! - `<` / `>` (or `Backspace`) — back / forward through the jumplist
+//! - `q`/`i`/`Esc` — return to the index (or step back at the root)
 //!
 //! # Rust notes
 //!
@@ -46,7 +52,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use tokio::runtime::Handle;
@@ -135,8 +141,47 @@ fn index_row(n: usize, m: &Match) -> String {
 /// Which screen is showing, mutt-style.
 enum Mode {
     Index,
-    /// Full-screen view of one finding; the field is the scroll offset.
+    /// Full-screen text view (rules, a record); the field is the scroll offset.
     Pager(u16),
+    /// Graph navigator: a node viewer beside its neighbors, with a back-stack.
+    Nav,
+}
+
+/// Which pane the navigator's keys act on.
+#[derive(PartialEq)]
+enum NavFocus {
+    /// The node's rendered content (scroll with j/k).
+    View,
+    /// The neighbor list (move with j/k, follow with Enter).
+    Neighbors,
+}
+
+/// One node in the navigation stack: its identity plus its rendered view and
+/// the edges leading out of it.
+struct NavNode {
+    id: String,
+    kind: String,
+    label: String,
+    lines: Vec<String>,
+    neighbors: Vec<exfill_store::Neighbor>,
+}
+
+/// The graph navigator's state: a back-stack (breadcrumbs), a forward-stack
+/// (redo), the focused pane, scroll, and neighbor cursor.
+struct NavState {
+    /// Visited nodes; the last is the current node (the breadcrumb trail).
+    stack: Vec<NavNode>,
+    /// Nodes stepped back from, for forward navigation.
+    forward: Vec<NavNode>,
+    focus: NavFocus,
+    scroll: u16,
+    pick: usize,
+}
+
+impl NavState {
+    fn current(&self) -> &NavNode {
+        self.stack.last().expect("nav stack never empty")
+    }
 }
 
 /// What the bottom prompt line is currently collecting, if anything.
@@ -171,8 +216,10 @@ struct App {
     /// The active limit, shown in the status bar (empty = all).
     limit: String,
     scan: Option<RunningScan>,
-    /// Pluggable viewers that render nodes in the pager.
+    /// Pluggable viewers that render nodes in the pager and navigator.
     viewers: exfill_view::Registry,
+    /// Graph navigator state, present while in [`Mode::Nav`].
+    nav: Option<NavState>,
     quit: bool,
 }
 
@@ -191,6 +238,7 @@ impl App {
             limit: String::new(),
             scan: None,
             viewers: exfill_view::Registry::new(),
+            nav: None,
             quit: false,
         }
     }
@@ -225,22 +273,14 @@ impl App {
         }
     }
 
-    /// Build the pager for the selected finding by rendering it — and the
-    /// `file` node it hops to through the graph — with the pluggable viewer
-    /// registry (the same "preview per node kind" model a graph workbench uses).
-    fn open_pager(&mut self, handle: &Handle) {
+    /// Enter the graph navigator rooted at the selected finding's file (the
+    /// natural hub: from it you can hop to the finding, its AST, its container,
+    /// and the scans that included it).
+    fn open_nav(&mut self, handle: &Handle) {
         let Some(m) = self.selected() else {
             self.message = "no finding selected".into();
             return;
         };
-        let finding_node = exfill_view::Node::new(
-            "finding",
-            "finding",
-            serde_json::to_value(m).unwrap_or(serde_json::Value::Null),
-        );
-        let mut lines = self.viewers.render(&finding_node);
-
-        // Graph hop: finding → the file it was found in.
         let path = m.path.clone();
         let file = handle.block_on(async {
             let mut r = self
@@ -252,18 +292,92 @@ impl App {
             let rows: Vec<serde_json::Value> = r.take(0)?;
             anyhow::Ok(rows.into_iter().next())
         });
-        lines.push(String::new());
-        lines.push("── file ──".into());
         match file {
             Ok(Some(v)) => {
-                let node = exfill_view::Node::new("file", "file", v);
-                lines.extend(self.viewers.render(&node));
+                // A file record's content hash is its key.
+                let key = v.get("hash").and_then(|k| k.as_str()).unwrap_or_default();
+                let node =
+                    self.build_nav_node(handle, format!("file:{key}"), "file".into(), v.clone());
+                self.nav = Some(NavState {
+                    stack: vec![node],
+                    forward: Vec::new(),
+                    focus: NavFocus::Neighbors,
+                    scroll: 0,
+                    pick: 0,
+                });
+                self.mode = Mode::Nav;
             }
-            Ok(None) => lines.push(format!("(no file record for {path})")),
-            Err(e) => lines.push(format!("(lookup failed: {e:#})")),
+            Ok(None) => self.message = format!("no file record for {path}"),
+            Err(e) => self.message = format!("lookup failed: {e:#}"),
         }
-        self.pager = lines;
-        self.mode = Mode::Pager(0);
+    }
+
+    /// Build a navigable node: render its view and load its edges.
+    fn build_nav_node(
+        &self,
+        handle: &Handle,
+        id: String,
+        kind: String,
+        data: serde_json::Value,
+    ) -> NavNode {
+        let lines = self.viewers.render(&exfill_view::Node::new(
+            id.clone(),
+            kind.clone(),
+            data.clone(),
+        ));
+        let neighbors = handle
+            .block_on(self.store.neighbors(&id))
+            .unwrap_or_default();
+        let label = exfill_store::node_label(&kind, &data).unwrap_or_else(|| id.clone());
+        NavNode {
+            id,
+            kind,
+            label,
+            lines,
+            neighbors,
+        }
+    }
+
+    /// Follow the selected neighbor edge to a new current node.
+    fn nav_follow(&mut self, handle: &Handle) {
+        let Some(nav) = &self.nav else { return };
+        let Some(n) = nav.current().neighbors.get(nav.pick).cloned() else {
+            return;
+        };
+        let node = self.build_nav_node(handle, n.id, n.kind, n.data);
+        if let Some(nav) = &mut self.nav {
+            nav.forward.clear();
+            nav.stack.push(node);
+            nav.focus = NavFocus::Neighbors;
+            nav.scroll = 0;
+            nav.pick = 0;
+        }
+    }
+
+    /// Step back to the previous node (jumplist).
+    fn nav_back(&mut self) {
+        if let Some(nav) = &mut self.nav {
+            if nav.stack.len() > 1 {
+                let popped = nav.stack.pop().expect("len > 1");
+                nav.forward.push(popped);
+                nav.scroll = 0;
+                nav.pick = 0;
+            } else {
+                // At the root: leave the navigator.
+                self.mode = Mode::Index;
+            }
+        }
+    }
+
+    /// Step forward to a node stepped back from.
+    fn nav_forward(&mut self) {
+        if let Some(nav) = &mut self.nav {
+            if let Some(node) = nav.forward.pop() {
+                nav.stack.push(node);
+                nav.scroll = 0;
+                nav.pick = 0;
+            }
+        }
     }
 
     fn execute(&mut self, handle: &Handle, action: Action) {
@@ -411,10 +525,13 @@ impl App {
                 "q:Quit  j/k:Move  Enter:View  /:Limit  ::Cmd  s:Scan  r:Reload  g/G:First/Last"
             }
             Mode::Pager(_) => "i:Exit  j/k:Scroll  q:Index",
+            Mode::Nav => {
+                "q:Index  j/k:Move  h/l:Pane  Enter:Follow  </>:Back/Fwd  (edges = graph hops)"
+            }
         };
         frame.render_widget(Paragraph::new(help_text).style(reversed), help);
 
-        // Main area: index or pager.
+        // Main area: index, text pager, or graph navigator.
         match self.mode {
             Mode::Index => {
                 let items: Vec<ListItem> = self
@@ -430,6 +547,7 @@ impl App {
                 let text: Vec<Line> = self.pager.iter().map(|l| Line::raw(l.as_str())).collect();
                 frame.render_widget(Paragraph::new(text).scroll((scroll, 0)), main);
             }
+            Mode::Nav => self.draw_nav(frame, main),
         }
 
         // Status bar (reverse video) + message/prompt line.
@@ -488,11 +606,126 @@ impl App {
                     self.refresh_findings(handle, &limit);
                 }
                 KeyCode::Char('s') => self.execute(handle, Action::Scan(PathBuf::from("."))),
-                KeyCode::Enter => self.open_pager(handle),
+                KeyCode::Enter => self.open_nav(handle),
                 _ => {}
             },
+            Mode::Nav => self.on_nav_key(handle, code),
         }
     }
+
+    /// Navigator keys: two focusable panes (the node view and its neighbors)
+    /// plus back/forward through the jumplist.
+    fn on_nav_key(&mut self, handle: &Handle, code: KeyCode) {
+        // Global back/forward, independent of focus.
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc => {
+                self.mode = Mode::Index;
+                self.nav = None;
+                return;
+            }
+            KeyCode::Char('<') | KeyCode::Backspace => {
+                self.nav_back();
+                return;
+            }
+            KeyCode::Char('>') => {
+                self.nav_forward();
+                return;
+            }
+            _ => {}
+        }
+
+        let Some(nav) = &mut self.nav else { return };
+        match nav.focus {
+            NavFocus::View => match code {
+                KeyCode::Char('j') | KeyCode::Down => nav.scroll = nav.scroll.saturating_add(1),
+                KeyCode::Char('k') | KeyCode::Up => nav.scroll = nav.scroll.saturating_sub(1),
+                KeyCode::Char('l') | KeyCode::Tab | KeyCode::Right => {
+                    nav.focus = NavFocus::Neighbors
+                }
+                KeyCode::Char('h') | KeyCode::Left => self.nav_back(),
+                _ => {}
+            },
+            NavFocus::Neighbors => {
+                let count = nav.current().neighbors.len();
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if count > 0 {
+                            nav.pick = (nav.pick + 1).min(count - 1);
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => nav.pick = nav.pick.saturating_sub(1),
+                    KeyCode::Char('h') | KeyCode::Tab | KeyCode::Left => nav.focus = NavFocus::View,
+                    KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Enter | KeyCode::Right => {
+                        self.nav_follow(handle)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Render the navigator: breadcrumb, node view, and neighbor list.
+    fn draw_nav(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let nav = self.nav.as_ref().expect("nav present in Nav mode");
+        let reversed = Style::default().add_modifier(Modifier::REVERSED);
+        let [crumb, panes] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+
+        // Breadcrumb trail of visited nodes.
+        let trail = nav
+            .stack
+            .iter()
+            .map(|n| n.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" › ");
+        frame.render_widget(Paragraph::new(format!("◆ {trail}")), crumb);
+
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .areas(panes);
+
+        // Node view (left).
+        let view_focused = nav.focus == NavFocus::View;
+        let view_title = format!(" {} · {} ", nav.current().kind, nav.current().id);
+        let text: Vec<Line> = nav
+            .current()
+            .lines
+            .iter()
+            .map(|l| Line::raw(l.as_str()))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(text)
+                .scroll((nav.scroll, 0))
+                .block(bordered_focus(&view_title, view_focused)),
+            left,
+        );
+
+        // Neighbor list (right).
+        let items: Vec<ListItem> = nav
+            .current()
+            .neighbors
+            .iter()
+            .map(|n| {
+                let arrow = if n.outgoing { "→" } else { "←" };
+                ListItem::new(format!("{arrow} {:<12} {}:{}", n.rel, n.kind, n.label))
+            })
+            .collect();
+        let mut list_state = ListState::default();
+        if !nav.current().neighbors.is_empty() {
+            list_state.select(Some(nav.pick.min(nav.current().neighbors.len() - 1)));
+        }
+        let title = format!(" edges ({}) ", nav.current().neighbors.len());
+        let list = List::new(items)
+            .block(bordered_focus(&title, nav.focus == NavFocus::Neighbors))
+            .highlight_style(reversed);
+        frame.render_stateful_widget(list, right, &mut list_state);
+    }
+}
+
+/// A bordered block whose title marks focus.
+fn bordered_focus(title: &str, focused: bool) -> Block<'_> {
+    let mark = if focused { "●" } else { "○" };
+    Block::bordered().title(format!("{mark}{title}"))
 }
 
 /// Run the TUI until the user quits. Blocking; call from `spawn_blocking`.
@@ -675,13 +908,23 @@ mod tests {
             app.on_key(&handle, KeyCode::Up);
             assert!(screen(&mut app).contains("exfill:"), "status bar renders");
 
-            // Enter the pager, scroll, and leave it; render in pager mode too.
+            // Enter the graph navigator (rooted at the finding's file), follow
+            // an edge to a neighbor, step back, and leave.
             app.on_key(&handle, KeyCode::Enter);
-            assert!(matches!(app.mode, Mode::Pager(_)));
-            assert!(screen(&mut app).contains("file record") || !app.pager.is_empty());
-            app.on_key(&handle, KeyCode::Char('j'));
-            app.on_key(&handle, KeyCode::Char('k'));
-            app.on_key(&handle, KeyCode::Char('q'));
+            assert!(matches!(app.mode, Mode::Nav));
+            let nav = app.nav.as_ref().unwrap();
+            assert_eq!(nav.current().kind, "file");
+            assert!(!nav.current().neighbors.is_empty(), "file has edges");
+            let _ = screen(&mut app); // renders breadcrumb + view + edges
+            let depth_before = app.nav.as_ref().unwrap().stack.len();
+            app.on_key(&handle, KeyCode::Enter); // follow selected neighbor
+            assert_eq!(app.nav.as_ref().unwrap().stack.len(), depth_before + 1);
+            app.on_key(&handle, KeyCode::Char('<')); // back
+            assert_eq!(app.nav.as_ref().unwrap().stack.len(), depth_before);
+            app.on_key(&handle, KeyCode::Char('>')); // forward
+            assert_eq!(app.nav.as_ref().unwrap().stack.len(), depth_before + 1);
+            app.on_key(&handle, KeyCode::Char('h')); // pane focus / back
+            app.on_key(&handle, KeyCode::Char('q')); // leave navigator
             assert!(matches!(app.mode, Mode::Index));
 
             // `:rules` command opens the pager with the ruleset.
@@ -715,7 +958,7 @@ mod tests {
 
             // Enter on an empty index reports nothing selected.
             app.list.select(None);
-            app.open_pager(&handle);
+            app.open_nav(&handle);
             assert!(app.message.contains("no finding selected"));
 
             // Start a scan of the tree, then pressing 's' hits the

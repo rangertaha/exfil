@@ -825,11 +825,32 @@ mod tests {
         let mut res = store
             .db()
             .query("SELECT count() AS n FROM has_ast WHERE in = type::thing('file', $h) GROUP ALL")
-            .bind(("h", hash))
+            .bind(("h", hash.clone()))
             .await
             .unwrap();
         let rows: Vec<serde_json::Value> = res.take(0).unwrap();
         assert_eq!(rows[0]["n"], 1, "file linked to its ast");
+
+        // Navigation: from the file node, neighbors reach its ast and the
+        // finding found in it (edge-following, both directions).
+        let file_id = format!("file:{hash}");
+        let neigh = store.neighbors(&file_id).await.unwrap();
+        assert!(
+            neigh
+                .iter()
+                .any(|n| n.kind == "ast" && n.rel == "has_ast" && n.outgoing),
+            "{neigh:?}"
+        );
+        assert!(
+            neigh
+                .iter()
+                .any(|n| n.kind == "finding" && n.rel == "in_file" && !n.outgoing),
+            "{neigh:?}"
+        );
+        // And from that finding, a neighbor hops back to the file.
+        let finding = neigh.iter().find(|n| n.kind == "finding").unwrap();
+        let back = store.neighbors(&finding.id).await.unwrap();
+        assert!(back.iter().any(|n| n.id == file_id), "{back:?}");
 
         let _ = std::fs::remove_dir_all(&base);
     }

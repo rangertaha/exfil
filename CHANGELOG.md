@@ -73,3 +73,7 @@ and this project adheres to
 - Pluggable viewers (`exfill-view`): a Viewer trait + Registry keyed by node
   kind (finding/file/ast/rule + JSON fallback) — the "preview per node type"
   foundation for graph navigation. Wired into the TUI pager.
+- Graph navigator in the TUI (M1): Enter opens a two-pane edge-following
+  navigator — node view (via pluggable viewers) beside its neighbors — with
+  vim motions (j/k, h/l panes, Enter follows an edge), a jumplist (</>) and a
+  breadcrumb trail. Backed by Store::neighbors (typed-edge traversal).
