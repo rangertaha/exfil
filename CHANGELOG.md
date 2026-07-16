@@ -77,3 +77,7 @@ and this project adheres to
   navigator — node view (via pluggable viewers) beside its neighbors — with
   vim motions (j/k, h/l panes, Enter follows an edge), a jumplist (</>) and a
   breadcrumb trail. Backed by Store::neighbors (typed-edge traversal).
+- Graph editing in the navigator (M2 CRUD): `c` edits a node field
+  (field=value), `d` deletes an edge, `u`/`U` undo/redo. Backed by
+  Store::set_field / create_edge / delete_edge with a reversible EditOp
+  undo stack.

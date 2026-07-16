@@ -506,6 +506,81 @@ impl Store {
         Ok(graph)
     }
 
+    /// Set a field on a node, returning its previous value (for undo). The
+    /// field name is validated (identifier characters only) since it can't be
+    /// bound as a `$param` — the value side is bound safely.
+    pub async fn set_field(
+        &self,
+        node_id: &str,
+        field: &str,
+        value: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        if field.is_empty()
+            || !field
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            bail!("invalid field name {field:?}");
+        }
+        let (table, key) = node_id
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("node id must be table:key"))?;
+        let rid = RecordId::from((table, key));
+        let old = self
+            .get_record(node_id)
+            .await?
+            .and_then(|v| v.get(field).cloned())
+            .unwrap_or(serde_json::Value::Null);
+        self.db
+            .query(format!("UPDATE $id SET {field} = $v"))
+            .bind(("id", rid))
+            .bind(("v", value))
+            .await
+            .with_context(|| format!("set {field} on {node_id}"))?
+            .check()
+            .context("set_field statement failed")?;
+        Ok(old)
+    }
+
+    /// Create a graph edge `from -rel-> to`. `rel` must be a known edge table.
+    pub async fn create_edge(&self, rel: &str, from_id: &str, to_id: &str) -> Result<()> {
+        self.edit_edge(rel, from_id, to_id, true).await
+    }
+
+    /// Delete the graph edge `from -rel-> to`.
+    pub async fn delete_edge(&self, rel: &str, from_id: &str, to_id: &str) -> Result<()> {
+        self.edit_edge(rel, from_id, to_id, false).await
+    }
+
+    /// Shared body of [`create_edge`]/[`delete_edge`].
+    async fn edit_edge(&self, rel: &str, from_id: &str, to_id: &str, create: bool) -> Result<()> {
+        if !EDGE_TABLES.contains(&rel) {
+            bail!("unknown edge relation {rel:?}");
+        }
+        let rid = |id: &str| -> Result<RecordId> {
+            let (t, k) = id
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("id must be table:key"))?;
+            Ok(RecordId::from((t, k)))
+        };
+        let from = rid(from_id)?;
+        let to = rid(to_id)?;
+        let q = if create {
+            format!("RELATE $from->{rel}->$to")
+        } else {
+            format!("DELETE {rel} WHERE in = $from AND out = $to")
+        };
+        self.db
+            .query(q)
+            .bind(("from", from))
+            .bind(("to", to))
+            .await
+            .with_context(|| format!("edit edge {rel}"))?
+            .check()
+            .context("edge statement failed")?;
+        Ok(())
+    }
+
     /// The nodes directly connected to `node_id` (`table:key`) by any graph
     /// edge, each tagged with the relation and direction. This is the motion
     /// primitive for graph navigation — "go to a neighbor by following an edge".
@@ -958,6 +1033,62 @@ mod tests {
             .map(|(n, _)| n)
             .collect();
         assert_eq!(names, vec!["security".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn node_and_edge_crud_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("exfill-crud-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_FINDINGS).await.unwrap();
+
+        // Two file nodes.
+        store
+            .upsert_file(&sample_meta("aaa", "a.txt"))
+            .await
+            .unwrap();
+        store
+            .upsert_file(&sample_meta("bbb", "b.txt"))
+            .await
+            .unwrap();
+
+        // set_field returns the old value and applies the new one.
+        let old = store
+            .set_field("file:aaa", "path", serde_json::json!("renamed.txt"))
+            .await
+            .unwrap();
+        assert_eq!(old, serde_json::json!("a.txt"));
+        let rec = store.get_record("file:aaa").await.unwrap().unwrap();
+        assert_eq!(rec["path"], "renamed.txt");
+
+        // Invalid field names are rejected (no injection surface).
+        assert!(store
+            .set_field("file:aaa", "a; DROP", serde_json::json!(1))
+            .await
+            .is_err());
+
+        // create_edge then it shows up as a neighbor; delete_edge removes it.
+        store
+            .create_edge("contained_in", "file:aaa", "file:bbb")
+            .await
+            .unwrap();
+        let neigh = store.neighbors("file:aaa").await.unwrap();
+        assert!(neigh
+            .iter()
+            .any(|n| n.id == "file:bbb" && n.rel == "contained_in"));
+        store
+            .delete_edge("contained_in", "file:aaa", "file:bbb")
+            .await
+            .unwrap();
+        let neigh = store.neighbors("file:aaa").await.unwrap();
+        assert!(!neigh.iter().any(|n| n.rel == "contained_in"), "{neigh:?}");
+
+        // Unknown relations are rejected.
+        assert!(store
+            .create_edge("bogus", "file:aaa", "file:bbb")
+            .await
+            .is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

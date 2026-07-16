@@ -25,6 +25,9 @@
 //! - `h`/`l` (or `Tab`, arrows) — switch focus between view and edges
 //! - `Enter`/`l` on an edge — **follow it** to the neighbor node
 //! - `<` / `>` (or `Backspace`) — back / forward through the jumplist
+//! - `c` — edit a field of the current node (`field=value`)
+//! - `d` (on an edge) — delete that edge
+//! - `u` / `U` — undo / redo the last edit
 //! - `q`/`i`/`Esc` — return to the index (or step back at the root)
 //!
 //! # Rust notes
@@ -54,6 +57,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
+use serde_json::Value;
 
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
@@ -69,6 +73,21 @@ enum Action {
     Quit,
     /// Unrecognized input; the string is the error shown on the message line.
     Invalid(String),
+}
+
+/// Parse a scalar edit value: bool, integer, and float literals become typed
+/// JSON; anything else is a string. Keeps `size=100` numeric but `path=/x` text.
+fn parse_value(s: &str) -> Value {
+    if let Ok(b) = s.parse::<bool>() {
+        return Value::Bool(b);
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return Value::from(i);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return Value::from(f);
+    }
+    Value::String(s.to_string())
 }
 
 /// Parse one command-bar line. Kept as a pure function so it's unit-testable
@@ -166,8 +185,28 @@ struct NavNode {
     neighbors: Vec<exfill_store::Neighbor>,
 }
 
+/// A reversible graph edit. Applying one returns its inverse, which powers the
+/// undo/redo stacks — the "editing" half of the graph workbench.
+#[derive(Debug, Clone)]
+enum EditOp {
+    /// Set `field` on `node_id` to `value`.
+    SetField {
+        node_id: String,
+        field: String,
+        value: serde_json::Value,
+    },
+    /// Create (`create=true`) or delete an edge `from -rel-> to`.
+    Edge {
+        rel: String,
+        from: String,
+        to: String,
+        create: bool,
+    },
+}
+
 /// The graph navigator's state: a back-stack (breadcrumbs), a forward-stack
-/// (redo), the focused pane, scroll, and neighbor cursor.
+/// (redo), the focused pane, scroll, neighbor cursor, and an edit undo/redo
+/// history.
 struct NavState {
     /// Visited nodes; the last is the current node (the breadcrumb trail).
     stack: Vec<NavNode>,
@@ -176,6 +215,10 @@ struct NavState {
     focus: NavFocus,
     scroll: u16,
     pick: usize,
+    /// Inverse ops to replay on undo (newest last).
+    undo: Vec<EditOp>,
+    /// Inverse ops to replay on redo.
+    redo: Vec<EditOp>,
 }
 
 impl NavState {
@@ -190,6 +233,8 @@ enum Prompt {
     Command(String),
     /// `/` — a limit (search filter).
     Limit(String),
+    /// `c` in the navigator — a `field=value` edit of the current node.
+    Edit(String),
 }
 
 /// A scan running in the background, with its live progress.
@@ -304,6 +349,8 @@ impl App {
                     focus: NavFocus::Neighbors,
                     scroll: 0,
                     pick: 0,
+                    undo: Vec::new(),
+                    redo: Vec::new(),
                 });
                 self.mode = Mode::Nav;
             }
@@ -377,6 +424,154 @@ impl App {
                 nav.scroll = 0;
                 nav.pick = 0;
             }
+        }
+    }
+
+    /// Rebuild the current node in place (its view and edges) after an edit.
+    fn nav_refresh_current(&mut self, handle: &Handle) {
+        let Some(nav) = &self.nav else { return };
+        let cur = nav.current();
+        let node = self.build_nav_node(handle, cur.id.clone(), cur.kind.clone(), Value::Null);
+        // build_nav_node re-fetches edges but not data; re-fetch the record.
+        let data = handle
+            .block_on(self.store.get_record(&node.id))
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Null);
+        let refreshed = self.build_nav_node(handle, node.id, node.kind, data);
+        if let Some(nav) = &mut self.nav {
+            let pick = nav.pick;
+            *nav.stack.last_mut().expect("nonempty") = refreshed;
+            nav.pick = pick.min(nav.current().neighbors.len().saturating_sub(1));
+        }
+    }
+
+    /// Apply one edit against the store, returning its inverse (for undo).
+    fn apply_edit(&self, handle: &Handle, op: EditOp) -> anyhow::Result<EditOp> {
+        match op {
+            EditOp::SetField {
+                node_id,
+                field,
+                value,
+            } => {
+                let old = handle.block_on(self.store.set_field(&node_id, &field, value))?;
+                Ok(EditOp::SetField {
+                    node_id,
+                    field,
+                    value: old,
+                })
+            }
+            EditOp::Edge {
+                rel,
+                from,
+                to,
+                create,
+            } => {
+                if create {
+                    handle.block_on(self.store.create_edge(&rel, &from, &to))?;
+                } else {
+                    handle.block_on(self.store.delete_edge(&rel, &from, &to))?;
+                }
+                Ok(EditOp::Edge {
+                    rel,
+                    from,
+                    to,
+                    create: !create,
+                })
+            }
+        }
+    }
+
+    /// Perform a user edit: apply it, record the inverse for undo, clear redo.
+    fn nav_do(&mut self, handle: &Handle, op: EditOp) {
+        match self.apply_edit(handle, op) {
+            Ok(inverse) => {
+                if let Some(nav) = &mut self.nav {
+                    nav.undo.push(inverse);
+                    nav.redo.clear();
+                }
+                self.nav_refresh_current(handle);
+                self.message = "edited".into();
+            }
+            Err(e) => self.message = format!("edit failed: {e:#}"),
+        }
+    }
+
+    /// Parse a `field=value` string and set that field on the current node.
+    fn nav_edit_from_input(&mut self, handle: &Handle, input: &str) {
+        let Some((field, value)) = input.split_once('=') else {
+            self.message = "expected field=value".into();
+            return;
+        };
+        let Some(nav) = &self.nav else { return };
+        let node_id = nav.current().id.clone();
+        self.nav_do(
+            handle,
+            EditOp::SetField {
+                node_id,
+                field: field.trim().to_string(),
+                value: parse_value(value.trim()),
+            },
+        );
+    }
+
+    /// Delete the currently selected edge to a neighbor.
+    fn nav_delete_edge(&mut self, handle: &Handle) {
+        let Some(nav) = &self.nav else { return };
+        let cur = nav.current();
+        let Some(n) = cur.neighbors.get(nav.pick) else {
+            return;
+        };
+        // Store the edge as (in, out) regardless of display direction.
+        let (from, to) = if n.outgoing {
+            (cur.id.clone(), n.id.clone())
+        } else {
+            (n.id.clone(), cur.id.clone())
+        };
+        self.nav_do(
+            handle,
+            EditOp::Edge {
+                rel: n.rel.clone(),
+                from,
+                to,
+                create: false,
+            },
+        );
+    }
+
+    /// Undo the last edit (replays the recorded inverse; pushes to redo).
+    fn nav_undo(&mut self, handle: &Handle) {
+        let Some(op) = self.nav.as_mut().and_then(|n| n.undo.pop()) else {
+            self.message = "nothing to undo".into();
+            return;
+        };
+        match self.apply_edit(handle, op) {
+            Ok(inverse) => {
+                if let Some(nav) = &mut self.nav {
+                    nav.redo.push(inverse);
+                }
+                self.nav_refresh_current(handle);
+                self.message = "undo".into();
+            }
+            Err(e) => self.message = format!("undo failed: {e:#}"),
+        }
+    }
+
+    /// Redo the last undone edit.
+    fn nav_redo(&mut self, handle: &Handle) {
+        let Some(op) = self.nav.as_mut().and_then(|n| n.redo.pop()) else {
+            self.message = "nothing to redo".into();
+            return;
+        };
+        match self.apply_edit(handle, op) {
+            Ok(inverse) => {
+                if let Some(nav) = &mut self.nav {
+                    nav.undo.push(inverse);
+                }
+                self.nav_refresh_current(handle);
+                self.message = "redo".into();
+            }
+            Err(e) => self.message = format!("redo failed: {e:#}"),
         }
     }
 
@@ -526,7 +721,7 @@ impl App {
             }
             Mode::Pager(_) => "i:Exit  j/k:Scroll  q:Index",
             Mode::Nav => {
-                "q:Index  j/k:Move  h/l:Pane  Enter:Follow  </>:Back/Fwd  (edges = graph hops)"
+                "q:Index j/k:Move h/l:Pane Enter:Follow </>:Back c:Edit d:DelEdge u/U:Undo/Redo"
             }
         };
         frame.render_widget(Paragraph::new(help_text).style(reversed), help);
@@ -555,6 +750,7 @@ impl App {
         let bottom = match &self.prompt {
             Some(Prompt::Command(s)) => format!(":{s}▏"),
             Some(Prompt::Limit(s)) => format!("/{s}▏"),
+            Some(Prompt::Edit(s)) => format!("set field=value: {s}▏"),
             None => self.message.clone(),
         };
         frame.render_widget(Paragraph::new(bottom), msg);
@@ -564,20 +760,18 @@ impl App {
         // An open prompt captures all typing first (mutt's bottom line).
         if let Some(prompt) = &mut self.prompt {
             let buf = match prompt {
-                Prompt::Command(s) | Prompt::Limit(s) => s,
+                Prompt::Command(s) | Prompt::Limit(s) | Prompt::Edit(s) => s,
             };
             match code {
                 KeyCode::Esc => self.prompt = None,
                 KeyCode::Backspace => {
                     buf.pop();
                 }
-                KeyCode::Enter => {
-                    let action = match self.prompt.take().expect("prompt open") {
-                        Prompt::Command(s) => parse_command(&s),
-                        Prompt::Limit(s) => Action::Search(s),
-                    };
-                    self.execute(handle, action);
-                }
+                KeyCode::Enter => match self.prompt.take().expect("prompt open") {
+                    Prompt::Command(s) => self.execute(handle, parse_command(&s)),
+                    Prompt::Limit(s) => self.execute(handle, Action::Search(s)),
+                    Prompt::Edit(s) => self.nav_edit_from_input(handle, &s),
+                },
                 KeyCode::Char(c) => buf.push(c),
                 _ => {}
             }
@@ -631,6 +825,19 @@ impl App {
                 self.nav_forward();
                 return;
             }
+            // Editing: change a field, undo, redo.
+            KeyCode::Char('c') => {
+                self.prompt = Some(Prompt::Edit(String::new()));
+                return;
+            }
+            KeyCode::Char('u') => {
+                self.nav_undo(handle);
+                return;
+            }
+            KeyCode::Char('U') => {
+                self.nav_redo(handle);
+                return;
+            }
             _ => {}
         }
 
@@ -658,6 +865,7 @@ impl App {
                     KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Enter | KeyCode::Right => {
                         self.nav_follow(handle)
                     }
+                    KeyCode::Char('d') => self.nav_delete_edge(handle),
                     _ => {}
                 }
             }
@@ -851,6 +1059,17 @@ mod tests {
         assert_eq!(severity_flag(None), ' ');
     }
 
+    #[test]
+    fn parse_value_types() {
+        assert_eq!(parse_value("true"), Value::Bool(true));
+        assert_eq!(parse_value("42"), Value::from(42));
+        assert_eq!(parse_value("3.5"), Value::from(3.5));
+        assert_eq!(
+            parse_value("/etc/passwd"),
+            Value::String("/etc/passwd".into())
+        );
+    }
+
     use ratatui::backend::TestBackend;
 
     /// Render the app once into a TestBackend and return the screen text.
@@ -923,7 +1142,39 @@ mod tests {
             assert_eq!(app.nav.as_ref().unwrap().stack.len(), depth_before);
             app.on_key(&handle, KeyCode::Char('>')); // forward
             assert_eq!(app.nav.as_ref().unwrap().stack.len(), depth_before + 1);
-            app.on_key(&handle, KeyCode::Char('h')); // pane focus / back
+
+            // Edit a field via the `c` prompt, then undo/redo it.
+            app.on_key(&handle, KeyCode::Char('<')); // back to the file node
+            let node_id = app.nav.as_ref().unwrap().current().id.clone();
+            app.on_key(&handle, KeyCode::Char('c'));
+            type_str(&mut app, &handle, "host=edited-host");
+            app.on_key(&handle, KeyCode::Enter);
+            let host = |app: &App, h: &Handle| {
+                h.block_on(app.store.get_record(&node_id)).unwrap().unwrap()["host"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            };
+            assert_eq!(host(&app, &handle), "edited-host");
+            app.on_key(&handle, KeyCode::Char('u')); // undo → original host
+            assert_ne!(host(&app, &handle), "edited-host");
+            app.on_key(&handle, KeyCode::Char('U')); // redo → edited again
+            assert_eq!(host(&app, &handle), "edited-host");
+
+            // Delete an edge from the neighbor pane, then undo it.
+            app.on_key(&handle, KeyCode::Char('l')); // focus neighbors
+            let edges_before = app.nav.as_ref().unwrap().current().neighbors.len();
+            app.on_key(&handle, KeyCode::Char('d'));
+            assert_eq!(
+                app.nav.as_ref().unwrap().current().neighbors.len(),
+                edges_before - 1
+            );
+            app.on_key(&handle, KeyCode::Char('u')); // undo restores the edge
+            assert_eq!(
+                app.nav.as_ref().unwrap().current().neighbors.len(),
+                edges_before
+            );
+
             app.on_key(&handle, KeyCode::Char('q')); // leave navigator
             assert!(matches!(app.mode, Mode::Index));
 
