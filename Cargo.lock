@@ -1234,6 +1234,7 @@ dependencies = [
  "exfill-task",
  "ratatui",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
@@ -1292,8 +1293,12 @@ dependencies = [
  "exfill-core",
  "exfill-task",
  "flate2",
+ "hex",
+ "md-5",
  "regex",
  "serde_json",
+ "sha1",
+ "sha2",
  "tar",
  "toml",
  "tree-sitter",

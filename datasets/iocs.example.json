@@ -1,0 +1,26 @@
+{
+  "name": "iocs-example",
+  "rules": [
+    {
+      "name": "eicar-test-file",
+      "pattern": "sha256:275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+      "description": "EICAR anti-malware test file (harmless).",
+      "severity": "critical",
+      "cwe": "CWE-506"
+    },
+    {
+      "name": "ioc-domain-example-c2",
+      "pattern": "\\bevil-c2\\.example\\b",
+      "description": "Known command-and-control domain (example).",
+      "severity": "high",
+      "cwe": "CWE-506"
+    },
+    {
+      "name": "ioc-ipv4-example",
+      "pattern": "\\b203\\.0\\.113\\.66\\b",
+      "description": "Known malicious IPv4 (example, TEST-NET-3).",
+      "severity": "high",
+      "cwe": "CWE-506"
+    }
+  ]
+}

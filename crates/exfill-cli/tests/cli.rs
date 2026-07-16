@@ -237,6 +237,45 @@ fn sources_pull_datasets_flow() {
 }
 
 #[test]
+fn ioc_hash_and_content_scanning() {
+    let sb = Sandbox::new("ioc");
+    let catalog = sb.base.join("catalog");
+
+    // A "malware" file (match by hash) and a config referencing a bad domain.
+    let payload = b"malicious payload\n";
+    std::fs::write(sb.tree.join("mal.bin"), payload).unwrap();
+    std::fs::write(sb.tree.join("cfg.txt"), "c2 = evil-c2.example\n").unwrap();
+
+    // IOC dataset: one sha256 hash IOC + one content (domain) IOC.
+    use sha2::{Digest, Sha256};
+    let sha = hex_encode(&Sha256::digest(payload));
+    let ds = sb.base.join("iocs.json");
+    std::fs::write(
+        &ds,
+        format!(
+            r#"{{"name":"iocs","rules":[
+                {{"name":"bad-file","pattern":"sha256:{sha}","severity":"critical"}},
+                {{"name":"bad-domain","pattern":"evil-c2\\.example","severity":"high"}}
+            ]}}"#
+        ),
+    )
+    .unwrap();
+
+    let out = exfill_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let out = exfill_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("bad-file"), "hash IOC missing:\n{text}");
+    assert!(text.contains("bad-domain"), "content IOC missing:\n{text}");
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
 fn dataset_crud_subcommands() {
     let sb = Sandbox::new("dscrud");
     let catalog = sb.base.join("catalog");

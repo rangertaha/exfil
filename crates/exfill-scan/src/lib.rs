@@ -26,11 +26,13 @@
 pub mod ast;
 pub mod builtin;
 pub mod expand;
+pub mod ioc;
 pub mod supply;
 pub mod taint;
 pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;
 pub use expand::ArchiveExpander;
+pub use ioc::HashIocScanner;
 pub use supply::SupplyChainScanner;
 pub use taint::TaintScanner;
 
@@ -106,10 +108,12 @@ pub fn default_pipeline() -> Result<Pipeline> {
 /// compiled), for scanning with catalog-loaded datasets instead of only the
 /// built-in rules. Returns the pipeline and the names of any skipped patterns.
 pub fn pipeline_with_rules(rules: Vec<Rule>) -> Result<(Pipeline, Vec<String>)> {
+    let ioc = HashIocScanner::new(&rules);
     let (regex, skipped) = RegexScanner::new_lenient(rules);
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(ScanTask(regex)),
+        Box::new(ScanTask(ioc)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),
@@ -131,9 +135,14 @@ pub struct RegexScanner {
 
 impl RegexScanner {
     /// Compile the given rules. Invalid patterns fail fast with the rule name.
+    /// Hash-IOC rules (`algo:hex`) are skipped — they belong to the IOC hash
+    /// scanner, not content matching.
     pub fn new(rules: Vec<Rule>) -> Result<Self> {
         let mut compiled = Vec::with_capacity(rules.len());
         for rule in rules {
+            if ioc::is_hash_ioc(&rule.pattern).is_some() {
+                continue;
+            }
             let re = Regex::new(&rule.pattern)
                 .with_context(|| format!("compile rule {:?} pattern", rule.name))?;
             compiled.push(Compiled { rule, re });
@@ -149,6 +158,10 @@ impl RegexScanner {
         let mut compiled = Vec::with_capacity(rules.len());
         let mut skipped = Vec::new();
         for rule in rules {
+            // Hash IOCs are handled by the IOC scanner, not as content regexes.
+            if ioc::is_hash_ioc(&rule.pattern).is_some() {
+                continue;
+            }
             match Regex::new(&rule.pattern) {
                 Ok(re) => compiled.push(Compiled { rule, re }),
                 Err(_) => skipped.push(rule.name),
