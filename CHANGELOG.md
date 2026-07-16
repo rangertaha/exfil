@@ -70,3 +70,6 @@ and this project adheres to
   (keeps the latest scan). `graph [query] --format json|dot`: emit the
   finding→file/rule graph. Scan timestamps switched to milliseconds so
   scan ordering is unambiguous.
+- Pluggable viewers (`exfill-view`): a Viewer trait + Registry keyed by node
+  kind (finding/file/ast/rule + JSON fallback) — the "preview per node type"
+  foundation for graph navigation. Wired into the TUI pager.

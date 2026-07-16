@@ -171,6 +171,8 @@ struct App {
     /// The active limit, shown in the status bar (empty = all).
     limit: String,
     scan: Option<RunningScan>,
+    /// Pluggable viewers that render nodes in the pager.
+    viewers: exfill_view::Registry,
     quit: bool,
 }
 
@@ -188,6 +190,7 @@ impl App {
             prompt: None,
             limit: String::new(),
             scan: None,
+            viewers: exfill_view::Registry::new(),
             quit: false,
         }
     }
@@ -222,32 +225,24 @@ impl App {
         }
     }
 
-    /// Build the pager for the selected finding: its fields plus the `file`
-    /// record it was found in (the finding → file hop through the graph).
+    /// Build the pager for the selected finding by rendering it — and the
+    /// `file` node it hops to through the graph — with the pluggable viewer
+    /// registry (the same "preview per node kind" model a graph workbench uses).
     fn open_pager(&mut self, handle: &Handle) {
         let Some(m) = self.selected() else {
             self.message = "no finding selected".into();
             return;
         };
-        let mut lines = vec![
-            format!("Rule:     {}", m.rule),
-            format!("Path:     {}", m.path),
-            format!("Location: line {}, column {}", m.line, m.col),
-            format!(
-                "Severity: {}",
-                m.severity
-                    .map(|s| format!("{s:?}"))
-                    .unwrap_or_else(|| "-".into())
-            ),
-            format!("CWE:      {}", m.cwe.as_deref().unwrap_or("-")),
-            format!("CVE:      {}", m.cve.as_deref().unwrap_or("-")),
-            String::new(),
-            format!("> {}", m.snippet),
-            String::new(),
-            "── file record ──".into(),
-        ];
+        let finding_node = exfill_view::Node::new(
+            "finding",
+            "finding",
+            serde_json::to_value(m).unwrap_or(serde_json::Value::Null),
+        );
+        let mut lines = self.viewers.render(&finding_node);
+
+        // Graph hop: finding → the file it was found in.
         let path = m.path.clone();
-        let res = handle.block_on(async {
+        let file = handle.block_on(async {
             let mut r = self
                 .store
                 .db()
@@ -257,10 +252,12 @@ impl App {
             let rows: Vec<serde_json::Value> = r.take(0)?;
             anyhow::Ok(rows.into_iter().next())
         });
-        match res {
+        lines.push(String::new());
+        lines.push("── file ──".into());
+        match file {
             Ok(Some(v)) => {
-                let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
-                lines.extend(pretty.lines().map(String::from));
+                let node = exfill_view::Node::new("file", "file", v);
+                lines.extend(self.viewers.render(&node));
             }
             Ok(None) => lines.push(format!("(no file record for {path})")),
             Err(e) => lines.push(format!("(lookup failed: {e:#})")),

@@ -1760,6 +1760,7 @@ dependencies = [
  "exfill-source",
  "exfill-store",
  "exfill-task",
+ "exfill-view",
  "ratatui",
  "serde_json",
  "sha2",
@@ -1883,6 +1884,13 @@ dependencies = [
  "anyhow",
  "exfill-core",
  "serde",
+]
+
+[[package]]
+name = "exfill-view"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
