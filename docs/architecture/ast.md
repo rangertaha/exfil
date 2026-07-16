@@ -57,7 +57,7 @@ flowchart LR
 ```
 
 exfill's `comments_and_strings_are_not_flagged` test
-([`ast.rs:582`](../../crates/exfill-scan/src/ast.rs#L582)) asserts exactly this:
+([`ast.rs:663`](../../crates/exfill-scan/src/ast.rs#L663)) asserts exactly this:
 `eval` in a comment and in a string produce **zero** findings.
 
 ---
@@ -70,7 +70,7 @@ library with a grammar per language. Two properties make it ideal here:
 - **Error-tolerant.** It parses incomplete or broken code into a best-effort tree
   rather than failing — important when scanning arbitrary files. Gibberish yields
   an empty result, never a crash
-  ([`ast.rs:597`](../../crates/exfill-scan/src/ast.rs#L597)).
+  ([`ast.rs:698`](../../crates/exfill-scan/src/ast.rs#L698)).
 - **Uniform tree API.** Every language's tree is walked with the same `Node` API:
   `node.kind()`, `node.child_by_field_name(...)`, `node.children(...)`. This is
   what lets one piece of code handle 12 languages.
@@ -149,7 +149,7 @@ LangSpec {                              // Java — note fn_field is "name"
 },
 ```
 
-`spec_for(path)` ([`ast.rs:147`](../../crates/exfill-scan/src/ast.rs#L147)) picks
+`spec_for(path)` ([`ast.rs:209`](../../crates/exfill-scan/src/ast.rs#L209)) picks
 the spec by file extension, and that's the whole language-selection logic.
 
 > **Rust idiom — `&'static` and static promotion.** `specs()` returns
@@ -215,7 +215,7 @@ flowchart LR
     class M term
 ```
 
-- `AstExtractor` ([`ast.rs:174`](../../crates/exfill-scan/src/ast.rs#L174)) parses
+- `AstExtractor` ([`ast.rs:236`](../../crates/exfill-scan/src/ast.rs#L236)) parses
   bytes into an `Ast` **once**.
 - `DangerousCallScanner` ([`ast.rs`](../../crates/exfill-scan/src/ast.rs)) flags
   calls to dangerous sinks.
@@ -229,7 +229,7 @@ That reuse is why extraction and scanning are separate: parse once, analyze twic
 
 ## 5. Extraction: walking the tree
 
-`parse()` ([`ast.rs:156`](../../crates/exfill-scan/src/ast.rs#L156)) sets the
+`parse()` ([`ast.rs:218`](../../crates/exfill-scan/src/ast.rs#L218)) sets the
 grammar, parses, and depth-first walks the tree, collecting three kinds of fact
 into an `Ast` (the type is defined in `exfill-task`,
 [`task/src/lib.rs:76`](../../crates/exfill-task/src/lib.rs#L76)):
@@ -238,7 +238,7 @@ into an `Ast` (the type is defined in `exfill-task`,
 - **calls** — call sites with argument facts, for taint (`Call`).
 - **assigns** — assignments with right-hand-side facts, for taint (`Assign`).
 
-The heart is `walk()` ([`ast.rs:261`](../../crates/exfill-scan/src/ast.rs#L261)).
+The heart is `walk()` ([`ast.rs:333`](../../crates/exfill-scan/src/ast.rs#L333)).
 For each node it asks: is this a call, a function, or an assignment?
 
 ```mermaid
@@ -254,20 +254,20 @@ flowchart TD
 The callee is the **full dotted text**: `os.system`, `child_process.exec`,
 `std::process::Command::new`. That matters downstream — the sink matcher needs the
 whole name to tell `child_process.exec` from a bare `exec`
-([`ast.rs:264-266`](../../crates/exfill-scan/src/ast.rs#L264)).
+([`ast.rs:335-337`](../../crates/exfill-scan/src/ast.rs#L264)).
 
 ### Two helpers that absorb grammar quirks
 
 Real grammars have irregularities. Two small helpers keep the walk uniform:
 
-**`first_identifier`** ([`ast.rs:245`](../../crates/exfill-scan/src/ast.rs#L245)) —
+**`first_identifier`** ([`ast.rs:317`](../../crates/exfill-scan/src/ast.rs#L317)) —
 some assignment targets aren't a bare identifier but *wrap* one. Go's
 `c := r.FormValue(...)` has an `expression_list` target; a Rust `let` has a
 pattern. This helper returns the node's text if it *is* an identifier, else
 recurses to find the first identifier inside — so a wrapped target still yields a
 variable name.
 
-**`assignment_parts`** ([`ast.rs:179`](../../crates/exfill-scan/src/ast.rs#L179)) —
+**`assignment_parts`** ([`ast.rs:241`](../../crates/exfill-scan/src/ast.rs#L241)) —
 splits an assignment into `(target, rhs)`, trying field names in order: `left` /
 `name` / `pattern` for the target, `right` / `value` for the RHS. It ends with a
 **positional fallback** for C#, whose `var x = expr` declarator holds the
@@ -300,7 +300,7 @@ That fallback is why C# taint works — `csharp_taint_from_console_readline`
 ## 6. Detection: `sink_for`
 
 With the tree walked, `DangerousCallScanner` iterates the call symbols and asks
-`sink_for(name)` ([`ast.rs:369`](../../crates/exfill-scan/src/ast.rs#L369)):
+`sink_for(name)` ([`ast.rs:441`](../../crates/exfill-scan/src/ast.rs#L441)):
 *is this callee a dangerous sink, and if so, how do I classify it?*
 
 ```mermaid
@@ -326,12 +326,12 @@ The design uses **cross-language prefix checks first, then a `match`** on the fu
 name and its last component. This ordering matters:
 
 - Full-name checks come first so `child_process.exec` is a child-process sink, not
-  a bare `exec` ([`ast.rs:415`](../../crates/exfill-scan/src/ast.rs#L415)).
+  a bare `exec` ([`ast.rs:516`](../../crates/exfill-scan/src/ast.rs#L516)).
 - The last-component fallback lets both `system` and `os.system` resolve
-  ([`ast.rs:369`](../../crates/exfill-scan/src/ast.rs#L369)).
+  ([`ast.rs:441`](../../crates/exfill-scan/src/ast.rs#L441)).
 
 Each sink carries a rule name, `Severity`, CWE, and a human "what" string
-([`ast.rs:360`](../../crates/exfill-scan/src/ast.rs#L360)), which become the
+([`ast.rs:432`](../../crates/exfill-scan/src/ast.rs#L432)), which become the
 finding's fields.
 
 A representative slice of what's detected across languages:
@@ -352,7 +352,7 @@ A representative slice of what's detected across languages:
 | `yaml.load` (Python) | `ast-yaml-load` | CWE-502 | yaml.load without SafeLoader |
 
 Every row above has a language-specific test in the module
-([`ast.rs:668`](../../crates/exfill-scan/src/ast.rs#L668) onward): Go
+([`ast.rs:770`](../../crates/exfill-scan/src/ast.rs#L770) onward): Go
 `exec.Command`, Rust `Command::new`, Java `Runtime.exec`, C `system`/`popen`, TS
 `child_process`, Bash `eval`, Lua `os.execute`/`loadstring`, PowerShell
 `Invoke-Expression`, C# `Process.Start`.

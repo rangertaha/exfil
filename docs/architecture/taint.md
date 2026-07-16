@@ -120,7 +120,7 @@ untrusted-input surfaces across languages:
 
 There's a subtlety the code handles: most sources are **member reads**
 (`os.Args`, `process.argv`), not calls. The [AST walk](./ast.md) records member
-accesses as source-check candidates ([`ast.rs:216`](../../crates/exfill-scan/src/ast.rs#L216))
+accesses as source-check candidates ([`ast.rs:287`](../../crates/exfill-scan/src/ast.rs#L287))
 precisely so `process.argv[2]` is recognized as untrusted.
 
 ---
@@ -151,7 +151,7 @@ The prefix check ([`taint.rs:74-87`](../../crates/exfill-scan/src/taint.rs#L74))
 exists because of a real bug: Go's `exec.Command` has *last component* `Command`,
 which matched no `match` arm, so Go taint silently returned nothing. Checking the
 full callee text first fixed it — and `go_taint_from_form_value`
-([`ast.rs:709`](../../crates/exfill-scan/src/ast.rs#L709)) now proves
+([`ast.rs:811`](../../crates/exfill-scan/src/ast.rs#L811)) now proves
 `c := r.FormValue("cmd"); exec.Command(c)` is flagged.
 
 Every taint finding is `Severity::Critical`

@@ -103,3 +103,8 @@ and this project adheres to
 - Added a JUnit XML report format (`analyze -f junit`). Each finding becomes a
   failing `<testcase>`, so CI systems that ingest JUnit can gate a build on
   findings; a clean scan is a passing suite. XML metacharacters are escaped.
+- Added a multi-page architecture guide under docs/architecture/ (11 pages, ~3k
+  lines) with mermaid diagrams for every layer, written to teach Rust: overview
+  & file structure, the plugin DAG, a diagram-heavy engine deep-dive, the AST
+  scanner, taint analysis, the other scanners, the graph store, CLI/TUI, the
+  integrations, and a Rust primer cross-referenced from every page.
