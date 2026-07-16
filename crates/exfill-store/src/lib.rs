@@ -456,6 +456,45 @@ impl Store {
         Ok(count)
     }
 
+    /// List records of a table as `(record_id, label)` for browsing, capped at
+    /// `limit`. `kind` must be a known record table (whitelisted, since it is
+    /// interpolated into the query — table names can't be bound as `$params`).
+    pub async fn list_records(&self, kind: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        const TABLES: &[&str] = &[
+            "file",
+            "ast",
+            "indicators",
+            "source",
+            "dataset",
+            "rule",
+            "finding",
+            "scan",
+        ];
+        if !TABLES.contains(&kind) {
+            bail!("unknown record table {kind:?}");
+        }
+        let mut res = self
+            .db
+            .query(format!(
+                "SELECT type::string(id) AS rid, * OMIT id FROM {kind} LIMIT {limit}"
+            ))
+            .await
+            .with_context(|| format!("list {kind}"))?;
+        let rows: Vec<serde_json::Value> = res.take(0)?;
+        Ok(rows
+            .into_iter()
+            .map(|v| {
+                let id = v
+                    .get("rid")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let label = node_label(kind, &v).unwrap_or_else(|| id.clone());
+                (id, label)
+            })
+            .collect())
+    }
+
     /// List stored datasets as `(name, rule_count)`, alphabetical.
     pub async fn list_datasets(&self) -> Result<Vec<(String, u64)>> {
         #[derive(Deserialize)]

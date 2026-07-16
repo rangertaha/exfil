@@ -70,6 +70,8 @@ enum Action {
     Rules,
     Get(String),
     Clean,
+    /// Switch the index to another object type.
+    Browse(ObjectType),
     Quit,
     /// Unrecognized input; the string is the error shown on the message line.
     Invalid(String),
@@ -110,6 +112,12 @@ fn parse_command(input: &str) -> Action {
             }
         }
         "clean" => Action::Clean,
+        "browse" | "type" => match ObjectType::from_name(rest) {
+            Some(t) => Action::Browse(t),
+            None => Action::Invalid(
+                "usage: browse findings|files|indicators|rules|scans|datasets".into(),
+            ),
+        },
         "q" | "quit" | "exit" => Action::Quit,
         other => Action::Invalid(format!("unknown command {other:?}")),
     }
@@ -164,6 +172,74 @@ enum Mode {
     Pager(u16),
     /// Graph navigator: a node viewer beside its neighbors, with a back-stack.
     Nav,
+}
+
+/// Which kind of object the index is browsing. `Findings` keeps the classic
+/// finding list (with the `/` severity/rule filter); the rest browse whole
+/// record tables so any node can be an entry point into the navigator/editor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ObjectType {
+    Findings,
+    Files,
+    Indicators,
+    Rules,
+    Scans,
+    Datasets,
+}
+
+impl ObjectType {
+    /// Browse order for the `Tab` cycle.
+    const ALL: [ObjectType; 6] = [
+        ObjectType::Findings,
+        ObjectType::Files,
+        ObjectType::Indicators,
+        ObjectType::Rules,
+        ObjectType::Scans,
+        ObjectType::Datasets,
+    ];
+
+    /// Display name in the status bar.
+    fn title(self) -> &'static str {
+        match self {
+            ObjectType::Findings => "findings",
+            ObjectType::Files => "files",
+            ObjectType::Indicators => "indicators",
+            ObjectType::Rules => "rules",
+            ObjectType::Scans => "scans",
+            ObjectType::Datasets => "datasets",
+        }
+    }
+
+    /// Record table to list, or `None` for the special findings view.
+    fn table(self) -> Option<&'static str> {
+        match self {
+            ObjectType::Findings => None,
+            ObjectType::Files => Some("file"),
+            ObjectType::Indicators => Some("indicators"),
+            ObjectType::Rules => Some("rule"),
+            ObjectType::Scans => Some("scan"),
+            ObjectType::Datasets => Some("dataset"),
+        }
+    }
+
+    /// The next/previous type in the cycle (`step` = +1 or -1).
+    fn cycle(self, step: isize) -> ObjectType {
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0) as isize;
+        let n = Self::ALL.len() as isize;
+        Self::ALL[(i + step).rem_euclid(n) as usize]
+    }
+
+    /// Parse a `:browse <name>` argument.
+    fn from_name(name: &str) -> Option<ObjectType> {
+        Self::ALL.into_iter().find(|t| t.title() == name)
+    }
+}
+
+/// One row in a non-findings browse list: a node id, its table, and a label.
+struct IndexItem {
+    id: String,
+    kind: String,
+    label: String,
 }
 
 /// Which pane the navigator's keys act on.
@@ -250,6 +326,10 @@ struct App {
     store: Store,
     store_dir: PathBuf,
     findings: Vec<Match>,
+    /// Which object type the index is browsing.
+    browse: ObjectType,
+    /// Rows for a non-findings browse type (empty when browsing findings).
+    items: Vec<IndexItem>,
     list: ListState,
     mode: Mode,
     /// Content of the pager, built when a finding is opened.
@@ -277,10 +357,12 @@ impl App {
             store,
             store_dir,
             findings: Vec::new(),
+            browse: ObjectType::Findings,
+            items: Vec::new(),
             list: ListState::default(),
             mode: Mode::Index,
             pager: Vec::new(),
-            message: "ready — :scan to scan, / to limit, q to quit".into(),
+            message: "ready — Tab:type :scan / to limit q to quit".into(),
             prompt: None,
             limit: String::new(),
             scan: None,
@@ -295,14 +377,82 @@ impl App {
         self.list.selected().and_then(|i| self.findings.get(i))
     }
 
+    /// Number of rows in the current index (findings or a browsed table).
+    fn index_len(&self) -> usize {
+        if self.browse == ObjectType::Findings {
+            self.findings.len()
+        } else {
+            self.items.len()
+        }
+    }
+
     fn select_delta(&mut self, delta: isize) {
-        if self.findings.is_empty() {
+        let len = self.index_len();
+        if len == 0 {
             return;
         }
         let cur = self.list.selected().unwrap_or(0) as isize;
-        let max = self.findings.len() as isize - 1;
+        let max = len as isize - 1;
         self.list
             .select(Some(cur.saturating_add(delta).clamp(0, max) as usize));
+    }
+
+    /// Switch the index to another object type and load its rows.
+    fn switch_browse(&mut self, handle: &Handle, to: ObjectType) {
+        self.browse = to;
+        self.refresh_index(handle);
+    }
+
+    /// (Re)load the current index: findings honor the active limit; other types
+    /// list their whole table (capped).
+    fn refresh_index(&mut self, handle: &Handle) {
+        match self.browse.table() {
+            None => {
+                let limit = self.limit.clone();
+                self.refresh_findings(handle, &limit);
+            }
+            Some(table) => match handle.block_on(self.store.list_records(table, 1000)) {
+                Ok(rows) => {
+                    self.items = rows
+                        .into_iter()
+                        .map(|(id, label)| IndexItem {
+                            kind: table.to_string(),
+                            id,
+                            label,
+                        })
+                        .collect();
+                    self.list.select((!self.items.is_empty()).then_some(0));
+                    self.message = format!("{} {}", self.items.len(), self.browse.title());
+                }
+                Err(e) => self.message = format!("list failed: {e:#}"),
+            },
+        }
+    }
+
+    /// Open the navigator rooted at the selected browse item (any node type).
+    fn open_selected_item(&mut self, handle: &Handle) {
+        let Some(item) = self.list.selected().and_then(|i| self.items.get(i)) else {
+            self.message = "nothing selected".into();
+            return;
+        };
+        let (id, kind) = (item.id.clone(), item.kind.clone());
+        match handle.block_on(self.store.get_record(&id)) {
+            Ok(Some(data)) => {
+                let node = self.build_nav_node(handle, id, kind, data);
+                self.nav = Some(NavState {
+                    stack: vec![node],
+                    forward: Vec::new(),
+                    focus: NavFocus::Neighbors,
+                    scroll: 0,
+                    pick: 0,
+                    undo: Vec::new(),
+                    redo: Vec::new(),
+                });
+                self.mode = Mode::Nav;
+            }
+            Ok(None) => self.message = format!("no record {id}"),
+            Err(e) => self.message = format!("open failed: {e:#}"),
+        }
     }
 
     fn refresh_findings(&mut self, handle: &Handle, query: &str) {
@@ -651,6 +801,7 @@ impl App {
                     done: 0,
                 });
             }
+            Action::Browse(to) => self.switch_browse(handle, to),
             Action::Invalid(msg) => self.message = msg,
         }
     }
@@ -685,23 +836,29 @@ impl App {
 
     /// The reverse-video status bar, mutt's `-*-` line.
     fn status_line(&self) -> String {
-        let mut parts = vec![format!("exfill: {} findings", self.findings.len())];
-        if !self.limit.is_empty() {
+        let mut parts = vec![format!(
+            "exfill: {} {}",
+            self.index_len(),
+            self.browse.title()
+        )];
+        if self.browse == ObjectType::Findings && !self.limit.is_empty() {
             parts.push(format!("limit: {}", self.limit));
         }
-        let counts = severity_counts(&self.findings)
-            .into_iter()
-            .map(|(s, n)| format!("{}:{n}", severity_flag(Some(s))))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !counts.is_empty() {
-            parts.push(format!("[{counts}]"));
+        if self.browse == ObjectType::Findings {
+            let counts = severity_counts(&self.findings)
+                .into_iter()
+                .map(|(s, n)| format!("{}:{n}", severity_flag(Some(s))))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !counts.is_empty() {
+                parts.push(format!("[{counts}]"));
+            }
         }
         if let Some(scan) = &self.scan {
             parts.push(format!("scanning {}/{} files", scan.done, scan.total));
         }
         if let Some(i) = self.list.selected() {
-            parts.push(format!("({}/{})", i + 1, self.findings.len()));
+            parts.push(format!("({}/{})", i + 1, self.index_len()));
         }
         format!("-*- {} ", parts.join(" --- "))
     }
@@ -720,7 +877,7 @@ impl App {
         // Help bar (top, like mutt's `help=yes`).
         let help_text = match self.mode {
             Mode::Index => {
-                "q:Quit  j/k:Move  Enter:View  /:Limit  ::Cmd  s:Scan  r:Reload  g/G:First/Last"
+                "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload g/G:First/Last"
             }
             Mode::Pager(_) => "i:Exit  j/k:Scroll  q:Index",
             Mode::Nav => {
@@ -732,13 +889,20 @@ impl App {
         // Main area: index, text pager, or graph navigator.
         match self.mode {
             Mode::Index => {
-                let items: Vec<ListItem> = self
-                    .findings
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| ListItem::new(index_row(i + 1, m)))
-                    .collect();
-                let list = List::new(items).highlight_style(reversed);
+                let rows: Vec<ListItem> = if self.browse == ObjectType::Findings {
+                    self.findings
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| ListItem::new(index_row(i + 1, m)))
+                        .collect()
+                } else {
+                    self.items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, it)| ListItem::new(format!("{:>4}  {}", i + 1, it.label)))
+                        .collect()
+                };
+                let list = List::new(rows).highlight_style(reversed);
                 frame.render_stateful_widget(list, main, &mut self.list);
             }
             Mode::Pager(scroll) => {
@@ -798,12 +962,25 @@ impl App {
                 KeyCode::Char('k') | KeyCode::Up => self.select_delta(-1),
                 KeyCode::Char('g') => self.select_delta(isize::MIN + 1),
                 KeyCode::Char('G') => self.select_delta(isize::MAX),
-                KeyCode::Char('r') => {
-                    let limit = self.limit.clone();
-                    self.refresh_findings(handle, &limit);
+                KeyCode::Tab => {
+                    let to = self.browse.cycle(1);
+                    self.switch_browse(handle, to);
                 }
+                KeyCode::BackTab => {
+                    let to = self.browse.cycle(-1);
+                    self.switch_browse(handle, to);
+                }
+                KeyCode::Char('r') => self.refresh_index(handle),
                 KeyCode::Char('s') => self.execute(handle, Action::Scan(PathBuf::from("."))),
-                KeyCode::Enter => self.open_nav(handle),
+                // Findings root the navigator at their file; other types open
+                // the selected node directly.
+                KeyCode::Enter => {
+                    if self.browse == ObjectType::Findings {
+                        self.open_nav(handle);
+                    } else {
+                        self.open_selected_item(handle);
+                    }
+                }
                 _ => {}
             },
             Mode::Nav => self.on_nav_key(handle, code),
@@ -1221,6 +1398,85 @@ mod tests {
             // Quit.
             app.on_key(&handle, KeyCode::Char('q'));
             assert!(app.quit);
+
+            let _ = std::fs::remove_dir_all(&base);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_switches_types_and_opens_any_node() {
+        let handle = Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let base =
+                std::env::temp_dir().join(format!("exfill-tui-browse-{}", std::process::id()));
+            let tree = base.join("tree");
+            let store_dir = base.join("store");
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&tree).unwrap();
+            // Content with a secret (finding) and observables (indicators).
+            std::fs::write(
+                tree.join("app.env"),
+                "AWS=AKIA0123456789ABCDEF\nURL=https://evil.example.com\nIP=203.0.113.9\n",
+            )
+            .unwrap();
+
+            let store = handle.block_on(Store::open_findings(&store_dir)).unwrap();
+            let pipeline = exfill_scan::default_pipeline().unwrap();
+            handle
+                .block_on(exfill_engine::scan(
+                    &tree,
+                    &pipeline,
+                    &store,
+                    Some(&store_dir),
+                    None,
+                ))
+                .unwrap();
+
+            let mut app = App::new(store, store_dir.clone(), crate::keymap::Keymap::defaults());
+            app.refresh_index(&handle); // findings by default
+            assert_eq!(app.browse, ObjectType::Findings);
+            assert!(!app.findings.is_empty());
+
+            // Tab cycles Findings → Files; the file table lists the scanned file.
+            app.on_key(&handle, KeyCode::Tab);
+            assert_eq!(app.browse, ObjectType::Files);
+            assert!(!app.items.is_empty(), "files listed");
+            assert!(
+                app.items.iter().any(|i| i.label.ends_with("app.env")),
+                "{:?}",
+                app.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+            );
+            assert!(screen(&mut app).contains("files"), "status shows type");
+
+            // Opening a file node enters the navigator rooted at it.
+            app.on_key(&handle, KeyCode::Enter);
+            assert!(matches!(app.mode, Mode::Nav));
+            assert_eq!(app.nav.as_ref().unwrap().current().kind, "file");
+            app.on_key(&handle, KeyCode::Char('q'));
+
+            // `:browse indicators` jumps directly; the node opens and renders.
+            app.execute(&handle, Action::Browse(ObjectType::Indicators));
+            assert_eq!(app.browse, ObjectType::Indicators);
+            assert!(!app.items.is_empty(), "indicators listed");
+            app.on_key(&handle, KeyCode::Enter);
+            assert_eq!(app.nav.as_ref().unwrap().current().kind, "indicators");
+            // The indicators viewer shows the extracted observables.
+            let view = app.nav.as_ref().unwrap().current().lines.join("\n");
+            assert!(
+                view.contains("evil.example.com") || view.contains("203.0.113.9"),
+                "{view}"
+            );
+            app.on_key(&handle, KeyCode::Char('q'));
+
+            // BackTab cycles the other way; an unknown browse name is rejected.
+            app.on_key(&handle, KeyCode::BackTab);
+            assert!(matches!(
+                parse_command("browse files"),
+                Action::Browse(ObjectType::Files)
+            ));
+            assert!(matches!(parse_command("browse nope"), Action::Invalid(_)));
 
             let _ = std::fs::remove_dir_all(&base);
         })
