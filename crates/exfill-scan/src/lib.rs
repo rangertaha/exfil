@@ -32,6 +32,7 @@ pub mod ioc;
 pub mod pii;
 pub mod supply;
 pub mod taint;
+pub mod typosquat;
 pub mod yara;
 pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;
@@ -42,6 +43,7 @@ pub use ioc::HashIocScanner;
 pub use pii::PiiScanner;
 pub use supply::SupplyChainScanner;
 pub use taint::TaintScanner;
+pub use typosquat::DomainTyposquatScanner;
 pub use yara::YaraScanner;
 
 use std::path::Path;
@@ -106,8 +108,9 @@ pub fn default_pipeline() -> Result<Pipeline> {
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
         // Extract observables (emails, domains, IPs, URLs, hashes) for the graph
-        // and for future checker plugins (DNS/whois/IOC/leak).
+        // and for the checker plugins that consume them.
         Box::new(IndicatorExtractor),
+        Box::new(DomainTyposquatScanner::default()),
         // AST chain: the scheduler places the extractor (Bytes→Ast) before both
         // Ast→Matches consumers (dangerous-call and taint) automatically.
         Box::new(AstExtractor),
@@ -139,6 +142,7 @@ pub fn pipeline_with_rules(
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
         Box::new(IndicatorExtractor),
+        Box::new(DomainTyposquatScanner::default()),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),
         Box::new(TaintScanner),
