@@ -121,6 +121,21 @@ fn scan_search_get_clean_roundtrip() {
     let out = exfill(&sb.store, &["get", "garbage"]);
     assert!(!out.status.success());
 
+    // graph emits nodes/edges as JSON; gc runs and reports.
+    let out = exfill(&sb.store, &["graph"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let g: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid graph json");
+    assert!(g["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["kind"] == "finding"));
+    let out = exfill(&sb.store, &["graph", "--format", "dot"]);
+    assert!(stdout(&out).contains("digraph exfill"));
+    let out = exfill(&sb.store, &["gc"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("gc: removed"), "{}", stdout(&out));
+
     // clean removes the store; a second clean is a no-op.
     let out = exfill(&sb.store, &["clean"]);
     assert!(out.status.success());
@@ -168,7 +183,7 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn unimplemented_commands_say_so() {
     let sb = Sandbox::new("stub");
-    for cmd in ["enrich", "gc", "mcp"] {
+    for cmd in ["enrich", "mcp"] {
         let out = exfill(&sb.store, &[cmd]);
         assert!(out.status.success(), "{cmd}");
         assert!(stdout(&out).contains("not yet implemented"), "{cmd}");

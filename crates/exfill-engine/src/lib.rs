@@ -153,7 +153,7 @@ pub async fn scan(
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
     // Parallel walk: worker threads read/hash/scan and send results over a
@@ -287,7 +287,7 @@ pub async fn scan_remote(
     let host = fs.host().to_string();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
     let paths = fs.list(root).await.context("list remote files")?;
@@ -740,6 +740,49 @@ mod tests {
             .unwrap();
         assert_eq!(summary.files, 1);
         assert_eq!(summary.errors, 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gc_prunes_superseded_scan_and_files() {
+        let base = std::env::temp_dir().join(format!("exfill-engine-gc-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("a.env"), "AWS=AKIA0123456789ABCDEF\n").unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // Change the file's *size* (defeats the stat fast-path regardless of
+        // mtime resolution), then rescan → a second content version + scan.
+        std::fs::write(
+            tree.join("a.env"),
+            "AWS=AKIA9999999999999999 plus extra bytes to change size\n",
+        )
+        .unwrap();
+        scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // Two file versions and two scans exist before gc.
+        let (files_before, scans_before) = store.counts().await.unwrap();
+        assert_eq!(scans_before, 2);
+        assert_eq!(files_before, 2, "old + new content versions");
+
+        let stats = store.gc().await.unwrap();
+        assert_eq!(stats.scans, 1, "one old scan pruned");
+        assert_eq!(stats.files, 1, "one stale file pruned");
+
+        // The current finding survives; the superseded one is gone.
+        let (files_after, scans_after) = store.counts().await.unwrap();
+        assert_eq!((files_after, scans_after), (1, 1));
+        let found = store.search_findings("").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].snippet.contains("AKIA9999999999999999"));
+
+        // gc is idempotent: a second pass removes nothing.
+        assert_eq!(store.gc().await.unwrap(), Default::default());
+
         let _ = std::fs::remove_dir_all(&base);
     }
 

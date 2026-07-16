@@ -261,6 +261,71 @@ impl Store {
         Ok(rows)
     }
 
+    /// Garbage-collect the findings store: keep only the most recent scan and
+    /// delete everything not reachable from it — older scan records, file
+    /// records they alone referenced (e.g. superseded content versions), and
+    /// the findings, ASTs, and edges hanging off those files. Returns what was
+    /// removed. A store with zero or one scan is left untouched.
+    pub async fn gc(&self) -> Result<GcStats> {
+        // The latest scan (by start time). Nothing to prune without one.
+        #[derive(Deserialize)]
+        struct ScanId {
+            id: RecordId,
+        }
+        let mut res = self
+            .db
+            .query("SELECT id, started_at FROM scan ORDER BY started_at DESC LIMIT 1")
+            .await
+            .context("find latest scan")?;
+        let latest: Vec<ScanId> = res.take(0)?;
+        let Some(latest) = latest.into_iter().next().map(|s| s.id) else {
+            return Ok(GcStats::default());
+        };
+
+        let before = self.gc_counts().await?;
+
+        // Drop older scans and their includes edges, then anything no longer
+        // referenced by a surviving includes edge.
+        self.db
+            .query(
+                "DELETE includes WHERE in != $latest; \
+                 DELETE scan WHERE id != $latest; \
+                 LET $live = (SELECT VALUE out FROM includes); \
+                 DELETE in_file WHERE out NOT IN $live; \
+                 DELETE has_ast WHERE in NOT IN $live; \
+                 DELETE contained_in WHERE in NOT IN $live OR out NOT IN $live; \
+                 DELETE finding WHERE count(->in_file) = 0; \
+                 DELETE ast WHERE count(<-has_ast) = 0; \
+                 DELETE file WHERE id NOT IN $live;",
+            )
+            .bind(("latest", latest))
+            .await
+            .context("gc sweep")?
+            .check()
+            .context("gc statement failed")?;
+
+        let after = self.gc_counts().await?;
+        Ok(GcStats {
+            scans: before.0 - after.0,
+            files: before.1 - after.1,
+            findings: before.2 - after.2,
+        })
+    }
+
+    /// `(scans, files, findings)` counts, for gc deltas.
+    async fn gc_counts(&self) -> Result<(u64, u64, u64)> {
+        let mut res = self
+            .db
+            .query("SELECT count() AS n FROM scan GROUP ALL")
+            .query("SELECT count() AS n FROM file GROUP ALL")
+            .query("SELECT count() AS n FROM finding GROUP ALL")
+            .await
+            .context("gc counts")?;
+        let n =
+            |rows: Vec<serde_json::Value>| rows.first().and_then(|r| r["n"].as_u64()).unwrap_or(0);
+        Ok((n(res.take(0)?), n(res.take(1)?), n(res.take(2)?)))
+    }
+
     /// Whole-store counts for reports: `(files, scans)`.
     pub async fn counts(&self) -> Result<(u64, u64)> {
         let mut res = self
@@ -394,6 +459,53 @@ impl Store {
         Ok(existed)
     }
 
+    /// Build the findings graph: for each finding (optionally filtered like
+    /// [`search_findings`]), a finding node plus its file, and edges
+    /// `finding -in_file-> file`. Findings also link to their rule by name.
+    pub async fn graph(&self, filter: &str) -> Result<Graph> {
+        let findings = self.search_findings(filter).await?;
+        let mut graph = Graph::default();
+        let mut seen_files = std::collections::HashSet::new();
+
+        for (i, m) in findings.iter().enumerate() {
+            let fid = format!("finding:{i}");
+            graph.nodes.push(GraphNode {
+                id: fid.clone(),
+                kind: "finding".into(),
+                label: format!("{} @ {}:{}", m.rule, m.path, m.line),
+            });
+            // File node (deduped by path).
+            let file_id = format!("file:{}", m.path);
+            if seen_files.insert(m.path.clone()) {
+                graph.nodes.push(GraphNode {
+                    id: file_id.clone(),
+                    kind: "file".into(),
+                    label: m.path.clone(),
+                });
+            }
+            graph.edges.push(GraphEdge {
+                from: fid.clone(),
+                to: file_id,
+                rel: "in_file".into(),
+            });
+            // Rule node (deduped by name).
+            let rule_id = format!("rule:{}", m.rule);
+            if seen_files.insert(rule_id.clone()) {
+                graph.nodes.push(GraphNode {
+                    id: rule_id.clone(),
+                    kind: "rule".into(),
+                    label: m.rule.clone(),
+                });
+            }
+            graph.edges.push(GraphEdge {
+                from: fid,
+                to: rule_id,
+                rel: "flagged_by".into(),
+            });
+        }
+        Ok(graph)
+    }
+
     /// Fetch one record by full id (`table:key`) as JSON.
     pub async fn get_record(&self, id: &str) -> Result<Option<serde_json::Value>> {
         let Some((table, key)) = id.split_once(':') else {
@@ -436,6 +548,48 @@ pub struct FileStat {
     pub mtime: String,
     /// blake3 content hash recorded at last scan.
     pub hash: String,
+}
+
+/// What a [`Store::gc`] pass removed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GcStats {
+    /// Older scan records deleted.
+    pub scans: u64,
+    /// Stale file records deleted.
+    pub files: u64,
+    /// Findings deleted along with their files.
+    pub findings: u64,
+}
+
+/// One node in the exported findings graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphNode {
+    /// Node id (`finding:…`, `file:…`, `rule:…`).
+    pub id: String,
+    /// Node kind (`finding`, `file`, `rule`).
+    pub kind: String,
+    /// Display label.
+    pub label: String,
+}
+
+/// One directed edge in the exported findings graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEdge {
+    /// Source node id.
+    pub from: String,
+    /// Target node id.
+    pub to: String,
+    /// Edge relation (`in_file`, `flagged_by`).
+    pub rel: String,
+}
+
+/// The findings graph: nodes (findings, files, rules) and edges between them.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Graph {
+    /// Graph nodes.
+    pub nodes: Vec<GraphNode>,
+    /// Graph edges.
+    pub edges: Vec<GraphEdge>,
 }
 
 /// One scan run: the root, host, and result counters.
@@ -603,6 +757,26 @@ mod tests {
             .unwrap();
         let rows: Vec<serde_json::Value> = res.take(0).unwrap();
         assert_eq!(rows[0]["n"], 1, "one finding relates to file:aaa");
+
+        // The findings graph has finding, file, and rule nodes with edges.
+        let graph = store.graph("").await.unwrap();
+        assert_eq!(
+            graph.nodes.iter().filter(|n| n.kind == "finding").count(),
+            2
+        );
+        assert!(graph
+            .nodes
+            .iter()
+            .any(|n| n.kind == "file" && n.label == "a.env"));
+        assert!(graph
+            .nodes
+            .iter()
+            .any(|n| n.kind == "rule" && n.label == "aws-key"));
+        assert!(graph.edges.iter().any(|e| e.rel == "in_file"));
+        assert!(graph.edges.iter().any(|e| e.rel == "flagged_by"));
+        // Filtered graph narrows to one finding.
+        let one = store.graph("rule=aws-key").await.unwrap();
+        assert_eq!(one.nodes.iter().filter(|n| n.kind == "finding").count(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

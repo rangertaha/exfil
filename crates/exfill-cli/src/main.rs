@@ -71,8 +71,14 @@ enum Command {
     },
     /// Query stored findings.
     Search { query: Option<String> },
-    /// Emit the findings graph.
-    Graph { query: Option<String> },
+    /// Emit the findings graph (finding → file / rule) as JSON or DOT.
+    Graph {
+        /// Optional finding filter (same syntax as `search`).
+        query: Option<String>,
+        /// Output format: json or dot.
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
     /// Analyze the whole findings graph and render a report.
     Analyze {
         /// Optional finding filter (same syntax as `search`).
@@ -126,6 +132,8 @@ async fn main() -> Result<()> {
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
+        Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
+        Command::Gc => cmd_gc(&store_dir).await?,
         Command::Rules => cmd_rules()?,
         Command::Clean => cmd_clean(&store_dir)?,
         Command::Tui => {
@@ -398,6 +406,44 @@ async fn cmd_analyze(
         &mut stdout,
     )
     .await
+}
+
+/// Emit the findings graph as JSON or Graphviz DOT.
+async fn cmd_graph(store_dir: &std::path::Path, query: Option<String>, format: &str) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let graph = store.graph(query.as_deref().unwrap_or("")).await?;
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&graph)?),
+        "dot" => {
+            println!("digraph exfill {{");
+            println!("  rankdir=LR;");
+            for n in &graph.nodes {
+                let shape = match n.kind.as_str() {
+                    "finding" => "box",
+                    "file" => "folder",
+                    _ => "ellipse",
+                };
+                println!("  {:?} [label={:?}, shape={shape}];", n.id, n.label);
+            }
+            for e in &graph.edges {
+                println!("  {:?} -> {:?} [label={:?}];", e.from, e.to, e.rel);
+            }
+            println!("}}");
+        }
+        other => anyhow::bail!("unknown graph format {other:?} (use json or dot)"),
+    }
+    Ok(())
+}
+
+/// Garbage-collect the findings store: prune superseded scans and records.
+async fn cmd_gc(store_dir: &std::path::Path) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let stats = store.gc().await?;
+    println!(
+        "gc: removed {} old scan(s), {} stale file(s), {} finding(s)",
+        stats.scans, stats.files, stats.findings
+    );
+    Ok(())
 }
 
 /// Print one stored record (`table:key`) as JSON.

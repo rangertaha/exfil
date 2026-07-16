@@ -66,3 +66,7 @@ and this project adheres to
   pipeline on its files (RemoteFs trait + engine::scan_remote).
 - YARA scanning (`exfill-scan::yara`): pure-Rust yara-x matcher; rules from
   `[plugins.yara]`, severity/CWE read from each rule's meta block.
+- `gc`: prune superseded scans and unreachable file/finding/ast records
+  (keeps the latest scan). `graph [query] --format json|dot`: emit the
+  finding→file/rule graph. Scan timestamps switched to milliseconds so
+  scan ordering is unambiguous.
