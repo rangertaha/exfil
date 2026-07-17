@@ -169,6 +169,46 @@ fn severity_counts(findings: &[Match]) -> Vec<(Severity, usize)> {
         .collect()
 }
 
+/// The `?` help screen: a full key reference shown in the pager. Grouped by
+/// context so a new user can learn the whole surface without leaving the TUI.
+fn help_text() -> Vec<String> {
+    [
+        "exfil TUI — key reference",
+        "",
+        "Index",
+        "  j / k, ↓ / ↑      move selection",
+        "  g / G             first / last",
+        "  Enter             open in the graph navigator",
+        "  Tab / Shift-Tab   cycle object type (findings, files, …)",
+        "  /                 limit: severity=high, cwe=CWE-798, path=…, or text",
+        "  :                 command: scan [path], search, rules, get <id>, browse, clean, quit",
+        "  s                 scan the current directory",
+        "  r                 reload from the store",
+        "  ?                 this help",
+        "  q                 quit",
+        "",
+        "Graph navigator",
+        "  j / k             scroll view · move edge cursor (by focus)",
+        "  h / l, Tab        switch focus between the view and its edges",
+        "  Enter / l         follow the selected edge",
+        "  < / >             back / forward through the jumplist",
+        "  c                 edit a field of the current node (field=value)",
+        "  d                 delete the selected edge",
+        "  u / U             undo / redo",
+        "  q / i / Esc       return to the index",
+        "",
+        "Pager & help",
+        "  j / k             scroll",
+        "  i / q / Esc       back to the index",
+        "",
+        "Findings are color-coded by severity; the status bar shows a per-severity tally.",
+        "Docs: https://rangertaha.github.io/exfil/",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 /// One mutt-like index row: `  3 C aws-access-key-id   .env:1  export AWS_…`.
 fn index_row(n: usize, m: &Match) -> String {
     format!(
@@ -897,7 +937,7 @@ impl App {
         // Help bar (top, like mutt's `help=yes`).
         let help_text = match self.mode {
             Mode::Index => {
-                "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload g/G:First/Last"
+                "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload ?:Help"
             }
             Mode::Pager(_) => "i:Exit  j/k:Scroll  q:Index",
             Mode::Nav => {
@@ -994,6 +1034,11 @@ impl App {
                 }
                 KeyCode::Char('r') => self.refresh_index(handle),
                 KeyCode::Char('s') => self.execute(handle, Action::Scan(PathBuf::from("."))),
+                KeyCode::Char('?') => {
+                    self.pager = help_text();
+                    self.mode = Mode::Pager(0);
+                    self.message = "help — i or q to return".into();
+                }
                 // Findings root the navigator at their file; other types open
                 // the selected node directly.
                 KeyCode::Enter => {
@@ -1384,6 +1429,14 @@ mod tests {
             assert!(matches!(app.mode, Mode::Pager(_)));
             assert!(app.pager.iter().any(|l| l.contains("aws-access-key-id")));
             app.on_key(&handle, KeyCode::Char('i')); // back to index
+
+            // `?` opens the help overlay in the pager, then returns to the index.
+            app.on_key(&handle, KeyCode::Char('?'));
+            assert!(matches!(app.mode, Mode::Pager(_)));
+            assert!(app.pager.iter().any(|l| l.contains("key reference")));
+            assert!(screen(&mut app).contains("key reference"), "help renders");
+            app.on_key(&handle, KeyCode::Char('q')); // back to index
+            assert!(matches!(app.mode, Mode::Index));
 
             // `/severity=low` limits to nothing; the limit shows in the status.
             app.on_key(&handle, KeyCode::Char('/'));
