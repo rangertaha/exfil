@@ -188,4 +188,21 @@ mod tests {
         assert_eq!(ver, "nginx/1.25.3");
         assert_eq!(fingerprint("220 mail.example.com ESMTP Postfix").0, "smtp");
     }
+
+    #[test]
+    fn total_size_and_empty_ports_are_rejected() {
+        // Host count is at the cap but hosts × ports exceeds it → total bail.
+        assert!(expand_targets("10.1.0.0/16", "80,443").is_err());
+        // A ports spec that yields no ports is rejected.
+        assert!(expand_targets("127.0.0.1", "").is_err());
+    }
+
+    #[test]
+    fn fingerprint_ftp_and_unknown_banner() {
+        assert_eq!(fingerprint("220 ProFTPD 1.3.7 Server").0, "ftp");
+        assert_eq!(
+            fingerprint("random noise\r\n"),
+            (String::new(), String::new())
+        );
+    }
 }
