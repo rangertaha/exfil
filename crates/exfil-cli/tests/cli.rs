@@ -173,8 +173,10 @@ fn config_shows_explicit_file_and_errors_when_missing() {
     let out = exfil(&sb.store, &["--config", cfg.to_str().unwrap(), "config"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
-    assert!(text.contains("plugin \"regex\""), "{text}");
-    assert!(text.contains("update \"security\""), "{text}");
+    // `config` prints the resolved path then the file's actual contents.
+    assert!(text.contains("# config:"), "{text}");
+    assert!(text.contains("[plugins.regex]"), "{text}");
+    assert!(text.contains("ref = \"builtin://security\""), "{text}");
 
     let out = exfil(
         &sb.store,
