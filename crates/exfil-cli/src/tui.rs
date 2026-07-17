@@ -163,7 +163,8 @@ fn help_text() -> Vec<String> {
         "",
         "Index",
         "  j / k, ↓ / ↑      move selection",
-        "  g / G             first / last",
+        "  g / G, Home/End   first / last",
+        "  PgUp / PgDn       move by a screen",
         "  Enter             open in the graph navigator",
         "  Tab / Shift-Tab   cycle object type (findings, files, …)",
         "  /                 limit: severity=high, cwe=CWE-798, path=…, or text",
@@ -185,7 +186,7 @@ fn help_text() -> Vec<String> {
         "  q / i / Esc       return to the index",
         "",
         "Pager & help",
-        "  j / k             scroll",
+        "  j / k             scroll · g/G top/bottom · PgUp/PgDn by a screen",
         "  i / q / Esc       back to the index",
         "",
         "Findings are color-coded by severity; the status bar shows a per-severity tally.",
@@ -383,6 +384,8 @@ struct App {
     pager: Vec<String>,
     /// Title shown on the pager's border (what's being viewed).
     pager_title: String,
+    /// Height of the main content area from the last draw, for page scrolling.
+    page: u16,
     /// Transient one-line message (last action's outcome), mutt's bottom line.
     message: String,
     /// Active `:` or `/` prompt, if the user is typing one.
@@ -412,6 +415,7 @@ impl App {
             mode: Mode::Index,
             pager: Vec::new(),
             pager_title: String::new(),
+            page: 1,
             message: "ready — Tab:type :scan / to limit q to quit".into(),
             prompt: None,
             limit: String::new(),
@@ -949,6 +953,8 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
+        // Remember the content height so page-scroll keys can move by a screen.
+        self.page = main.height.max(1);
 
         let reversed = Style::default().add_modifier(Modifier::REVERSED);
 
@@ -957,7 +963,7 @@ impl App {
             Mode::Index => {
                 "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload ?:Help"
             }
-            Mode::Pager(_) => "i:Exit  j/k:Scroll  q:Index",
+            Mode::Pager(_) => "i/q:Index  j/k:Scroll  g/G:Top/Bottom  PgUp/PgDn:Page",
             Mode::Nav => {
                 "q:Index j/k:Move h/l:Pane Enter:Follow </>:Back c:Edit d:DelEdge u/U:Undo/Redo"
             }
@@ -1035,13 +1041,24 @@ impl App {
             return;
         }
 
+        // Page size and the pager's last scrollable line, read before the
+        // mutable `self.mode` borrow below so both modes can page by a screen.
+        let page = self.page.max(1);
+        let max_scroll = (self.pager.len() as u16).saturating_sub(page);
+
         match &mut self.mode {
             Mode::Pager(scroll) => match code {
                 KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc => {
                     self.mode = Mode::Index;
                 }
-                KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *scroll = scroll.saturating_add(1).min(max_scroll)
+                }
                 KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+                KeyCode::Char('G') | KeyCode::End => *scroll = max_scroll,
+                KeyCode::PageDown => *scroll = scroll.saturating_add(page).min(max_scroll),
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(page),
                 _ => {}
             },
             Mode::Index => match code {
@@ -1055,8 +1072,10 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.select_delta(1),
                 KeyCode::Char('k') | KeyCode::Up => self.select_delta(-1),
-                KeyCode::Char('g') => self.select_delta(isize::MIN + 1),
-                KeyCode::Char('G') => self.select_delta(isize::MAX),
+                KeyCode::Char('g') | KeyCode::Home => self.select_delta(isize::MIN + 1),
+                KeyCode::Char('G') | KeyCode::End => self.select_delta(isize::MAX),
+                KeyCode::PageDown => self.select_delta(page as isize),
+                KeyCode::PageUp => self.select_delta(-(page as isize)),
                 KeyCode::Tab => {
                     let to = self.browse.cycle(1);
                     self.switch_browse(handle, to);
@@ -1453,6 +1472,15 @@ mod tests {
             assert!(matches!(app.mode, Mode::Pager(_)));
             assert!(app.pager.iter().any(|l| l.contains("key reference")));
             assert!(screen(&mut app).contains("key reference"), "help renders");
+            // Paging: G jumps to the bottom of the (long) help, g back to top.
+            let _ = screen(&mut app); // sets the viewport height
+            app.on_key(&handle, KeyCode::Char('G'));
+            assert!(
+                matches!(app.mode, Mode::Pager(s) if s > 0),
+                "G scrolls to the bottom"
+            );
+            app.on_key(&handle, KeyCode::Char('g'));
+            assert!(matches!(app.mode, Mode::Pager(0)), "g returns to the top");
             app.on_key(&handle, KeyCode::Char('q')); // back to index
             assert!(matches!(app.mode, Mode::Index));
 
