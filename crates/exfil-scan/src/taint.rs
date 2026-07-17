@@ -261,4 +261,33 @@ mod tests {
         // The extractor supplies the AST this task consumes.
         assert_eq!(AstExtractor.provides(), ArtifactKind::Ast);
     }
+
+    #[test]
+    fn ruby_and_shell_sources_are_recognized() {
+        // Ruby/Rails taint sources: ENV, gets, params (checked on the callee).
+        assert!(is_source("ENV"));
+        assert!(is_source("gets"));
+        assert!(is_source("controller.params"));
+        // And a clearly-inert callee is not a source.
+        assert!(!is_source("math.sqrt"));
+    }
+
+    #[test]
+    fn python_subprocess_and_exec_sinks() {
+        // subprocess.check_output → "subprocess execution" sink.
+        let sub = taint(
+            "s.py",
+            "import subprocess\nx = input()\nsubprocess.check_output(x)\n",
+        );
+        assert!(
+            sub.iter().any(|m| m.rule == "taint-command-injection"),
+            "{sub:?}"
+        );
+        // exec(tainted) → code-injection sink.
+        let ev = taint("s.py", "x = input()\nexec(x)\n");
+        assert!(
+            ev.iter().any(|m| m.rule == "taint-code-injection"),
+            "{ev:?}"
+        );
+    }
 }
