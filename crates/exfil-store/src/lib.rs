@@ -284,7 +284,11 @@ impl Store {
         if let Some((k, v)) = bind {
             q = q.bind((k, v));
         }
-        let rows: Vec<Match> = q.await.context("search findings")?.take(0)?;
+        let mut rows: Vec<Match> = q.await.context("search findings")?.take(0)?;
+        // Worst-first: highest severity leads so the most serious findings are
+        // seen first; unrated findings sort last. Stable, so same-severity
+        // findings keep their storage order.
+        rows.sort_by_key(|m| std::cmp::Reverse(m.severity.map(|s| s.weight() + 1).unwrap_or(0)));
         Ok(rows)
     }
 
