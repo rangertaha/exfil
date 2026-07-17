@@ -77,8 +77,9 @@ and this project adheres to
 - URL feed catalog (`exfil feeds`): manage a catalog of feed URLs and ingest
   them through a fetch → decompress → detect → parse pipeline into rule
   datasets. Formats: native JSON, CSV/TSV (header-mapped regex rules), newline
-  IOC lists (domain/IP/sha256), RSS/Atom (IOCs mined from item text), and YARA
-  (`.yar` rules compiled into the YARA scanner), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
+  IOC lists (domain/IP/sha256), RSS/Atom (IOCs mined from item text), YARA
+  (`.yar` rules compiled into the YARA scanner), and gitleaks TOML (`[[rules]]`
+  regexes), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
 
 ### Changed
 

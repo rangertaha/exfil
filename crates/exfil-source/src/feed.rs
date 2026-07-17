@@ -10,13 +10,13 @@
 //! - **Detect** — each member's format is guessed from its filename extension.
 //! - **Parse** — JSON (native dataset), CSV/TSV (a header row maps columns to
 //!   rule fields), newline-delimited IOCs (one domain/IP/hash per line),
-//!   RSS/Atom (indicators mined from item text), and YARA (`.yar` rule blocks
-//!   compiled into the YARA scanner).
+//!   RSS/Atom (indicators mined from item text), YARA (`.yar` rule blocks
+//!   compiled into the YARA scanner), and gitleaks TOML (`[[rules]]` regexes).
 //!
 //! The parsing is pure (bytes → rules), so every format is unit-testable
 //! without the network; [`fetch_feed`] is the thin download layer on top.
-//! Adding a format (gitleaks TOML, STIX, …) is a new arm here — the catalog,
-//! storage, and CLI don't change.
+//! Adding a format (STIX, MISP, …) is a new arm here — the catalog, storage,
+//! and CLI don't change.
 
 use std::io::Read;
 
@@ -38,6 +38,8 @@ pub enum FeedFormat {
     Rss,
     /// YARA rules (`.yar`/`.yara`) — one detection rule per `rule { … }` block.
     Yara,
+    /// A gitleaks config TOML — its `[[rules]]` become regex rules.
+    GitleaksToml,
 }
 
 impl FeedFormat {
@@ -57,6 +59,7 @@ impl FeedFormat {
             "tsv" | "tab" => FeedFormat::Tsv,
             "rss" | "atom" | "xml" => FeedFormat::Rss,
             "yar" | "yara" => FeedFormat::Yara,
+            "toml" => FeedFormat::GitleaksToml,
             _ => FeedFormat::Iocs,
         }
     }
@@ -106,7 +109,51 @@ pub fn parse(name: &str, format: FeedFormat, bytes: &[u8]) -> Result<Vec<Rule>> 
         FeedFormat::Iocs => Ok(parse_iocs(&String::from_utf8_lossy(bytes), name)),
         FeedFormat::Rss => Ok(parse_rss(bytes, name)),
         FeedFormat::Yara => Ok(parse_yara(&String::from_utf8_lossy(bytes), name)),
+        FeedFormat::GitleaksToml => parse_gitleaks(bytes, name),
     }
+}
+
+/// Parse a [gitleaks](https://github.com/gitleaks/gitleaks) config TOML: each
+/// `[[rules]]` entry (`id`, `description`, `regex`) becomes a regex [`Rule`].
+/// Rules without a regex are skipped; patterns using regex features Rust's
+/// engine lacks (lookahead, …) simply fail to compile later and are dropped.
+fn parse_gitleaks(bytes: &[u8], feed: &str) -> Result<Vec<Rule>> {
+    #[derive(serde::Deserialize)]
+    struct Config {
+        #[serde(default)]
+        rules: Vec<GitleaksRule>,
+    }
+    #[derive(serde::Deserialize)]
+    struct GitleaksRule {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        regex: String,
+    }
+    let text = std::str::from_utf8(bytes).context("gitleaks TOML is not UTF-8")?;
+    let config: Config = toml::from_str(text).context("parse gitleaks TOML")?;
+    if config.rules.is_empty() {
+        bail!("{feed}: no [[rules]] in gitleaks TOML");
+    }
+    Ok(config
+        .rules
+        .into_iter()
+        .filter(|r| !r.regex.trim().is_empty())
+        .map(|r| Rule {
+            name: if r.id.trim().is_empty() {
+                format!("{feed}-rule")
+            } else {
+                r.id
+            },
+            pattern: r.regex,
+            description: r.description,
+            severity: None,
+            cwe: None,
+            cve: None,
+        })
+        .collect())
 }
 
 /// Mine indicators out of an RSS/Atom feed's text (item titles, links, bodies)
@@ -573,11 +620,42 @@ mod tests {
     }
 
     #[test]
-    fn format_detection_rss_and_yara() {
+    fn format_detection_rss_yara_and_toml() {
         assert_eq!(FeedFormat::from_name("feed.rss"), FeedFormat::Rss);
         assert_eq!(FeedFormat::from_name("f.atom"), FeedFormat::Rss);
         assert_eq!(FeedFormat::from_name("rules.yar"), FeedFormat::Yara);
         assert_eq!(FeedFormat::from_name("x.yara"), FeedFormat::Yara);
+        assert_eq!(
+            FeedFormat::from_name("gitleaks.toml"),
+            FeedFormat::GitleaksToml
+        );
+    }
+
+    #[test]
+    fn parses_gitleaks_toml_rules() {
+        let toml = r#"
+            title = "gitleaks config"
+
+            [[rules]]
+            id = "aws-access-key"
+            description = "AWS Access Key ID"
+            regex = '''AKIA[0-9A-Z]{16}'''
+            keywords = ["AKIA"]
+
+            [[rules]]
+            id = "no-regex-skipped"
+            description = "should be skipped"
+
+            [[rules]]
+            description = "unnamed falls back to feed name"
+            regex = '''ghp_[A-Za-z0-9]{36}'''
+        "#;
+        let rules = parse("gitleaks", FeedFormat::GitleaksToml, toml.as_bytes()).unwrap();
+        assert_eq!(rules.len(), 2, "the regex-less rule is dropped");
+        assert_eq!(rules[0].name, "aws-access-key");
+        assert_eq!(rules[0].pattern, "AKIA[0-9A-Z]{16}");
+        assert_eq!(rules[0].description, "AWS Access Key ID");
+        assert_eq!(rules[1].name, "gitleaks-rule"); // unnamed → feed-derived name
     }
 
     #[test]

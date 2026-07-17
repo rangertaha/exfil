@@ -2077,9 +2077,11 @@ dependencies = [
  "flate2",
  "reqwest",
  "roxmltree",
+ "serde",
  "serde_json",
  "tar",
  "tokio",
+ "toml",
  "zip",
 ]
 
