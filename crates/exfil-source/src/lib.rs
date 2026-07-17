@@ -12,6 +12,7 @@
 //! trait is object-safe as `Box<dyn Source>`. The registry tries each source's
 //! [`handles`](Source::handles) in turn — the first match wins.
 
+pub mod feed;
 pub mod mitre;
 
 use anyhow::{bail, Context, Result};

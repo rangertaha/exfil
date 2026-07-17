@@ -2073,9 +2073,11 @@ dependencies = [
  "async-trait",
  "exfil-core",
  "exfil-scan",
+ "flate2",
  "reqwest",
  "roxmltree",
  "serde_json",
+ "tar",
  "tokio",
  "zip",
 ]

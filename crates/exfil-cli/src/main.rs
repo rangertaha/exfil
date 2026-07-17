@@ -159,6 +159,12 @@ enum Command {
         #[command(subcommand)]
         action: Option<DatasetCmd>,
     },
+    /// Manage the URL feed catalog and fetch feeds into rule datasets (list by
+    /// default; add/rm/pull subcommands).
+    Feeds {
+        #[command(subcommand)]
+        action: Option<FeedCmd>,
+    },
     /// Show the rules a scan would apply, optionally filtered by a substring
     /// of the name, description, CWE, or severity.
     Rules { filter: Option<String> },
@@ -324,6 +330,19 @@ enum DatasetCmd {
     Rm { name: String },
 }
 
+/// URL feed catalog actions.
+#[derive(Subcommand)]
+enum FeedCmd {
+    /// List stored feeds and their URLs (the default).
+    List,
+    /// Add (or update) a feed URL under a name.
+    Add { name: String, url: String },
+    /// Remove a feed from the catalog.
+    Rm { name: String },
+    /// Fetch feeds into rule datasets: a specific `name`, or all when omitted.
+    Pull { name: Option<String> },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -339,6 +358,7 @@ async fn main() -> Result<()> {
         Command::Sources => cmd_sources(),
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(cfg, action).await?,
+        Command::Feeds { action } => cmd_feeds(cfg, action).await?,
         Command::Scan { path, fail_on } => {
             cmd_scan(&store_dir, cli.config.as_deref(), path, fail_on).await?
         }
@@ -880,6 +900,58 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
                 println!("removed dataset {name:?}");
             } else {
                 println!("no dataset {name:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Manage the URL feed catalog: list (default), add, remove, or pull. `pull`
+/// runs the ingestion pipeline (fetch → decompress → detect → parse) over a
+/// feed and stores the extracted rules as a dataset named after the feed.
+async fn cmd_feeds(config: Option<&std::path::Path>, action: Option<FeedCmd>) -> Result<()> {
+    let catalog = open_catalog(config).await?;
+    match action.unwrap_or(FeedCmd::List) {
+        FeedCmd::List => {
+            let feeds = catalog.list_feeds().await?;
+            if feeds.is_empty() {
+                println!("no feeds — add one with `exfil feeds add <name> <url>`");
+                return Ok(());
+            }
+            for (name, url) in &feeds {
+                println!("{name:<24} {url}");
+            }
+            println!("{} feed(s)", feeds.len());
+        }
+        FeedCmd::Add { name, url } => {
+            catalog.upsert_feed(&name, &url).await?;
+            println!("added feed {name:?} → {url}");
+        }
+        FeedCmd::Rm { name } => {
+            if catalog.remove_feed(&name).await? {
+                println!("removed feed {name:?}");
+            } else {
+                println!("no feed {name:?}");
+            }
+        }
+        FeedCmd::Pull { name } => {
+            let mut targets = catalog.list_feeds().await?;
+            if let Some(want) = &name {
+                targets.retain(|(n, _)| n == want);
+            }
+            if targets.is_empty() {
+                println!("nothing to pull (add a feed with `exfil feeds add`)");
+                return Ok(());
+            }
+            for (name, url) in targets {
+                eprintln!("pulling feed {name:?} from {url}…");
+                match exfil_source::feed::fetch_feed(&name, &url).await {
+                    Ok(dataset) => {
+                        let n = catalog.upsert_dataset(&dataset).await?;
+                        println!("pulled feed {name:?}: {n} rule(s) from {url}");
+                    }
+                    Err(e) => eprintln!("failed to pull feed {name:?}: {e:#}"),
+                }
             }
         }
     }

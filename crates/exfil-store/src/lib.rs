@@ -61,6 +61,7 @@ DEFINE TABLE IF NOT EXISTS source SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS dataset SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS rule SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS cwe SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS feed SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
@@ -792,6 +793,64 @@ impl Store {
     /// Number of stored CWE entries.
     pub async fn cwe_count(&self) -> Result<usize> {
         Ok(self.cwe_catalog().await?.len())
+    }
+
+    /// Add or update a feed URL in the catalog, keyed by name. A feed is a URL
+    /// that publishes detection data; `feeds pull` fetches it into a dataset.
+    pub async fn upsert_feed(&self, name: &str, url: &str) -> Result<()> {
+        self.db
+            .query("UPSERT type::thing('feed', $n) CONTENT { url: $u }")
+            .bind(("n", name.to_string()))
+            .bind(("u", url.to_string()))
+            .await
+            .context("upsert feed")?
+            .check()
+            .context("feed upsert failed")?;
+        Ok(())
+    }
+
+    /// List stored feeds as `(name, url)`, alphabetical by name.
+    pub async fn list_feeds(&self) -> Result<Vec<(String, String)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            rid: String,
+            #[serde(default)]
+            url: String,
+        }
+        let mut res = self
+            .db
+            .query("SELECT type::string(id) AS rid, url FROM feed")
+            .await
+            .context("list feeds")?;
+        let rows: Vec<Row> = res.take(0)?;
+        let mut feeds: Vec<(String, String)> = rows
+            .into_iter()
+            .map(|r| {
+                let name = r
+                    .rid
+                    .split_once(':')
+                    .map(|(_, k)| k)
+                    .unwrap_or(&r.rid)
+                    .trim_matches(|c| c == '`' || c == '⟨' || c == '⟩')
+                    .to_string();
+                (name, r.url)
+            })
+            .collect();
+        feeds.sort();
+        Ok(feeds)
+    }
+
+    /// Remove a feed by name. Returns whether it existed.
+    pub async fn remove_feed(&self, name: &str) -> Result<bool> {
+        let existed = self.list_feeds().await?.iter().any(|(n, _)| n == name);
+        self.db
+            .query("DELETE type::thing('feed', $n)")
+            .bind(("n", name.to_string()))
+            .await
+            .context("remove feed")?
+            .check()
+            .context("feed delete failed")?;
+        Ok(existed)
     }
 
     /// Remove a dataset and its rule edges. Orphaned rule records are left for
@@ -1586,6 +1645,41 @@ mod tests {
             Some("/tree")
         );
         assert_eq!(label("mystery", json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn feed_catalog_crud() {
+        let dir = std::env::temp_dir().join(format!("exfil-store-feeds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_CATALOG).await.unwrap();
+
+        store
+            .upsert_feed("threats", "https://x.test/iocs.txt")
+            .await
+            .unwrap();
+        store
+            .upsert_feed("secrets", "https://x.test/rules.csv")
+            .await
+            .unwrap();
+
+        let feeds = store.list_feeds().await.unwrap();
+        assert_eq!(feeds.len(), 2);
+        assert!(feeds
+            .iter()
+            .any(|(n, u)| n == "threats" && u == "https://x.test/iocs.txt"));
+
+        // upsert replaces, not duplicates.
+        store
+            .upsert_feed("threats", "https://x.test/new.txt")
+            .await
+            .unwrap();
+        assert_eq!(store.list_feeds().await.unwrap().len(), 2);
+
+        assert!(store.remove_feed("threats").await.unwrap());
+        assert!(!store.remove_feed("nope").await.unwrap());
+        assert_eq!(store.list_feeds().await.unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

@@ -74,6 +74,10 @@ and this project adheres to
 - WebDriver crawling: `exfil scan-web --driver <url>` renders pages in a
   headless browser (geckodriver/chromedriver) to traverse JavaScript-heavy,
   dynamic sites — content a plain HTTP crawl misses.
+- URL feed catalog (`exfil feeds`): manage a catalog of feed URLs and ingest
+  them through a fetch → decompress → detect → parse pipeline into rule
+  datasets. Formats: native JSON, CSV/TSV (header-mapped regex rules), and
+  newline IOC lists (domain/IP/sha256), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
 
 ### Changed
 
