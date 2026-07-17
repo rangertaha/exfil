@@ -1,21 +1,39 @@
 # Introduction
 
-**exfil** — *Extra File Lang Lookup* — is an offline, cross-platform,
-plugin-based **DevSecOps engine for static analysis**.
+**exfil** — *Extra File Lang Lookup* — is an offline, plugin-based DevSecOps
+engine that scans your whole delivery surface for security problems and files
+every finding into a queryable graph — so you catch leaked secrets, vulnerable
+code, and risky configuration before they ship, with nothing leaving your
+machine.
 
-exfil performs static analysis across the whole delivery surface —
-**application source code**, **infrastructure-as-code**, **operating systems**,
-**container artifacts**, and more. It catches problems before they ship:
-**privacy leaks**, **OPSEC violations**, **data leaks**, and **vulnerable code**
-headed for deployment.
+```mermaid
+flowchart LR
+    T["Targets<br/>code · config · deps<br/>hosts · web"] --> S["Scan<br/>walk · parse · render"]
+    S --> M["Match<br/>secrets · taint · IOCs<br/>YARA · PII · supply-chain"]
+    M --> G[("Findings graph<br/>SurrealDB")]
+    G --> R["Report<br/>search · TUI · reports<br/>HTTP · GraphQL · MCP"]
+```
 
-It walks a target in parallel, scans every file against security rulesets
-(leaked credentials, dangerous code patterns, insecure configuration,
-supply-chain compromise), and stores the results as a queryable **graph** —
-files → findings → rules — in an embedded, pure-Rust database
-([SurrealDB](https://surrealdb.com) on SurrealKV). Everything runs locally: no
-network access is needed to analyze, and nothing leaves the machine — the same
-property it helps you enforce on your own code.
+### What it scans
+
+- **Code** — 17 languages via tree-sitter (dangerous calls + taint flow), plus secret/regex rules over any text
+- **Infrastructure & config** — Terraform/HCL, Dockerfiles, Kubernetes/YAML
+- **Dependencies** — `package.json`, `requirements*.txt`, `Cargo.toml`
+- **Archives & container layers** — zip/jar/war/tar/tar.gz/gz, unpacked and scanned in place
+- **Hosts** — the local filesystem, remote hosts over SSH, and running processes
+- **Web & network** — crawled sites (incl. JavaScript-rendered pages via WebDriver) and TCP service banners
+
+### What it finds and reports
+
+- **Findings** — leaked credentials, code-injection flows, supply-chain risks
+  (malicious & typosquatted dependencies), malware signatures (YARA · ClamAV),
+  IOCs (bad domains/IPs/hashes), and PII.
+- **Stored as a graph** — files → findings → rules in an embedded, pure-Rust
+  database ([SurrealDB](https://surrealdb.com)) — or a remote cluster.
+- **Reported many ways** — query with `search`, browse the live TUI, render
+  `text`/`json`/`markdown`/`junit` reports, gate CI with `--fail-on`, or serve
+  the graph over HTTP + GraphQL and to AI agents over MCP. Enriched offline with
+  authoritative MITRE CWE names.
 
 ## Where to go next
 
