@@ -92,7 +92,8 @@ Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/
 |---|---|
 | `.json` | Native exfil dataset, **STIX 2.x**, or **MISP** — auto-detected by content |
 | `.csv` / `.tsv` | Regex rules — a header row maps `name`,`pattern`,`severity`,`cwe`,`description` |
-| `.rss` / `.atom` / `.xml` | IOC rules — domains/IPs/URLs/hashes mined from item titles, links, and bodies |
+| `.rss` / `.atom` / `.xml` | IOC rules — domains/IPs/URLs/hashes mined from item text (`.xml` is auto-detected as OpenIOC vs RSS) |
+| `.ioc` / `.openioc` | OpenIOC XML — IOCs from each `IndicatorItem` (context path + content) |
 | `.yar` / `.yara` | YARA rules — one per `rule { … }` block, compiled into the YARA scanner |
 | `.toml` | gitleaks config — each `[[rules]]` (`id`/`regex`/`description`) becomes a regex rule |
 | `.stix` / `.misp` | STIX/MISP threat intel — IOCs from indicator patterns / event attributes |

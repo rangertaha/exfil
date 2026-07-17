@@ -13,8 +13,9 @@
 //!   RSS/Atom (indicators mined from item text), YARA (`.yar` rule blocks
 //!   compiled into the YARA scanner), gitleaks TOML (`[[rules]]` regexes), and
 //!   the JSON threat-intel formats STIX 2.x and MISP (IOCs from indicator
-//!   patterns / event attributes). A `.json` feed is content-sniffed between a
-//!   native dataset, STIX, and MISP.
+//!   patterns / event attributes), and OpenIOC XML (`IndicatorItem` context +
+//!   content). A `.json` feed is content-sniffed between a native dataset,
+//!   STIX, and MISP; a `.xml` feed between OpenIOC and RSS/Atom.
 //!
 //! The parsing is pure (bytes → rules), so every format is unit-testable
 //! without the network; [`fetch_feed`] is the thin download layer on top.
@@ -47,6 +48,8 @@ pub enum FeedFormat {
     Stix,
     /// MISP JSON — indicators are read from event `Attribute` values.
     Misp,
+    /// OpenIOC XML (`.ioc`) — indicators from `IndicatorItem` context + content.
+    OpenIoc,
 }
 
 impl FeedFormat {
@@ -65,6 +68,7 @@ impl FeedFormat {
             "csv" => FeedFormat::Csv,
             "tsv" | "tab" => FeedFormat::Tsv,
             "rss" | "atom" | "xml" => FeedFormat::Rss,
+            "ioc" | "openioc" => FeedFormat::OpenIoc,
             "yar" | "yara" => FeedFormat::Yara,
             "toml" => FeedFormat::GitleaksToml,
             "stix" => FeedFormat::Stix,
@@ -114,7 +118,8 @@ pub fn parse(name: &str, format: FeedFormat, bytes: &[u8]) -> Result<Vec<Rule>> 
         FeedFormat::Csv => parse_delimited(&String::from_utf8_lossy(bytes), ',', name),
         FeedFormat::Tsv => parse_delimited(&String::from_utf8_lossy(bytes), '\t', name),
         FeedFormat::Iocs => Ok(parse_iocs(&String::from_utf8_lossy(bytes), name)),
-        FeedFormat::Rss => Ok(parse_rss(bytes, name)),
+        FeedFormat::Rss => Ok(parse_xml_feed(bytes, name)),
+        FeedFormat::OpenIoc => Ok(parse_openioc(bytes, name)),
         FeedFormat::Yara => Ok(parse_yara(&String::from_utf8_lossy(bytes), name)),
         FeedFormat::GitleaksToml => parse_gitleaks(bytes, name),
         FeedFormat::Stix => Ok(stix_iocs(
@@ -344,6 +349,86 @@ fn xml_text(bytes: &[u8]) -> String {
             .collect::<Vec<_>>()
             .join(" "),
         None => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+/// Parse an XML feed, sniffing OpenIOC (Mandiant `<ioc>` documents) apart from
+/// RSS/Atom. OpenIOC carries explicit typed indicators, so it's read directly;
+/// anything else falls back to mining indicators from item text.
+fn parse_xml_feed(bytes: &[u8], feed: &str) -> Vec<Rule> {
+    if is_openioc(bytes) {
+        parse_openioc(bytes, feed)
+    } else {
+        parse_rss(bytes, feed)
+    }
+}
+
+/// Whether XML looks like OpenIOC — an `<ioc>` root or any `<IndicatorItem>`.
+fn is_openioc(bytes: &[u8]) -> bool {
+    let Some(doc) = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| roxmltree::Document::parse(s).ok())
+    else {
+        return false;
+    };
+    doc.root_element().has_tag_name("ioc")
+        || doc.descendants().any(|n| n.has_tag_name("IndicatorItem"))
+}
+
+/// IOC rules from an [OpenIOC](https://github.com/mandiant/OpenIOC_1.1) document.
+/// Each `IndicatorItem` pairs a `Context` (a search path like `Network/DNS` or
+/// `FileItem/Sha256sum`) with a `Content` value; the path (or the content type)
+/// picks the IOC scheme — domain / IP / URL / md5 / sha1 / sha256.
+fn parse_openioc(bytes: &[u8], feed: &str) -> Vec<Rule> {
+    let Some(doc) = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| roxmltree::Document::parse(s).ok())
+    else {
+        return Vec::new();
+    };
+    let mut rules = Vec::new();
+    for item in doc
+        .descendants()
+        .filter(|n| n.has_tag_name("IndicatorItem"))
+    {
+        let search = item
+            .descendants()
+            .find(|n| n.has_tag_name("Context"))
+            .and_then(|c| c.attribute("search"))
+            .unwrap_or_default();
+        let content = item.descendants().find(|n| n.has_tag_name("Content"));
+        let ctype = content
+            .and_then(|c| c.attribute("type"))
+            .unwrap_or_default();
+        let value = content.and_then(|c| c.text()).unwrap_or_default().trim();
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(scheme) = openioc_scheme(search, ctype) {
+            rules.push(ioc_rule(feed, format!("{scheme}:{value}")));
+        }
+    }
+    rules
+}
+
+/// Map an OpenIOC context search path (and content type) to an IOC scheme.
+fn openioc_scheme(search: &str, ctype: &str) -> Option<&'static str> {
+    let s = search.to_ascii_lowercase();
+    let t = ctype.to_ascii_lowercase();
+    if t == "sha256" || s.contains("sha256") || s.contains("sha-256") {
+        Some("sha256")
+    } else if t == "sha1" || s.contains("sha1") || s.contains("sha-1") {
+        Some("sha1")
+    } else if t == "md5" || s.contains("md5") {
+        Some("md5")
+    } else if s.contains("uri") || s.contains("url") {
+        Some("url")
+    } else if s.contains("ip") {
+        Some("ip")
+    } else if s.contains("dns") || s.contains("domain") || s.contains("host") {
+        Some("domain")
+    } else {
+        None
     }
 }
 
@@ -833,6 +918,48 @@ mod tests {
         let rules = parse("x", FeedFormat::Json, json).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].name, "r");
+    }
+
+    #[test]
+    fn parses_openioc_indicator_items() {
+        let ioc = r#"<?xml version="1.0"?>
+        <ioc xmlns="http://schemas.mandiant.com/2010/ioc" id="1">
+          <definition>
+            <Indicator operator="OR">
+              <IndicatorItem condition="is">
+                <Context document="Network" search="Network/DNS" type="mir"/>
+                <Content type="string">evil.example.com</Content>
+              </IndicatorItem>
+              <IndicatorItem condition="is">
+                <Context document="PortItem" search="PortItem/remoteIP" type="mir"/>
+                <Content type="IP">203.0.113.9</Content>
+              </IndicatorItem>
+              <IndicatorItem condition="is">
+                <Context document="FileItem" search="FileItem/Sha256sum" type="mir"/>
+                <Content type="sha256">DEADBEEF</Content>
+              </IndicatorItem>
+              <IndicatorItem condition="is">
+                <Context document="Snort" search="Snort/Snort" type="mir"/>
+                <Content type="string">alert tcp any</Content>
+              </IndicatorItem>
+            </Indicator>
+          </definition>
+        </ioc>"#;
+        // The .xml path sniffs OpenIOC apart from RSS.
+        let rules = parse("intel", FeedFormat::Rss, ioc.as_bytes()).unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"domain:evil.example.com"), "{pats:?}");
+        assert!(pats.contains(&"ip:203.0.113.9"), "{pats:?}");
+        assert!(pats.contains(&"sha256:DEADBEEF"), "{pats:?}");
+        assert_eq!(rules.len(), 3, "the unmappable Snort item is skipped");
+        assert!(rules.iter().all(|r| r.name == "intel-ioc"));
+    }
+
+    #[test]
+    fn openioc_detected_by_extension_and_content() {
+        assert_eq!(FeedFormat::from_name("threat.ioc"), FeedFormat::OpenIoc);
+        assert!(is_openioc(b"<ioc><IndicatorItem/></ioc>"));
+        assert!(!is_openioc(b"<rss><channel/></rss>"));
     }
 
     #[test]
