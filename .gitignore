@@ -1,6 +1,9 @@
 # Build output
 /target/
 
+# mdBook docs site output
+/docs/book/
+
 # Local findings store
 .exfil/
 

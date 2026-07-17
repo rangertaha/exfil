@@ -1,0 +1,19 @@
+[book]
+title = "exfil"
+description = "A DevSecOps engine for offline static analysis of code, infrastructure, and systems."
+authors = ["Rangertaha"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/Rangertaha/exfil"
+edit-url-template = "https://github.com/Rangertaha/exfil/edit/main/docs/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
