@@ -456,6 +456,33 @@ impl Store {
         Ok(count)
     }
 
+    /// Every stored indicators node as `(file_hash, domains)`. Used by the DNS
+    /// checker to resolve domains observed during a scan. The `indicators`
+    /// record id is the file's content hash (keyed alongside the file).
+    pub async fn indicator_domains(&self) -> Result<Vec<(String, Vec<String>)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            iid: String,
+            #[serde(default)]
+            domains: Vec<String>,
+        }
+        let mut res = self
+            .db
+            .query("SELECT type::string(id) AS iid, domains FROM indicators")
+            .await
+            .context("list indicator domains")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| !r.domains.is_empty())
+            .map(|r| {
+                // `iid` is `indicators:<hash>`; the file hash is the key part.
+                let hash = r.iid.split_once(':').map(|(_, k)| k).unwrap_or(&r.iid);
+                (hash.to_string(), r.domains)
+            })
+            .collect())
+    }
+
     /// List records of a table as `(record_id, label)` for browsing, capped at
     /// `limit`. `kind` must be a known record table (whitelisted, since it is
     /// interpolated into the query — table names can't be bound as `$params`).

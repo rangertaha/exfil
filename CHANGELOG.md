@@ -138,3 +138,7 @@ and this project adheres to
 - Added `exfill scan-web <url>`: bounded same-origin web crawler (page/depth
   caps) that scans fetched HTML/JS pages through the full pipeline for leaked
   secrets, PII, and bad indicators. robots.txt not yet honored.
+- Added `exfill check-dns`: resolves domains observed during scans and flags
+  those resolving to reserved/private/loopback addresses (DNS-rebinding /
+  internal-exposure signal, CWE-918). Online, opt-in; keeps default scans
+  offline. WHOIS registration-age enrichment is a documented follow-on.

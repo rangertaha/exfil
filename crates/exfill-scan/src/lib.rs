@@ -26,6 +26,7 @@
 pub mod ast;
 pub mod builtin;
 pub mod clamav;
+pub mod dns;
 pub mod expand;
 pub mod indicator;
 pub mod ioc;

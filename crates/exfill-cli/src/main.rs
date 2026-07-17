@@ -100,6 +100,9 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         max_depth: usize,
     },
+    /// Resolve domains observed during scans and flag reserved/private
+    /// resolutions (online; authorized use).
+    CheckDns,
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -192,6 +195,7 @@ async fn main() -> Result<()> {
             )
             .await?
         }
+        Command::CheckDns => cmd_check_dns(&store_dir).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -334,6 +338,36 @@ async fn cmd_scan_tcp(
         "grabbed {} banner(s): {} matches, {} unreachable",
         summary.files, summary.matches, summary.errors
     );
+    Ok(())
+}
+
+/// Resolve every domain observed during scans and flag those resolving to a
+/// reserved/private address. Online: runs the blocking resolver off the async
+/// thread, then attaches findings to the file each domain came from.
+async fn cmd_check_dns(store_dir: &std::path::Path) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let domains = store.indicator_domains().await?;
+    let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
+    eprintln!("resolving {total} domain(s)…");
+
+    let mut flagged = 0u64;
+    for (hash, list) in domains {
+        for domain in list {
+            // DNS resolution blocks; keep it off the async runtime thread.
+            let d = domain.clone();
+            let finding =
+                tokio::task::spawn_blocking(move || exfill_scan::dns::check_domain(&d, "dns"))
+                    .await
+                    .ok()
+                    .flatten();
+            if let Some(m) = finding {
+                println!("{}", progress::match_line(&m));
+                store.add_finding(&m, &hash).await?;
+                flagged += 1;
+            }
+        }
+    }
+    println!("{flagged} domain(s) resolve to reserved addresses");
     Ok(())
 }
 
