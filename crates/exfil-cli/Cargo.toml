@@ -26,6 +26,7 @@ toml = "0.8"
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 ratatui = "0.29"
 crossterm = "0.28"
 ciborium = "0.2"

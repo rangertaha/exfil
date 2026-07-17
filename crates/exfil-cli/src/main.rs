@@ -22,7 +22,8 @@ mod tui;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 /// Worked examples shown at the bottom of `exfil --help`. Grouped so a new user
 /// can see the common paths (scan → search → triage) at a glance.
@@ -177,6 +178,12 @@ enum Command {
     Tui,
     /// Print a stored record by id.
     Get { id: String },
+    /// Print a shell completion script (bash, zsh, fish, powershell, elvish).
+    Completions {
+        /// Target shell, e.g. `bash`. Source or install the output; for bash:
+        /// `exfil completions bash > /etc/bash_completion.d/exfil`.
+        shell: Shell,
+    },
 }
 
 /// Catalog dataset management actions.
@@ -243,6 +250,7 @@ async fn main() -> Result<()> {
             exfil_mcp::serve(store).await?;
         }
         Command::Rules => cmd_rules()?,
+        Command::Completions { shell } => cmd_completions(shell),
         Command::Clean => cmd_clean(&store_dir)?,
         Command::Tui => {
             // The TUI loop blocks on terminal input, so it runs on a blocking
@@ -793,6 +801,13 @@ async fn cmd_get(store_dir: &std::path::Path, id: &str) -> Result<()> {
         None => println!("no record {id:?}"),
     }
     Ok(())
+}
+
+/// Print a shell completion script for `shell` to stdout. Generated from the
+/// clap command tree, so it always covers the current subcommands and flags.
+fn cmd_completions(shell: Shell) {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "exfil", &mut std::io::stdout());
 }
 
 /// Show the rules a scan would apply (currently the built-in set).

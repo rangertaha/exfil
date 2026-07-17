@@ -57,6 +57,23 @@ Run `exfil <command> --help` for a command's own flags.
 | `exfil export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
 | `exfil gc` | Garbage-collect unreachable records |
 | `exfil clean` | Delete the findings store (keeps downloaded datasets) |
+| `exfil completions <shell>` | Print a shell completion script (bash, zsh, fish, powershell, elvish) |
+
+## Shell completions
+
+Generate a completion script for your shell and install it so `exfil <Tab>`
+completes subcommands and flags:
+
+```sh
+# bash
+exfil completions bash | sudo tee /etc/bash_completion.d/exfil > /dev/null
+
+# zsh (ensure the dir is on your $fpath)
+exfil completions zsh > ~/.zfunc/_exfil
+
+# fish
+exfil completions fish > ~/.config/fish/completions/exfil.fish
+```
 
 > The banner-grabbing and web/port scanners reach out over the network and are
 > intended for **authorized security testing only**. The core filesystem, code,
