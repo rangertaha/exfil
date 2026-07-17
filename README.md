@@ -106,8 +106,14 @@ The full docs live at **<https://rangertaha.github.io/exfil/>**:
 - The [architecture guide](https://rangertaha.github.io/exfil/architecture/) — a
   multi-page tour of how exfil is built, written for readers new to Rust
 
-The docs are built with [mdBook](https://rust-lang.github.io/mdBook/) from
-[`docs/`](docs/); to preview locally, run `mdbook serve docs`.
+The docs are built with [mdBook](https://rust-lang.github.io/mdBook/) plus
+[mdbook-mermaid](https://github.com/badboy/mdbook-mermaid) (for the diagrams),
+from [`docs/`](docs/). To preview locally:
+
+```sh
+mdbook-mermaid install docs   # vendor the mermaid assets once
+mdbook serve docs
+```
 
 ## Development
 
