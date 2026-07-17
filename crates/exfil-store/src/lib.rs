@@ -25,11 +25,26 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use exfil_core::{CweEntry, Dataset, FileMeta, Match, Rule};
 use serde::{Deserialize, Serialize};
-use surrealdb::engine::local::{Db, SurrealKv};
+use surrealdb::engine::any::{self, Any};
+use surrealdb::opt::auth::Root;
 use surrealdb::{RecordId, Surreal};
 
 /// The single SurrealDB namespace all exfil data lives under.
 pub const NAMESPACE: &str = "exfil";
+
+/// Build an embedded SurrealKV endpoint for a filesystem path. An absolute path
+/// is used so `surrealkv://<path>` is unambiguous (a leading `/` yields the
+/// `surrealkv:///abs/path` file-URL form).
+fn surrealkv_endpoint(path: &Path) -> String {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    format!("surrealkv://{}", abs.display())
+}
 /// Database name for the local findings store.
 pub const DB_FINDINGS: &str = "findings";
 /// Database name for the datasets/rules catalog.
@@ -75,16 +90,51 @@ DEFINE INDEX IF NOT EXISTS file_path ON file FIELDS path;
 /// scan task).
 #[derive(Clone)]
 pub struct Store {
-    db: Surreal<Db>,
+    db: Surreal<Any>,
+}
+
+/// How to reach the database, from `[database]` config. The `endpoint` selects
+/// the engine: embedded on-disk (`surrealkv://<path>`), embedded in-memory
+/// (`mem://`), or a remote SurrealDB server / cluster (`ws://`, `wss://`,
+/// `http://`, `https://`). Remote endpoints sign in with `username`/`password`.
+#[derive(Debug, Clone)]
+pub struct DbConfig {
+    /// Connection endpoint (engine is chosen by its scheme).
+    pub endpoint: String,
+    /// Root username for a remote server (empty = no sign-in, embedded).
+    pub username: String,
+    /// Root password for a remote server.
+    pub password: String,
 }
 
 impl Store {
     /// Open (creating if needed) the SurrealKV store rooted at `path` and select
-    /// `database` within the exfil namespace, applying the schema.
+    /// `database` within the exfil namespace, applying the schema. This is the
+    /// embedded default; [`Store::connect`] handles remote/cluster endpoints.
     pub async fn open(path: &Path, database: &str) -> Result<Self> {
-        let db = Surreal::new::<SurrealKv>(path)
+        let cfg = DbConfig {
+            endpoint: surrealkv_endpoint(path),
+            username: String::new(),
+            password: String::new(),
+        };
+        Self::connect(&cfg, database).await
+    }
+
+    /// Connect to a database described by `cfg` and select `database` in the
+    /// exfil namespace. Works for any engine (embedded or a remote cluster);
+    /// a non-empty username signs in as root first (required by remote servers).
+    pub async fn connect(cfg: &DbConfig, database: &str) -> Result<Self> {
+        let db = any::connect(cfg.endpoint.clone())
             .await
-            .with_context(|| format!("open SurrealKV store at {}", path.display()))?;
+            .with_context(|| format!("connect to database {}", cfg.endpoint))?;
+        if !cfg.username.is_empty() {
+            db.signin(Root {
+                username: &cfg.username,
+                password: &cfg.password,
+            })
+            .await
+            .context("sign in to database")?;
+        }
         db.use_ns(NAMESPACE)
             .use_db(database)
             .await
@@ -116,7 +166,7 @@ impl Store {
     }
 
     /// Borrow the underlying SurrealDB handle for queries.
-    pub fn db(&self) -> &Surreal<Db> {
+    pub fn db(&self) -> &Surreal<Any> {
         &self.db
     }
 
@@ -1536,6 +1586,37 @@ mod tests {
             Some("/tree")
         );
         assert_eq!(label("mystery", json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn connect_to_in_memory_endpoint() {
+        // The `mem://` endpoint exercises the same engine::any path a remote
+        // `ws://` cluster endpoint uses (minus the network), with no sign-in.
+        let cfg = DbConfig {
+            endpoint: "mem://".into(),
+            username: String::new(),
+            password: String::new(),
+        };
+        let store = Store::connect(&cfg, DB_FINDINGS).await.unwrap();
+        store
+            .upsert_file(&sample_meta("aaa", "a.env"))
+            .await
+            .unwrap();
+        store
+            .add_finding(&sample_match("aws-key", "a.env"), "aaa")
+            .await
+            .unwrap();
+        assert_eq!(store.search_findings("").await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn surrealkv_endpoint_is_absolute() {
+        let ep = surrealkv_endpoint(Path::new("relative/store"));
+        assert!(ep.starts_with("surrealkv:///"), "{ep}");
+        assert_eq!(
+            surrealkv_endpoint(Path::new("/abs/store")),
+            "surrealkv:///abs/store"
+        );
     }
 
     #[tokio::test]
