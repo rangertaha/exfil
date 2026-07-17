@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>exfil</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="logo"></span>
+        <h1>exfil</h1>
+      </div>
+      <span id="status" class="status">connecting…</span>
+    </header>
+
+    <section id="stats" class="stats"></section>
+
+    <main>
+      <input
+        id="filter"
+        type="search"
+        autocomplete="off"
+        placeholder="filter: severity=critical · path=src/ · cwe=CWE-798 · or free text"
+      />
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Rule</th>
+              <th>Location</th>
+              <th>Snippet</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </main>
+
+    <footer>
+      Data served by <code>exfil server</code> on
+      <code>127.0.0.1:8080</code> · closing the window keeps it running in the
+      tray.
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
