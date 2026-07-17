@@ -182,6 +182,7 @@ enum ObjectType {
     Findings,
     Files,
     Indicators,
+    Events,
     Rules,
     Scans,
     Datasets,
@@ -189,10 +190,11 @@ enum ObjectType {
 
 impl ObjectType {
     /// Browse order for the `Tab` cycle.
-    const ALL: [ObjectType; 6] = [
+    const ALL: [ObjectType; 7] = [
         ObjectType::Findings,
         ObjectType::Files,
         ObjectType::Indicators,
+        ObjectType::Events,
         ObjectType::Rules,
         ObjectType::Scans,
         ObjectType::Datasets,
@@ -204,6 +206,7 @@ impl ObjectType {
             ObjectType::Findings => "findings",
             ObjectType::Files => "files",
             ObjectType::Indicators => "indicators",
+            ObjectType::Events => "events",
             ObjectType::Rules => "rules",
             ObjectType::Scans => "scans",
             ObjectType::Datasets => "datasets",
@@ -216,6 +219,7 @@ impl ObjectType {
             ObjectType::Findings => None,
             ObjectType::Files => Some("file"),
             ObjectType::Indicators => Some("indicators"),
+            ObjectType::Events => Some("event"),
             ObjectType::Rules => Some("rule"),
             ObjectType::Scans => Some("scan"),
             ObjectType::Datasets => Some("dataset"),

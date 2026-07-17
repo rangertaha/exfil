@@ -103,6 +103,9 @@ enum Command {
     /// Resolve domains observed during scans and flag reserved/private
     /// resolutions (online; authorized use).
     CheckDns,
+    /// Normalize findings into CIM events (shared category/action fields) for
+    /// cross-source correlation.
+    Normalize,
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -196,6 +199,7 @@ async fn main() -> Result<()> {
             .await?
         }
         Command::CheckDns => cmd_check_dns(&store_dir).await?,
+        Command::Normalize => cmd_normalize(&store_dir).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -338,6 +342,24 @@ async fn cmd_scan_tcp(
         "grabbed {} banner(s): {} matches, {} unreachable",
         summary.files, summary.matches, summary.errors
     );
+    Ok(())
+}
+
+/// Normalize every stored finding into a CIM event (shared category/action
+/// fields) so heterogeneous findings can be correlated. Prints a per-category
+/// summary.
+async fn cmd_normalize(store_dir: &std::path::Path) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let findings = store.findings_with_ids("").await?;
+    for (fid, m) in &findings {
+        let event = exfill_scan::cim::normalize(m);
+        let value = serde_json::to_value(&event).unwrap_or_default();
+        store.upsert_event(fid, &value).await?;
+    }
+    println!("normalized {} finding(s) into CIM events", findings.len());
+    for (category, n) in store.event_summary().await? {
+        println!("  {category:<16} {n}");
+    }
     Ok(())
 }
 

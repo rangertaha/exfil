@@ -25,6 +25,7 @@
 
 pub mod ast;
 pub mod builtin;
+pub mod cim;
 pub mod clamav;
 pub mod dns;
 pub mod expand;

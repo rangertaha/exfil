@@ -46,11 +46,13 @@ DEFINE TABLE IF NOT EXISTS source SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS dataset SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS rule SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
 
 -- graph edges connecting the records
 DEFINE TABLE IF NOT EXISTS has_ast TYPE RELATION FROM file TO ast;
 DEFINE TABLE IF NOT EXISTS has_indicators TYPE RELATION FROM file TO indicators;
+DEFINE TABLE IF NOT EXISTS has_event TYPE RELATION FROM finding TO event;
 DEFINE TABLE IF NOT EXISTS in_file TYPE RELATION FROM finding TO file;
 DEFINE TABLE IF NOT EXISTS at_ast TYPE RELATION FROM finding TO ast;
 DEFINE TABLE IF NOT EXISTS flagged_by TYPE RELATION FROM finding TO rule;
@@ -302,6 +304,7 @@ impl Store {
             "dataset",
             "rule",
             "finding",
+            "event",
             "scan",
         ];
         for table in RECORD_TABLES {
@@ -370,6 +373,8 @@ impl Store {
                  DELETE has_indicators WHERE in NOT IN $live; \
                  DELETE contained_in WHERE in NOT IN $live OR out NOT IN $live; \
                  DELETE finding WHERE count(->in_file) = 0; \
+                 DELETE has_event WHERE in NOT IN (SELECT VALUE id FROM finding); \
+                 DELETE event WHERE count(<-has_event) = 0; \
                  DELETE ast WHERE count(<-has_ast) = 0; \
                  DELETE indicators WHERE count(<-has_indicators) = 0; \
                  DELETE file WHERE id NOT IN $live;",
@@ -456,6 +461,75 @@ impl Store {
         Ok(count)
     }
 
+    /// Findings with their record ids, for normalization/enrichment passes.
+    /// Returns `(finding_id, Match)` pairs matching the (optional) `filter`.
+    pub async fn findings_with_ids(&self, filter: &str) -> Result<Vec<(String, Match)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            fid: String,
+            #[serde(flatten)]
+            m: Match,
+        }
+        // Reuse search_findings' filter contract, but keep the id.
+        let base = "SELECT type::string(id) AS fid, * OMIT id FROM finding";
+        let mut res = if let Some((k, v)) = filter.split_once('=') {
+            const FIELDS: &[&str] = &["rule", "cwe", "severity", "path"];
+            if !FIELDS.contains(&k) {
+                bail!("unknown search field {k:?}");
+            }
+            self.db
+                .query(format!("{base} WHERE {k} = $v"))
+                .bind(("v", v.to_string()))
+                .await?
+        } else if filter.is_empty() {
+            self.db.query(base).await?
+        } else {
+            self.db
+                .query(format!("{base} WHERE rule CONTAINS $v"))
+                .bind(("v", filter.to_string()))
+                .await?
+        };
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().map(|r| (r.fid, r.m)).collect())
+    }
+
+    /// Store a normalized CIM event and relate the finding to it with
+    /// `has_event`. Idempotent per finding (replaces any prior event).
+    pub async fn upsert_event(&self, finding_id: &str, event: &serde_json::Value) -> Result<()> {
+        let fid = record_id(finding_id)?;
+        self.db
+            .query(
+                "DELETE event WHERE id IN (SELECT VALUE out FROM has_event WHERE in = $f); \
+                 DELETE has_event WHERE in = $f; \
+                 LET $e = (CREATE event CONTENT $data)[0].id; \
+                 RELATE $f->has_event->$e;",
+            )
+            .bind(("f", fid))
+            .bind(("data", event.clone()))
+            .await
+            .context("upsert event")?
+            .check()
+            .context("event statement failed")?;
+        Ok(())
+    }
+
+    /// Count normalized events per CIM category, most-frequent first.
+    pub async fn event_summary(&self) -> Result<Vec<(String, u64)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            category: String,
+            n: u64,
+        }
+        let mut res = self
+            .db
+            .query("SELECT category, count() AS n FROM event GROUP BY category")
+            .await
+            .context("event summary")?;
+        let mut rows: Vec<Row> = res.take(0)?;
+        rows.sort_by(|a, b| b.n.cmp(&a.n).then(a.category.cmp(&b.category)));
+        Ok(rows.into_iter().map(|r| (r.category, r.n)).collect())
+    }
+
     /// Every stored indicators node as `(file_hash, domains)`. Used by the DNS
     /// checker to resolve domains observed during a scan. The `indicators`
     /// record id is the file's content hash (keyed alongside the file).
@@ -495,6 +569,7 @@ impl Store {
             "dataset",
             "rule",
             "finding",
+            "event",
             "scan",
         ];
         if !TABLES.contains(&kind) {
@@ -787,6 +862,7 @@ impl Store {
 const EDGE_TABLES: &[&str] = &[
     "has_ast",
     "has_indicators",
+    "has_event",
     "in_file",
     "at_ast",
     "flagged_by",
@@ -844,10 +920,24 @@ pub fn node_label(kind: &str, data: &serde_json::Value) -> Option<String> {
                 count("hashes"),
             ))
         }
+        "event" => Some(format!(
+            "{}/{} {}",
+            s("category").unwrap_or("?"),
+            s("action").unwrap_or("?"),
+            s("signature").unwrap_or("")
+        )),
         "dataset" | "source" => s("name").map(String::from),
         "scan" => s("root").map(String::from),
         _ => None,
     }
+}
+
+/// Parse a `table:key` string into a [`RecordId`].
+fn record_id(id: &str) -> Result<RecordId> {
+    let (table, key) = id
+        .split_once(':')
+        .with_context(|| format!("record id {id:?} is not table:key"))?;
+    Ok(RecordId::from((table, key)))
 }
 
 /// Content-addressed id for a rule (blake3 of name+pattern), so the same rule

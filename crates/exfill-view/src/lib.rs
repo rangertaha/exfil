@@ -67,6 +67,7 @@ impl Registry {
                 Box::new(FileViewer),
                 Box::new(AstViewer),
                 Box::new(IndicatorViewer),
+                Box::new(EventViewer),
                 Box::new(RuleViewer),
             ],
         }
@@ -224,6 +225,27 @@ impl Viewer for IndicatorViewer {
             out.push("(no indicators)".into());
         }
         out
+    }
+}
+
+/// Viewer for `event` nodes: the normalized CIM view of a finding.
+pub struct EventViewer;
+
+impl Viewer for EventViewer {
+    fn name(&self) -> &str {
+        "event"
+    }
+    fn handles(&self, kind: &str) -> bool {
+        kind == "event"
+    }
+    fn render(&self, node: &Node) -> Vec<String> {
+        vec![
+            format!("Category:  {}", node.field("category")),
+            format!("Action:    {}", node.field("action")),
+            format!("Signature: {}", node.field("signature")),
+            format!("Severity:  {}", node.field("severity")),
+            format!("Source:    {}", opt(node.field("src"))),
+        ]
     }
 }
 

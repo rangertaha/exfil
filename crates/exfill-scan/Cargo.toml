@@ -39,6 +39,7 @@ md-5 = "0.10"
 hex = "0.4"
 aho-corasick = "1"
 yara-x = "0.13"
+serde = { workspace = true, features = ["derive"] }
 
 [lints]
 workspace = true

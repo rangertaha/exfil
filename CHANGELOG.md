@@ -142,3 +142,8 @@ and this project adheres to
   those resolving to reserved/private/loopback addresses (DNS-rebinding /
   internal-exposure signal, CWE-918). Online, opt-in; keeps default scans
   offline. WHOIS registration-age enrichment is a documented follow-on.
+- Added a Splunk-CIM-style normalized data model: `exfill normalize` maps every
+  finding (from any scanner) onto shared CIM fields (category/action/signature/
+  severity/src) stored as `event` graph nodes linked to their finding
+  (has_event), enabling cross-source correlation. Events are browsable in the
+  TUI and gc-pruned with their findings.
