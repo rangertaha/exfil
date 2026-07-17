@@ -26,6 +26,13 @@ pub fn query(server: &str, domain: &str) -> anyhow::Result<String> {
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| anyhow::anyhow!("no address for whois server {server}"))?;
+    query_addr(addr, domain)
+}
+
+/// Send a WHOIS request to an already-resolved address and read the response.
+/// Split out from [`query`] so the request/read path is testable against a
+/// local listener without depending on port 43 or DNS.
+fn query_addr(addr: std::net::SocketAddr, domain: &str) -> anyhow::Result<String> {
     let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT)?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
@@ -173,23 +180,39 @@ mod tests {
     }
 
     #[test]
-    fn query_talks_to_a_whois_server() {
+    fn query_addr_talks_to_a_whois_server() {
         // A localhost "WHOIS" server that echoes a canned record.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
+        let server = thread::spawn(move || {
             if let Ok((mut sock, _)) = listener.accept() {
                 let mut buf = [0u8; 128];
                 let _ = sock.read(&mut buf);
                 let _ = sock.write_all(b"Domain Name: T\r\nCreation Date: 2021-01-01\r\n");
             }
         });
-        // query() hardcodes port 43; exercise the request/parse path directly
-        // against the listener via a manual connect instead.
-        let mut stream = TcpStream::connect(addr).unwrap();
-        stream.write_all(b"t.test\r\n").unwrap();
-        let mut out = String::new();
-        stream.read_to_string(&mut out).unwrap();
+        let out = query_addr(addr, "t.test").unwrap();
         assert!(creation_epoch_days(&out).is_some(), "{out}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn query_errors_on_unresolvable_host() {
+        assert!(query("no-such-host.invalid", "x.test").is_err());
+    }
+
+    #[test]
+    fn parse_ymd_rejects_out_of_range_month_and_day() {
+        assert!(parse_ymd("2024-13-01").is_none()); // month 13
+        assert!(parse_ymd("2024-02-40").is_none()); // day 40
+        assert!(parse_ymd("not-a-date").is_none()); // non-numeric
+        assert!(parse_ymd("2024-06-15").is_some());
+    }
+
+    #[test]
+    fn today_epoch_days_is_plausible() {
+        // Days since 1970 for any run after 2021-01-01 (18628) and before 2100.
+        let today = today_epoch_days();
+        assert!((18628..47482).contains(&today), "{today}");
     }
 }
