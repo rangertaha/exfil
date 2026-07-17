@@ -88,6 +88,18 @@ enum Command {
         #[arg(short, long, default_value = "common")]
         ports: String,
     },
+    /// Crawl a website from a seed URL and scan the pages (authorized testing
+    /// only).
+    ScanWeb {
+        /// Seed URL, e.g. `https://example.com`.
+        url: String,
+        /// Maximum pages to fetch.
+        #[arg(long, default_value_t = 64)]
+        max_pages: usize,
+        /// Maximum link depth from the seed.
+        #[arg(long, default_value_t = 2)]
+        max_depth: usize,
+    },
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -165,6 +177,20 @@ async fn main() -> Result<()> {
             let targets = exfill_remote::netscan::expand_targets(&hosts, &ports)?;
             eprintln!("sweeping {} host:port targets…", targets.len());
             cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
+        }
+        Command::ScanWeb {
+            url,
+            max_pages,
+            max_depth,
+        } => {
+            cmd_scan_web(
+                &store_dir,
+                cli.config.as_deref(),
+                &url,
+                max_pages,
+                max_depth,
+            )
+            .await?
         }
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
@@ -306,6 +332,34 @@ async fn cmd_scan_tcp(
     let summary = result?;
     println!(
         "grabbed {} banner(s): {} matches, {} unreachable",
+        summary.files, summary.matches, summary.errors
+    );
+    Ok(())
+}
+
+/// Crawl a website and scan the fetched pages with the full pipeline (leaked
+/// secrets/keys in HTML/JS, PII, bad indicators).
+async fn cmd_scan_web(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    url: &str,
+    max_pages: usize,
+    max_depth: usize,
+) -> Result<()> {
+    let pipeline = build_pipeline(config).await?;
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    eprintln!("crawling {url}…");
+    let fs = exfill_remote::WebFs::crawl(url, max_pages, max_depth)
+        .await
+        .with_context(|| format!("crawl {url}"))?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfill_engine::scan_remote(&fs, "/", &pipeline, &store, Some(tx)).await;
+    let _ = renderer.join();
+    let summary = result?;
+    println!(
+        "crawled {} page(s): {} matches, {} unreadable",
         summary.files, summary.matches, summary.errors
     );
     Ok(())

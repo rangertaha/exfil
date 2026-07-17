@@ -1863,6 +1863,8 @@ dependencies = [
  "async-trait",
  "exfill-engine",
  "gethostname",
+ "regex",
+ "reqwest",
  "russh",
  "russh-sftp",
  "tokio",

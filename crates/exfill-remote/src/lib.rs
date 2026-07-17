@@ -16,8 +16,10 @@
 pub mod netscan;
 pub mod proc;
 pub mod tcp;
+pub mod web;
 pub use proc::ProcessFs;
 pub use tcp::TcpFs;
+pub use web::WebFs;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -135,3 +135,6 @@ and this project adheres to
   <cidr> --ports <spec>` (IP/CIDR × port sweep with banner scanning and
   service/version fingerprinting), both reusing the pipeline via scan_remote.
   Authorized-testing use; expansion bounded to 65k targets.
+- Added `exfill scan-web <url>`: bounded same-origin web crawler (page/depth
+  caps) that scans fetched HTML/JS pages through the full pipeline for leaked
+  secrets, PII, and bad indicators. robots.txt not yet honored.

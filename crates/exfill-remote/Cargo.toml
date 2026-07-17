@@ -12,6 +12,8 @@ tokio = { workspace = true }
 russh = "0.45"
 russh-sftp = "2"
 gethostname = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+regex = "1"
 
 [lints]
 workspace = true
