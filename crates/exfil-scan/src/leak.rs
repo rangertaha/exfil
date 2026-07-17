@@ -174,4 +174,30 @@ mod tests {
         let err = s.run(Path::new("f"), &Artifact::Bytes(vec![])).unwrap_err();
         assert!(err.to_string().contains("expected Indicators"), "{err}");
     }
+
+    #[test]
+    fn file_task_surface() {
+        let active = LeakScanner::new(&[rule("breach-email:alice@corp.com")]);
+        assert_eq!(active.name(), "leak");
+        assert_eq!(active.needs(), ArtifactKind::Indicators);
+        assert_eq!(active.provides(), ArtifactKind::Matches);
+        // Applies only when it has a feed to check against.
+        assert!(active.applies(Path::new("f")));
+        assert!(!LeakScanner::new(&[rule("AKIA[0-9]+")]).applies(Path::new("f")));
+
+        // run() over a valid Indicators artifact yields Matches.
+        let out = active
+            .run(
+                Path::new("f"),
+                &Artifact::Indicators(ind(&["alice@corp.com"])),
+            )
+            .unwrap();
+        match out {
+            Artifact::Matches(m) => {
+                assert_eq!(m.len(), 1);
+                assert_eq!(m[0].rule, "breach-email");
+            }
+            other => panic!("expected Matches, got {other:?}"),
+        }
+    }
 }
