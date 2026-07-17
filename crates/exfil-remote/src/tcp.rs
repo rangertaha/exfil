@@ -120,4 +120,17 @@ mod tests {
     async fn host_tag_is_stable() {
         assert_eq!(TcpFs::new(vec![]).host(), "tcp");
     }
+
+    #[tokio::test]
+    async fn silent_service_yields_no_banner() {
+        // A server that accepts then immediately closes sends nothing, so the
+        // read returns EOF and read_available yields None.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await; // drop the socket at once
+        });
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        assert!(read_available(&mut stream).await.is_none());
+    }
 }
