@@ -243,4 +243,28 @@ mod tests {
         let err = s.run(Path::new("f"), &Artifact::Bytes(vec![])).unwrap_err();
         assert!(err.to_string().contains("expected Indicators"), "{err}");
     }
+
+    #[test]
+    fn task_surface_exact_hit_and_ioc_parsing_edges() {
+        // is_network_ioc rejects an empty value.
+        assert!(is_network_ioc("domain:").is_none());
+
+        // new() ignores non-network patterns (the `_ => {}` arm).
+        let s =
+            NetworkIocScanner::new(&[rule("c2", "domain:evil.com"), rule("noise", "AKIA[0-9]+")]);
+        assert_eq!(s.name(), "ioc-net");
+
+        // Exact registrable-domain hit (not only subdomains).
+        let exact = s.analyze(&ind(&["evil.com"], &[], &[]), "f");
+        assert_eq!(exact.len(), 1, "{exact:?}");
+
+        // FileTask run over Indicators yields the same Matches.
+        let out = s
+            .run(
+                Path::new("f"),
+                &Artifact::Indicators(ind(&["evil.com"], &[], &[])),
+            )
+            .unwrap();
+        assert!(matches!(out, Artifact::Matches(m) if m.len() == 1));
+    }
 }
