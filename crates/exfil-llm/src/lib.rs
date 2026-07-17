@@ -201,4 +201,18 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn triage_medium_generic_and_unknown_cwe() {
+        let e = RuleBasedEnricher;
+        // Medium urgency with no CWE → the generic advice line.
+        let t = e.triage(&finding("r", Severity::Medium, None)).unwrap();
+        assert!(t.starts_with("Review:"), "{t}");
+        assert!(t.contains("review the flagged pattern"), "{t}");
+        // An unrecognized CWE takes the passthrough branch naming the rule.
+        let u = e
+            .triage(&finding("r", Severity::Low, Some("CWE-1234")))
+            .unwrap();
+        assert!(u.starts_with("Note:") && u.contains("CWE-1234"), "{u}");
+    }
 }
