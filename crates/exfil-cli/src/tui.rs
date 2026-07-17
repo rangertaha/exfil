@@ -922,7 +922,14 @@ impl App {
             }
         }
         if let Some(scan) = &self.scan {
-            parts.push(format!("scanning {}/{} files", scan.done, scan.total));
+            let pct = (scan.done * 100)
+                .checked_div(scan.total)
+                .unwrap_or(0)
+                .min(100);
+            parts.push(format!(
+                "scanning {}/{} files ({pct}%)",
+                scan.done, scan.total
+            ));
         }
         if let Some(i) = self.list.selected() {
             parts.push(format!("({}/{})", i + 1, self.index_len()));
