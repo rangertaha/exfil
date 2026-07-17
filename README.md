@@ -1,7 +1,6 @@
-# exfil
+# Exfil
 
-> **Ex**tra **Fi**le **L**ang **L**ookup — an offline, cross-platform,
-> plugin-based DevSecOps engine for static analysis.
+A plugin-based DevSecOps engine for static analysis.
 
 [![CI](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
