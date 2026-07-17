@@ -56,7 +56,7 @@ Run `exfil <command> --help` for a command's own flags.
 | `exfil config` | Show the resolved config path and contents |
 | `exfil export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
 | `exfil gc` | Garbage-collect unreachable records |
-| `exfil clean` | Delete the findings store (keeps downloaded datasets) |
+| `exfil clean [-y]` | Delete the findings store (asks first on a terminal; `-y` skips) |
 | `exfil completions <shell>` | Print a shell completion script (bash, zsh, fish, powershell, elvish) |
 
 ## Shell completions

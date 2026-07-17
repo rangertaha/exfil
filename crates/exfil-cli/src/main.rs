@@ -160,7 +160,11 @@ enum Command {
     /// Show the resolved config path and contents.
     Config,
     /// Delete the findings store (keeps downloaded datasets).
-    Clean,
+    Clean {
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Garbage-collect unreachable records.
     Gc,
     /// Export the whole graph as a portable snapshot (CBOR or JSON).
@@ -251,7 +255,7 @@ async fn main() -> Result<()> {
         }
         Command::Rules => cmd_rules()?,
         Command::Completions { shell } => cmd_completions(shell),
-        Command::Clean => cmd_clean(&store_dir)?,
+        Command::Clean { yes } => cmd_clean(&store_dir, yes)?,
         Command::Tui => {
             // The TUI loop blocks on terminal input, so it runs on a blocking
             // thread with a runtime handle for its database calls.
@@ -832,14 +836,36 @@ fn cmd_rules() -> Result<()> {
 }
 
 /// Remove the local findings store. Downloaded datasets live in the user config
-/// dir and are untouched.
-fn cmd_clean(store_dir: &std::path::Path) -> Result<()> {
-    if store_dir.exists() {
-        std::fs::remove_dir_all(store_dir)
-            .with_context(|| format!("remove store {}", store_dir.display()))?;
-        println!("removed store {}", store_dir.display());
-    } else {
+/// dir and are untouched. On an interactive terminal this asks first (unless
+/// `--yes`); when piped/redirected it proceeds, so scripts are unaffected.
+fn cmd_clean(store_dir: &std::path::Path, yes: bool) -> Result<()> {
+    if !store_dir.exists() {
         println!("no store at {}", store_dir.display());
+        return Ok(());
     }
+    if !yes && !confirm(&format!("Delete findings store {}?", store_dir.display())) {
+        println!("aborted");
+        return Ok(());
+    }
+    std::fs::remove_dir_all(store_dir)
+        .with_context(|| format!("remove store {}", store_dir.display()))?;
+    println!("removed store {}", store_dir.display());
     Ok(())
+}
+
+/// Ask a yes/no question on an interactive terminal, defaulting to no. When
+/// stdin is not a terminal (a pipe, a script), there's no one to ask, so this
+/// returns `true` and lets the action proceed unattended.
+fn confirm(question: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return true;
+    }
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
