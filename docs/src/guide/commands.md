@@ -13,12 +13,22 @@ Run `exfil <command> --help` for a command's own flags.
 
 | Command | What it does |
 |---|---|
-| `exfil scan [path]` | Scan a directory tree for secrets and security issues |
+| `exfil scan [path]` | Scan a directory tree for secrets and security issues (`--fail-on <severity>` to gate CI) |
 | `exfil scan-remote [user@]host:/path` | Scan a remote host over SSH/SFTP |
 | `exfil processes` | Scan the local host's running processes (command lines, exe paths) |
 | `exfil scan-tcp host:port…` | Grab and scan TCP service banners *(authorized testing only)* |
 | `exfil port-scan <ip/cidr>` | Sweep ports, grab banners, and scan them *(authorized testing only)* |
 | `exfil scan-web <url>` | Crawl a website from a seed URL and scan the pages *(authorized testing only)* |
+
+### Gating CI
+
+`--fail-on <severity>` makes `scan` exit non-zero when any stored finding is at
+or above the given level (`info|low|medium|high|critical`), so a pipeline step
+fails the build on real problems:
+
+```sh
+exfil scan --fail-on high        # exit 1 if any high/critical finding exists
+```
 
 ## Querying findings
 

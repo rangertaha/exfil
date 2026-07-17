@@ -38,6 +38,22 @@ Examples:
 
 Docs: https://rangertaha.github.io/exfil/";
 
+/// Parse a `--fail-on` severity name into a [`Severity`]. Used as a clap
+/// `value_parser`, so an unknown name is reported with the valid choices.
+fn parse_severity(s: &str) -> std::result::Result<exfil_core::Severity, String> {
+    use exfil_core::Severity::*;
+    match s.to_ascii_lowercase().as_str() {
+        "info" => Ok(Info),
+        "low" => Ok(Low),
+        "medium" | "med" => Ok(Medium),
+        "high" => Ok(High),
+        "critical" | "crit" => Ok(Critical),
+        other => Err(format!(
+            "unknown severity {other:?} (info|low|medium|high|critical)"
+        )),
+    }
+}
+
 /// Print a discoverability hint to stderr, but only on an interactive terminal
 /// so piped or redirected output stays clean and scriptable.
 fn hint(msg: &str) {
@@ -84,7 +100,13 @@ enum Command {
     /// Show the rules a scan would apply.
     Rules,
     /// Scan a directory tree for patterns and security issues.
-    Scan { path: Option<String> },
+    Scan {
+        path: Option<String>,
+        /// Exit non-zero if any finding is at or above this severity
+        /// (info|low|medium|high|critical). Useful as a CI gate.
+        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
+        fail_on: Option<exfil_core::Severity>,
+    },
     /// Scan a remote host over SSH/SFTP (`[user@]host:/path`).
     ScanRemote {
         /// Remote target, e.g. `deploy@web1:/srv`.
@@ -214,7 +236,9 @@ async fn main() -> Result<()> {
         Command::Sources => cmd_sources(),
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(action).await?,
-        Command::Scan { path } => cmd_scan(&store_dir, cli.config.as_deref(), path).await?,
+        Command::Scan { path, fail_on } => {
+            cmd_scan(&store_dir, cli.config.as_deref(), path, fail_on).await?
+        }
         Command::ScanRemote { target, port, key } => {
             cmd_scan_remote(&store_dir, cli.config.as_deref(), &target, port, key).await?
         }
@@ -289,6 +313,7 @@ async fn cmd_scan(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
     path: Option<String>,
+    fail_on: Option<exfil_core::Severity>,
 ) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
     let pipeline = build_pipeline(config).await?;
@@ -311,6 +336,23 @@ async fn cmd_scan(
         hint(
             "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
         );
+    }
+
+    // CI gate: exit non-zero when the store holds a finding at or above the
+    // threshold. Checked against the whole store, so a fresh scan gates on its
+    // own results and an incremental scan gates on the cumulative state.
+    if let Some(threshold) = fail_on {
+        let findings = store.search_findings("").await?;
+        let breaching = findings
+            .iter()
+            .filter(|m| m.severity.is_some_and(|s| s.weight() >= threshold.weight()))
+            .count();
+        if breaching > 0 {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            eprintln!("✗ {breaching} finding(s) at or above {threshold:?}");
+            std::process::exit(1);
+        }
     }
     Ok(())
 }
