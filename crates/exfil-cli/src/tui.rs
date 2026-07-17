@@ -167,6 +167,7 @@ fn help_text() -> Vec<String> {
         "  Enter             open in the graph navigator",
         "  Tab / Shift-Tab   cycle object type (findings, files, …)",
         "  /                 limit: severity=high, cwe=CWE-798, path=…, or text",
+        "  Esc               clear the active limit",
         "  :                 command: scan [path], search, rules, get <id>, browse, clean, quit",
         "  s                 scan the current directory",
         "  r                 reload from the store",
@@ -1041,6 +1042,11 @@ impl App {
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Char(':') => self.prompt = Some(Prompt::Command(String::new())),
                 KeyCode::Char('/') => self.prompt = Some(Prompt::Limit(String::new())),
+                // Esc clears an active limit, restoring the full findings list.
+                KeyCode::Esc if self.browse == ObjectType::Findings && !self.limit.is_empty() => {
+                    self.refresh_findings(handle, "");
+                    self.message = "limit cleared".into();
+                }
                 KeyCode::Char('j') | KeyCode::Down => self.select_delta(1),
                 KeyCode::Char('k') | KeyCode::Up => self.select_delta(-1),
                 KeyCode::Char('g') => self.select_delta(isize::MIN + 1),
@@ -1450,6 +1456,12 @@ mod tests {
             assert!(app.findings.is_empty());
             assert_eq!(app.limit, "severity=low");
             app.on_key(&handle, KeyCode::Char('r')); // reload keeps the limit
+            assert_eq!(app.limit, "severity=low");
+
+            // Esc clears the active limit and restores the full list.
+            app.on_key(&handle, KeyCode::Esc);
+            assert_eq!(app.limit, "");
+            assert!(!app.findings.is_empty(), "limit cleared restores findings");
 
             // Prompt editing: type, backspace, escape.
             app.on_key(&handle, KeyCode::Char(':'));
