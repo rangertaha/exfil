@@ -1991,8 +1991,10 @@ dependencies = [
  "exfil-core",
  "exfil-scan",
  "reqwest",
+ "roxmltree",
  "serde_json",
  "tokio",
+ "zip",
 ]
 
 [[package]]

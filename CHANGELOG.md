@@ -64,6 +64,10 @@ and this project adheres to
 - Desktop app (`app/`) — a Tauri wrapper that runs `exfil server` and shows a
   findings dashboard; closing the window keeps the app and server alive in the
   system tray. A standalone workspace, excluded from the main build/CI.
+- MITRE CWE enrichment: `exfil pull mitre://cwe` downloads the official CWE
+  catalog into a local `cwe` table; `exfil enrich` annotates findings with the
+  authoritative CWE name; `exfil cwe <id>` looks a weakness up. Offline after
+  the pull; reference data, kept out of the detection rules. (CVE/CPE planned.)
 
 ### Changed
 

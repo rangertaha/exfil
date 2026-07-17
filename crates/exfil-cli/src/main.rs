@@ -216,6 +216,12 @@ enum Command {
     },
     /// Run the offline LLM enrichment pass over the stored graph.
     Enrich,
+    /// Look up a weakness in the local MITRE CWE catalog (`exfil pull
+    /// mitre://cwe` downloads it).
+    Cwe {
+        /// CWE id, e.g. `CWE-798` or `798`.
+        id: String,
+    },
     /// Show the resolved config path and contents.
     Config,
     /// Delete the findings store (keeps downloaded datasets).
@@ -327,6 +333,7 @@ async fn main() -> Result<()> {
         Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
         Command::Gc => cmd_gc(&store_dir).await?,
         Command::Enrich => cmd_enrich(&store_dir, cli.config.as_deref()).await?,
+        Command::Cwe { id } => cmd_cwe(&id).await?,
         Command::Export { out, format } => cmd_export(&store_dir, out, &format).await?,
         Command::Mcp => {
             let store = exfil_store::Store::open_findings(&store_dir).await?;
@@ -712,6 +719,14 @@ async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -
         return Ok(());
     }
     for (name, reference) in refs {
+        // MITRE reference catalogs (CWE today) are enrichment data, not rules,
+        // so they take a separate path into their own tables.
+        if let Some(kind) = reference.strip_prefix("mitre://") {
+            if let Err(e) = pull_mitre(&catalog, kind).await {
+                eprintln!("failed to pull mitre://{kind}: {e:#}");
+            }
+            continue;
+        }
         match registry.fetch(&reference).await {
             Ok(dataset) => {
                 let n = catalog.upsert_dataset(&dataset).await?;
@@ -721,6 +736,24 @@ async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -
         }
     }
     Ok(())
+}
+
+/// Download a MITRE reference catalog into the local catalog store. Currently
+/// `cwe` (CVE/CPE are planned). These enrich findings; they are not rules.
+async fn pull_mitre(catalog: &exfil_store::Store, kind: &str) -> Result<()> {
+    match kind {
+        "cwe" => {
+            eprintln!(
+                "downloading CWE catalog from {}…",
+                exfil_source::mitre::CWE_URL
+            );
+            let entries = exfil_source::mitre::fetch_cwe(exfil_source::mitre::CWE_URL).await?;
+            let n = catalog.upsert_cwe(&entries).await?;
+            println!("pulled MITRE CWE catalog ({n} weaknesses)");
+            Ok(())
+        }
+        other => anyhow::bail!("unknown MITRE catalog {other:?} (known: cwe)"),
+    }
 }
 
 /// Manage catalog datasets: list (default), show, add, or remove.
@@ -868,6 +901,58 @@ async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path
     };
     let n = exfil_llm::run(&store, enricher.as_ref()).await?;
     println!("enriched {n} finding(s) via {}", enricher.name());
+
+    // Annotate findings with the authoritative CWE name from the local MITRE
+    // catalog, when one has been pulled (`exfil pull mitre://cwe`).
+    match annotate_cwe(&store).await {
+        Ok(0) => {}
+        Ok(a) => println!("annotated {a} finding(s) with CWE names from the MITRE catalog"),
+        Err(e) => eprintln!("cwe annotation skipped: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Attach the authoritative CWE name (from a pulled MITRE catalog) to every
+/// finding that carries a matching `cwe`. Returns how many were annotated; a
+/// no-op (0) when no catalog has been pulled.
+async fn annotate_cwe(findings: &exfil_store::Store) -> Result<usize> {
+    let dir = exfil_config::catalog_dir()?;
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+    let cwe = catalog.cwe_catalog().await?;
+    if cwe.is_empty() {
+        return Ok(0);
+    }
+    let mut annotated = 0;
+    for (fid, m) in findings.findings_with_ids("").await? {
+        if let Some(entry) = m.cwe.as_deref().and_then(|id| cwe.get(id)) {
+            findings
+                .set_field(&fid, "cwe_name", serde_json::json!(entry.name))
+                .await?;
+            annotated += 1;
+        }
+    }
+    Ok(annotated)
+}
+
+/// Look up one CWE in the local MITRE catalog and print its name/description.
+async fn cmd_cwe(id: &str) -> Result<()> {
+    let dir = exfil_config::catalog_dir()?;
+    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+    match catalog.cwe_get(id).await? {
+        Some(e) => {
+            println!("{} — {}", e.id, e.name);
+            if !e.abstraction.is_empty() || !e.status.is_empty() {
+                println!("  {} · {}", e.abstraction, e.status);
+            }
+            if !e.description.is_empty() {
+                println!("\n{}", e.description);
+            }
+        }
+        None => println!("no {id} in the local CWE catalog (run `exfil pull mitre://cwe`)"),
+    }
     Ok(())
 }
 

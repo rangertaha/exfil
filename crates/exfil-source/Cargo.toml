@@ -11,6 +11,8 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 serde_json = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+roxmltree = "0.20"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

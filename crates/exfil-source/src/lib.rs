@@ -12,6 +12,8 @@
 //! trait is object-safe as `Box<dyn Source>`. The registry tries each source's
 //! [`handles`](Source::handles) in turn — the first match wins.
 
+pub mod mitre;
+
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use exfil_core::Dataset;

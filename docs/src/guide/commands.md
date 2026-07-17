@@ -45,7 +45,8 @@ exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 | Command | What it does |
 |---|---|
 | `exfil normalize` | Normalize findings into Splunk-CIM events for cross-source correlation |
-| `exfil enrich` | Run the offline LLM enrichment pass over the stored graph |
+| `exfil enrich` | Enrich findings with triage notes and (if pulled) authoritative MITRE CWE names |
+| `exfil cwe <id>` | Look up a weakness in the local MITRE CWE catalog (e.g. `exfil cwe 798`) |
 | `exfil check-dns` | Resolve observed domains and flag reserved/private resolutions *(online)* |
 | `exfil check-whois` | WHOIS-check observed domains and flag newly-registered ones *(online)* |
 
@@ -54,7 +55,7 @@ exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 | Command | What it does |
 |---|---|
 | `exfil sources` | List the available dataset source plugins |
-| `exfil pull [reference]` | Download datasets (a specific `reference`, or every configured update) |
+| `exfil pull [reference]` | Download datasets (a `reference`, or every configured update); `mitre://cwe` fetches the MITRE CWE catalog |
 | `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`) |
 
 ## Store, interfaces & maintenance

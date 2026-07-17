@@ -104,6 +104,28 @@ pub struct Dataset {
     pub rules: Vec<Rule>,
 }
 
+/// One MITRE CWE weakness, used to enrich findings that carry a `cwe`.
+///
+/// This is *reference* data (a taxonomy), not a detection rule: it never enters
+/// the scan pipeline. A downloaded copy lets exfil annotate a finding's bare
+/// `CWE-798` with the authoritative weakness name and description, offline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CweEntry {
+    /// Full identifier, e.g. `CWE-798`.
+    pub id: String,
+    /// Weakness name, e.g. `Use of Hard-coded Credentials`.
+    pub name: String,
+    /// Abstraction level: `Pillar`/`Class`/`Base`/`Variant`/`Compound`.
+    #[serde(default)]
+    pub abstraction: String,
+    /// Maturity: `Stable`/`Draft`/`Incomplete`/`Deprecated`.
+    #[serde(default)]
+    pub status: String,
+    /// The weakness description (whitespace-normalized).
+    #[serde(default)]
+    pub description: String,
+}
+
 /// One hit: a rule matching at a location in a file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Match {

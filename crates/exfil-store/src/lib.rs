@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use exfil_core::{Dataset, FileMeta, Match, Rule};
+use exfil_core::{CweEntry, Dataset, FileMeta, Match, Rule};
 use serde::{Deserialize, Serialize};
 use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::{RecordId, Surreal};
@@ -45,6 +45,7 @@ DEFINE TABLE IF NOT EXISTS indicators SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS source SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS dataset SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS rule SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS cwe SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
@@ -661,6 +662,86 @@ impl Store {
             .await
             .context("all rules")?;
         Ok(res.take(0)?)
+    }
+
+    /// Store (or refresh) the MITRE CWE catalog: reference data used to enrich
+    /// findings, keyed by the numeric CWE id. Idempotent per entry. The struct's
+    /// `id` field is not stored (it clashes with the record id); it is
+    /// reconstructed from the key on read.
+    pub async fn upsert_cwe(&self, entries: &[CweEntry]) -> Result<usize> {
+        for e in entries {
+            let key = e.id.strip_prefix("CWE-").unwrap_or(&e.id);
+            self.db
+                .query(
+                    "UPSERT type::thing('cwe', $k) CONTENT \
+                     { name: $n, abstraction: $a, status: $s, description: $d }",
+                )
+                .bind(("k", key.to_string()))
+                .bind(("n", e.name.clone()))
+                .bind(("a", e.abstraction.clone()))
+                .bind(("s", e.status.clone()))
+                .bind(("d", e.description.clone()))
+                .await
+                .with_context(|| format!("upsert {}", e.id))?
+                .check()
+                .context("cwe upsert failed")?;
+        }
+        Ok(entries.len())
+    }
+
+    /// The whole stored CWE catalog as an `id → entry` map, for enrichment.
+    pub async fn cwe_catalog(&self) -> Result<HashMap<String, CweEntry>> {
+        #[derive(Deserialize)]
+        struct Row {
+            rid: String,
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            abstraction: String,
+            #[serde(default)]
+            status: String,
+            #[serde(default)]
+            description: String,
+        }
+        let mut res = self
+            .db
+            .query(
+                "SELECT type::string(id) AS rid, name, abstraction, status, description FROM cwe",
+            )
+            .await
+            .context("load cwe catalog")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let key = r.rid.split_once(':').map(|(_, k)| k).unwrap_or(&r.rid);
+                let key = key.trim_matches(|c| c == '`' || c == '⟨' || c == '⟩');
+                let id = format!("CWE-{key}");
+                let entry = CweEntry {
+                    id: id.clone(),
+                    name: r.name,
+                    abstraction: r.abstraction,
+                    status: r.status,
+                    description: r.description,
+                };
+                (id, entry)
+            })
+            .collect())
+    }
+
+    /// Look up one CWE entry by id (`CWE-798` or `798`).
+    pub async fn cwe_get(&self, id: &str) -> Result<Option<CweEntry>> {
+        let want = if id.to_ascii_uppercase().starts_with("CWE-") {
+            id.to_ascii_uppercase()
+        } else {
+            format!("CWE-{id}")
+        };
+        Ok(self.cwe_catalog().await?.remove(&want))
+    }
+
+    /// Number of stored CWE entries.
+    pub async fn cwe_count(&self) -> Result<usize> {
+        Ok(self.cwe_catalog().await?.len())
     }
 
     /// Remove a dataset and its rule edges. Orphaned rule records are left for
@@ -1455,5 +1536,82 @@ mod tests {
             Some("/tree")
         );
         assert_eq!(label("mystery", json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn cwe_catalog_round_trip() {
+        let dir = std::env::temp_dir().join(format!("exfil-store-cwe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_CATALOG).await.unwrap();
+
+        let entries = vec![
+            CweEntry {
+                id: "CWE-798".into(),
+                name: "Use of Hard-coded Credentials".into(),
+                abstraction: "Base".into(),
+                status: "Stable".into(),
+                description: "hard-coded creds".into(),
+            },
+            CweEntry {
+                id: "CWE-79".into(),
+                name: "Cross-site Scripting".into(),
+                abstraction: "Base".into(),
+                status: "Stable".into(),
+                description: "xss".into(),
+            },
+        ];
+        assert_eq!(store.upsert_cwe(&entries).await.unwrap(), 2);
+        assert_eq!(store.cwe_count().await.unwrap(), 2);
+
+        let map = store.cwe_catalog().await.unwrap();
+        assert!(
+            map.contains_key("CWE-798"),
+            "keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+
+        // Lookup accepts both `CWE-798` and `798`.
+        assert_eq!(
+            store.cwe_get("798").await.unwrap().unwrap().name,
+            "Use of Hard-coded Credentials"
+        );
+        assert_eq!(
+            store.cwe_get("CWE-79").await.unwrap().unwrap().name,
+            "Cross-site Scripting"
+        );
+        assert!(store.cwe_get("CWE-9999").await.unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn set_field_targets_a_findings_with_ids_id() {
+        // Mirrors the enrich CWE-annotation path: the id from findings_with_ids
+        // must be usable by set_field and readable back.
+        let dir = std::env::temp_dir().join(format!("exfil-store-setfield-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_FINDINGS).await.unwrap();
+        store
+            .upsert_file(&sample_meta("aaa", "a.env"))
+            .await
+            .unwrap();
+        store
+            .add_finding(&sample_match("aws-key", "a.env"), "aaa")
+            .await
+            .unwrap();
+
+        let (fid, _) = store.findings_with_ids("").await.unwrap().remove(0);
+        store
+            .set_field(
+                &fid,
+                "cwe_name",
+                serde_json::json!("Use of Hard-coded Credentials"),
+            )
+            .await
+            .unwrap();
+        let rec = store.get_record(&fid).await.unwrap().unwrap();
+        assert_eq!(rec["cwe_name"], "Use of Hard-coded Credentials");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
