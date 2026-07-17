@@ -334,15 +334,24 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Show the resolved config path and its contents, so the user can see exactly
+/// what a scan will use and where to edit it. Prints the actual TOML file when
+/// it exists (the default is written on first run); if it can't be read, falls
+/// back to a summary of the loaded values.
 fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
     let cfg = exfil_config::load(explicit)?;
     println!("# config: {}", cfg.path.display());
-    println!("store = {:?}", cfg.store);
-    for name in cfg.plugins.keys() {
-        println!("plugin {name:?}");
-    }
-    for u in &cfg.update {
-        println!("update {:?} -> {}", u.name, u.reference);
+    match std::fs::read_to_string(&cfg.path) {
+        Ok(contents) => print!("{contents}"),
+        Err(_) => {
+            println!("store = {:?}", cfg.store);
+            for name in cfg.plugins.keys() {
+                println!("plugin {name:?}");
+            }
+            for u in &cfg.update {
+                println!("update {:?} -> {}", u.name, u.reference);
+            }
+        }
     }
     Ok(())
 }
