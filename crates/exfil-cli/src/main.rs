@@ -294,7 +294,9 @@ async fn cmd_scan(
     if summary.matches > 0 {
         hint("\nNext: `exfil tui` to triage · `exfil analyze` for a report · `exfil search severity=critical` to filter");
     } else if summary.files > 0 {
-        hint("\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.");
+        hint(
+            "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
+        );
     }
     Ok(())
 }

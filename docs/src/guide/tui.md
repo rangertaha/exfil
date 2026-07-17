@@ -4,6 +4,10 @@
 and findings streaming in), browse the index, and open a finding in the pager
 with its file record. `/` limits the index; `:` opens a command bar.
 
+Each finding row is color-coded by severity — bold red for critical, cooling
+through yellow and blue down to gray for unrated rules — so the index reads as
+a heat map at a glance. A severity tally (`C:2 H:5 …`) sits in the status bar.
+
 ## Keys
 
 | Key | Action |
