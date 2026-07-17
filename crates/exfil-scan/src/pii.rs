@@ -320,4 +320,25 @@ mod tests {
         assert_eq!(s.name(), "pii");
         assert!(s.applies(Path::new("anything")));
     }
+
+    #[test]
+    fn validator_edge_cases() {
+        // mask: values of four chars or fewer become all bullets.
+        assert_eq!(mask("abc"), "•".repeat(3));
+
+        // luhn: out-of-range lengths reject; a valid Visa exercises the
+        // doubling-over-nine subtraction; a bad checksum fails.
+        assert!(!luhn_valid("1234")); // too short
+        assert!(luhn_valid("4111111111111111")); // valid Visa test number
+        assert!(!luhn_valid("4111111111111112")); // fails checksum
+
+        // ssn: wrong part count and non-numeric parts are rejected.
+        assert!(!ssn_valid("12-3456")); // two parts
+        assert!(!ssn_valid("abc-de-fghi")); // parse fails
+        assert!(ssn_valid("123-45-6789")); // structurally valid
+
+        // iban: out-of-range length and a non-alphanumeric char are rejected.
+        assert!(!iban_valid("GB82")); // too short
+        assert!(!iban_valid("GB00abcdefghijklmno")); // lowercase char
+    }
 }
