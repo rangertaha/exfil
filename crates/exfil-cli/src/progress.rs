@@ -28,7 +28,7 @@ use std::time::Duration;
 use exfil_core::{Match, Severity};
 use exfil_engine::ScanEvent;
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Gauge, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
@@ -68,6 +68,22 @@ pub fn match_line(m: &Match) -> String {
             m.path, m.line, m.col, m.rule, m.snippet
         ),
         None => format!("{}:{}:{} [{}] {}", m.path, m.line, m.col, m.rule, m.snippet),
+    }
+}
+
+/// Row style for a finding's severity in ratatui widgets — the live scan feed
+/// and the TUI index — mirroring the ANSI colors used in plain output: bold
+/// red for critical, cooling to gray for unrated rules.
+pub fn severity_style(sev: Option<Severity>) -> Style {
+    match sev {
+        Some(Severity::Critical) => Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD),
+        Some(Severity::High) => Style::default().fg(Color::Red),
+        Some(Severity::Medium) => Style::default().fg(Color::Yellow),
+        Some(Severity::Low) => Style::default().fg(Color::Blue),
+        Some(Severity::Info) => Style::default().fg(Color::Cyan),
+        None => Style::default().fg(Color::Gray),
     }
 }
 
@@ -213,9 +229,10 @@ fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) {
                 let mut pending = Some(ev);
                 while let Some(ev) = pending.take() {
                     if let ScanEvent::Match(m) = &ev {
+                        let style = severity_style(m.severity);
                         let line = match_line(m);
                         let _ = terminal.insert_before(1, |buf| {
-                            Line::raw(line).render(buf.area, buf);
+                            Line::styled(line, style).render(buf.area, buf);
                         });
                     }
                     state.apply(&ev);
@@ -280,6 +297,22 @@ mod tests {
         let mut hit = m("aws");
         hit.severity = Some(Severity::Critical);
         assert_eq!(match_line(&hit), "a.env:2:5 CRIT [aws] hit");
+    }
+
+    #[test]
+    fn severity_style_is_color_coded_by_rank() {
+        assert_eq!(
+            severity_style(Some(Severity::Critical)).fg,
+            Some(Color::LightRed)
+        );
+        assert!(severity_style(Some(Severity::Critical))
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(
+            severity_style(Some(Severity::Medium)).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(severity_style(None).fg, Some(Color::Gray));
     }
 
     #[test]

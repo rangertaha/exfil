@@ -53,7 +53,7 @@ use exfil_engine::{ScanEvent, Summary};
 use exfil_store::Store;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -135,21 +135,7 @@ fn severity_flag(sev: Option<Severity>) -> char {
     }
 }
 
-/// Row color for a finding's severity, so the index reads as a heat map:
-/// critical stands out in bold red, cooling to gray for unrated rules. The
-/// selection highlight (reverse video) still overrides this on the active row.
-fn severity_style(sev: Option<Severity>) -> Style {
-    match sev {
-        Some(Severity::Critical) => Style::default()
-            .fg(Color::LightRed)
-            .add_modifier(Modifier::BOLD),
-        Some(Severity::High) => Style::default().fg(Color::Red),
-        Some(Severity::Medium) => Style::default().fg(Color::Yellow),
-        Some(Severity::Low) => Style::default().fg(Color::Blue),
-        Some(Severity::Info) => Style::default().fg(Color::Cyan),
-        None => Style::default().fg(Color::Gray),
-    }
-}
+use crate::progress::severity_style;
 
 /// Tally findings per severity for the status bar, worst-first.
 fn severity_counts(findings: &[Match]) -> Vec<(Severity, usize)> {
@@ -1320,22 +1306,6 @@ mod tests {
         assert_eq!(severity_flag(Some(Severity::Critical)), 'C');
         assert_eq!(severity_flag(Some(Severity::Info)), 'I');
         assert_eq!(severity_flag(None), ' ');
-    }
-
-    #[test]
-    fn severity_style_is_color_coded_by_rank() {
-        assert_eq!(
-            severity_style(Some(Severity::Critical)).fg,
-            Some(Color::LightRed)
-        );
-        assert!(severity_style(Some(Severity::Critical))
-            .add_modifier
-            .contains(Modifier::BOLD));
-        assert_eq!(
-            severity_style(Some(Severity::Medium)).fg,
-            Some(Color::Yellow)
-        );
-        assert_eq!(severity_style(None).fg, Some(Color::Gray));
     }
 
     #[test]
