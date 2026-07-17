@@ -24,11 +24,34 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+/// Worked examples shown at the bottom of `exfil --help`. Grouped so a new user
+/// can see the common paths (scan → search → triage) at a glance.
+const EXAMPLES: &str = "\
+Examples:
+  exfil scan                       Scan the current directory
+  exfil scan ~/project             Scan a specific path
+  exfil search severity=critical   Show only the critical findings
+  exfil analyze --format markdown  Render a report of the findings graph
+  exfil tui                        Open the interactive workbench
+  exfil scan-remote deploy@web1:/srv   Scan a remote host over SSH
+
+Docs: https://rangertaha.github.io/exfil/";
+
+/// Print a discoverability hint to stderr, but only on an interactive terminal
+/// so piped or redirected output stays clean and scriptable.
+fn hint(msg: &str) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!("{msg}");
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "exfil",
     version,
-    about = "exfil — offline SAST & filesystem security graph"
+    about = "exfil — an offline DevSecOps engine for static analysis of code, infrastructure & systems",
+    after_help = EXAMPLES,
 )]
 struct Cli {
     /// Path to the local findings store.
@@ -268,6 +291,11 @@ async fn cmd_scan(
         "scanned {} files ({} unchanged): {} new matches, {} unreadable",
         summary.files, summary.unchanged, summary.matches, summary.errors
     );
+    if summary.matches > 0 {
+        hint("\nNext: `exfil tui` to triage · `exfil analyze` for a report · `exfil search severity=critical` to filter");
+    } else if summary.files > 0 {
+        hint("\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.");
+    }
     Ok(())
 }
 
@@ -638,6 +666,9 @@ async fn cmd_search(store_dir: &std::path::Path, query: Option<String>) -> Resul
         println!("{}", progress::match_line(m));
     }
     println!("{} finding(s)", findings.len());
+    if findings.is_empty() {
+        hint("No findings. Run `exfil scan` to populate the store, or broaden your query (`exfil search` with no args lists everything).");
+    }
     Ok(())
 }
 
