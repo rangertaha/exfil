@@ -157,11 +157,20 @@ async fn run_analyze(store: &Store, query: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Serve the MCP protocol over stdio until stdin closes. Each line of stdin is
-/// one JSON-RPC message; each response is written as one line to stdout.
+/// Serve the MCP protocol over stdio until stdin closes.
 pub async fn serve(store: Store) -> Result<()> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdout = tokio::io::stdout();
+    serve_io(store, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+/// The stdio loop, generic over its reader and writer so it can be driven from
+/// a test with in-memory pipes. Each input line is one JSON-RPC message; each
+/// response is written as one line. Blank and malformed lines are skipped.
+async fn serve_io<R, W>(store: Store, reader: R, mut writer: W) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWriteExt + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
@@ -173,8 +182,8 @@ pub async fn serve(store: Store) -> Result<()> {
         if let Some(resp) = handle(&store, &req).await {
             let mut s = serde_json::to_string(&resp)?;
             s.push('\n');
-            stdout.write_all(s.as_bytes()).await?;
-            stdout.flush().await?;
+            writer.write_all(s.as_bytes()).await?;
+            writer.flush().await?;
         }
     }
     Ok(())
@@ -319,6 +328,62 @@ mod tests {
         let none = handle(&store, &json!({"jsonrpc":"2.0","method":"initialized"})).await;
         assert!(none.is_none());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tools_call_analyze_renders_report() {
+        let (store, dir) = store_with_finding().await;
+        let resp = handle(
+            &store,
+            &json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+                    "params":{"name":"analyze","arguments":{}}}),
+        )
+        .await
+        .unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("finding(s)"), "{text}");
+        assert!(text.contains("risk score"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn tool_failure_reports_is_error() {
+        let (store, dir) = store_with_finding().await;
+        // An invalid search field makes the tool return an error result.
+        let resp = handle(
+            &store,
+            &json!({"jsonrpc":"2.0","id":8,"method":"tools/call",
+                    "params":{"name":"search","arguments":{"query":"bogus=1"}}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
+        assert!(resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("error:"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn serve_io_processes_lines_and_skips_junk() {
+        let (store, dir) = store_with_finding().await;
+        // Blank line and malformed line are skipped; the real request answered.
+        let input = "\n\
+                     not json\n\
+                     {\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}\n";
+        let mut output = Vec::new();
+        serve_io(store, input.as_bytes(), &mut output)
+            .await
+            .unwrap();
+        let out = String::from_utf8(output).unwrap();
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "only the valid request replies: {out}"
+        );
+        assert!(out.contains("\"tools\""), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
