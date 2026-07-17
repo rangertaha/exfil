@@ -70,6 +70,8 @@ enum Command {
         #[arg(short, long)]
         key: Option<PathBuf>,
     },
+    /// Scan the local host's running processes (command lines, exe paths).
+    Processes,
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -139,6 +141,7 @@ async fn main() -> Result<()> {
         Command::ScanRemote { target, port, key } => {
             cmd_scan_remote(&store_dir, cli.config.as_deref(), &target, port, key).await?
         }
+        Command::Processes => cmd_processes(&store_dir, cli.config.as_deref()).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -234,6 +237,29 @@ async fn cmd_scan_remote(
     println!(
         "scanned {}:{} — {} files: {} matches, {} unreadable",
         target.host, target.path, summary.files, summary.matches, summary.errors
+    );
+    Ok(())
+}
+
+/// Scan the local host's running processes: each process's name, exe path, and
+/// command line is scanned by the full pipeline (secrets on a command line, PII,
+/// bad domains/IPs in arguments). Reuses `scan_remote` with a process source.
+async fn cmd_processes(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> Result<()> {
+    let pipeline = build_pipeline(config).await?;
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let fs = exfill_remote::ProcessFs::new();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfill_engine::scan_remote(&fs, "proc://", &pipeline, &store, Some(tx)).await;
+    let _ = renderer.join();
+    let summary = result?;
+    println!(
+        "scanned {} processes: {} matches, {} unreadable",
+        summary.files, summary.matches, summary.errors
     );
     Ok(())
 }

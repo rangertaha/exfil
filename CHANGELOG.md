@@ -127,3 +127,7 @@ and this project adheres to
   (domains/IPs/URLs from feeds), and a log-event scanner (SSH/PAM auth failures,
   privilege use) — the first plugins consuming the Indicators seam plus offline
   log triage.
+- Added `exfill processes`: scan the local host's running processes (name, exe
+  path, command line) through the full pipeline via a ProcessFs RemoteFs source
+  — catches secrets/tokens exposed on command lines, PII, and bad domains/IPs in
+  arguments. Linux procfs; other platforms enumerate nothing.

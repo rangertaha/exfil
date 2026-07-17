@@ -9,6 +9,12 @@
 //! A [`RemoteTarget`] parses the SCP-style `[user@]host:/path` destination.
 //! Authentication tries, in order: the SSH agent, an explicit private key, then
 //! a password — whatever [`SshAuth`] provides.
+//!
+//! The same [`RemoteFs`] seam also backs [`ProcessFs`], which exposes the local
+//! host's *running processes* as scannable bytes — see [`proc`].
+
+pub mod proc;
+pub use proc::ProcessFs;
 
 use std::path::PathBuf;
 use std::sync::Arc;

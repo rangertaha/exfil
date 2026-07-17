@@ -11,6 +11,7 @@ async-trait = "0.1"
 tokio = { workspace = true }
 russh = "0.45"
 russh-sftp = "2"
+gethostname = "0.5"
 
 [lints]
 workspace = true
