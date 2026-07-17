@@ -1494,7 +1494,10 @@ mod tests {
             app.on_key(&handle, KeyCode::Char('?'));
             assert!(matches!(app.mode, Mode::Pager(_)));
             app.on_key(&handle, KeyCode::Char('q'));
-            assert!(matches!(app.mode, Mode::Nav), "help returns to the navigator");
+            assert!(
+                matches!(app.mode, Mode::Nav),
+                "help returns to the navigator"
+            );
 
             app.on_key(&handle, KeyCode::Char('q')); // leave navigator
             assert!(matches!(app.mode, Mode::Index));
