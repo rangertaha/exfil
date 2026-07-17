@@ -106,6 +106,13 @@ enum Command {
     /// Normalize findings into CIM events (shared category/action fields) for
     /// cross-source correlation.
     Normalize,
+    /// WHOIS-check observed domains and flag newly-registered ones (online;
+    /// authorized use).
+    CheckWhois {
+        /// Flag domains registered within this many days.
+        #[arg(long, default_value_t = exfill_scan::whois::DEFAULT_RECENT_DAYS)]
+        recent_days: i64,
+    },
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -200,6 +207,7 @@ async fn main() -> Result<()> {
         }
         Command::CheckDns => cmd_check_dns(&store_dir).await?,
         Command::Normalize => cmd_normalize(&store_dir).await?,
+        Command::CheckWhois { recent_days } => cmd_check_whois(&store_dir, recent_days).await?,
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -342,6 +350,37 @@ async fn cmd_scan_tcp(
         "grabbed {} banner(s): {} matches, {} unreachable",
         summary.files, summary.matches, summary.errors
     );
+    Ok(())
+}
+
+/// WHOIS-check every observed domain and flag newly-registered ones (a common
+/// phishing signal). Online: the port-43 lookups run off the async thread.
+async fn cmd_check_whois(store_dir: &std::path::Path, recent_days: i64) -> Result<()> {
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let domains = store.indicator_domains().await?;
+    let today = exfill_scan::whois::today_epoch_days();
+    let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
+    eprintln!("WHOIS-checking {total} domain(s)…");
+
+    let mut flagged = 0u64;
+    for (hash, list) in domains {
+        for domain in list {
+            let d = domain.clone();
+            let finding = tokio::task::spawn_blocking(move || {
+                let whois = exfill_scan::whois::lookup(&d).ok()?;
+                exfill_scan::whois::check(&whois, &d, today, recent_days, "whois")
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(m) = finding {
+                println!("{}", progress::match_line(&m));
+                store.add_finding(&m, &hash).await?;
+                flagged += 1;
+            }
+        }
+    }
+    println!("{flagged} newly-registered domain(s)");
     Ok(())
 }
 

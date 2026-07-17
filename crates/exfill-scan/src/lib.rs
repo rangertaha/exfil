@@ -38,6 +38,7 @@ pub mod pii;
 pub mod supply;
 pub mod taint;
 pub mod typosquat;
+pub mod whois;
 pub mod yara;
 pub use ast::{AstExtractor, DangerousCallScanner};
 pub use builtin::builtin_rules;

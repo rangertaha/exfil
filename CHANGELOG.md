@@ -147,3 +147,6 @@ and this project adheres to
   severity/src) stored as `event` graph nodes linked to their finding
   (has_event), enabling cross-source correlation. Events are browsable in the
   TUI and gc-pruned with their findings.
+- Added `exfill check-whois`: WHOIS-checks domains observed during scans and
+  flags newly-registered ones (a phishing signal) via a port-43 IANA-referral
+  lookup, with a dependency-free date parser. Online, opt-in.
