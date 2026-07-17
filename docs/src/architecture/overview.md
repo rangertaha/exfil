@@ -122,48 +122,75 @@ The 14 crates stack into layers. **Arrows point "depends on" — always downward
 never up or sideways in a cycle.** That downward-only rule is what keeps the
 design honest.
 
+Each box is a crate; the **nested boxes are that crate's own components** (its
+internal scope), so you can see both the layering *and* what lives inside each
+layer.
+
 ```mermaid
 flowchart TD
-    subgraph L7["① Binary"]
-        CLI[exfil-cli<br/>main · tui · keymap · progress]
+    subgraph L7["① Binary · exfil-cli"]
+        CLI_MAIN["main<br/>commands"]
+        subgraph CLI_UI["interfaces"]
+            TUI["tui · keymap"]
+            SERVER["server<br/>HTTP + GraphQL"]
+            PROG["progress"]
+        end
     end
-    subgraph L6["② Remote"]
-        REMOTE[exfil-remote<br/>SSH/SFTP RemoteFs]
+    subgraph L6["② Remote & web · exfil-remote"]
+        SSH["ssh RemoteFs"]
+        WEB["web crawl"]
+        WD["webdriver<br/>dynamic sites"]
+        NET["tcp · netscan · proc"]
     end
-    subgraph L5["③ Orchestration"]
-        ENGINE[exfil-engine<br/>parallel walk · run stages]
+    subgraph L5["③ Orchestration · exfil-engine"]
+        WALK["parallel walk<br/>+ blake3"]
+        EXPAND["archive expand"]
+        RUN["run stages<br/>fetch → scan → report"]
     end
     subgraph L4["④ Capabilities"]
-        SCAN[exfil-scan<br/>all scanners]
-        SOURCE[exfil-source<br/>dataset fetch]
-        REPORT[exfil-report<br/>renderers]
-        MCP[exfil-mcp]
-        LLM[exfil-llm]
-        SCRIPT[exfil-script]
-        VIEW[exfil-view]
+        subgraph SCAN["exfil-scan"]
+            REGEX["regex · supply"]
+            ASTG["ast · taint"]
+            IOCG["ioc · clamav · yara"]
+            PIIG["pii · leak · typosquat"]
+        end
+        subgraph SOURCE["exfil-source"]
+            DS["dataset fetch"]
+            MITRE["mitre CWE"]
+        end
+        REPORT["exfil-report<br/>text·json·md·junit"]
+        MCP["exfil-mcp"]
+        LLM["exfil-llm<br/>enrich"]
+        SCRIPT["exfil-script"]
+        VIEW["exfil-view"]
     end
-    subgraph L3["⑤ Storage"]
-        STORE[exfil-store<br/>SurrealDB graph]
+    subgraph L3["⑤ Storage · exfil-store"]
+        subgraph RECORDS["records"]
+            T_DATA["file · finding · ast"]
+            T_REF["rule · cwe · dataset"]
+        end
+        EDGES["graph edges"]
+        ANY["engine::any<br/>embedded / cluster"]
     end
     subgraph L2["⑥ Primitives"]
-        TASK[exfil-task<br/>FileTask · Pipeline]
-        CONFIG[exfil-config]
+        TASK["exfil-task<br/>FileTask · Pipeline"]
+        CONFIG["exfil-config"]
     end
-    subgraph L1["⑦ Foundation"]
-        CORE[exfil-core<br/>Match · Rule · FileMeta · Severity]
+    subgraph L1["⑦ Foundation · exfil-core"]
+        CORE["Match · Rule · CweEntry · Severity"]
     end
 
-    CLI --> REMOTE & ENGINE & SCAN & SOURCE & MCP & LLM & SCRIPT & VIEW & CONFIG & STORE
-    REMOTE --> ENGINE
-    ENGINE --> SCAN & REPORT & STORE & TASK
-    SCAN --> TASK
-    SOURCE --> SCAN
+    CLI_MAIN --> SSH & RUN & REGEX & DS & MCP & LLM & SCRIPT & VIEW & CONFIG & ANY
+    SERVER --> ANY
+    SSH & WEB & WD & NET --> RUN
+    RUN --> EXPAND & WALK & REGEX & REPORT & ANY & TASK
+    REGEX & ASTG & IOCG & PIIG --> TASK
+    DS --> REGEX
+    MITRE --> T_REF
     SCRIPT --> LLM
-    MCP --> REPORT & STORE
-    LLM --> STORE
-    REPORT --> CORE
-    STORE --> CORE
-    TASK --> CORE
+    MCP --> REPORT & ANY
+    LLM --> ANY
+    REPORT & ANY & TASK --> CORE
 ```
 
 **How to read it, top to bottom:**

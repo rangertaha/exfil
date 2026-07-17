@@ -41,42 +41,56 @@ writes into a [graph store](./store.md). You then read them back through the
 
 ## The mental model in one diagram
 
+The nested boxes group each stage's components by scope (source types, scanner
+families, read paths):
+
 ```mermaid
 flowchart TD
-    subgraph Input["Data sources"]
+    subgraph Input["Data sources · exfil-remote"]
         FS[Local filesystem]
-        SSH[Remote host over SSH]
+        subgraph NetSrc["network sources"]
+            SSH[ssh host]
+            WEBSRC[web crawl · webdriver]
+        end
     end
-    subgraph Eng["Engine — orchestration"]
+    subgraph Eng["Engine — orchestration · exfil-engine"]
         WALK[Parallel walk<br/>read + hash each file]
         PIPE[Per-file plugin DAG]
     end
-    subgraph Plugins["Analysis plugins"]
-        REGEX[regex secrets]
-        AST[AST / tree-sitter]
-        TAINT[taint]
-        MORE[yara · clamav · ioc · supply · expand]
+    subgraph Plugins["Analysis plugins · exfil-scan"]
+        subgraph Content["content"]
+            REGEX[regex secrets · supply]
+            PII[pii · leak]
+        end
+        subgraph Structural["structural"]
+            AST[AST / tree-sitter]
+            TAINT[taint]
+        end
+        subgraph Sig["signature / IOC"]
+            MORE[yara · clamav · ioc]
+        end
     end
-    subgraph Store["Graph store — SurrealDB"]
-        FILES[(file nodes)]
-        FIND[(finding nodes)]
+    subgraph Store["Graph store · exfil-store"]
+        FILES[(file · finding · ast)]
+        REF[(rule · cwe · dataset)]
         EDGES[(graph edges)]
     end
     subgraph Out["Read paths"]
         CLI[CLI + TUI]
-        MCP[MCP server for AI]
-        REP[Reports text/json/md]
+        SERVER[server<br/>HTTP + GraphQL]
+        MCP[MCP for AI]
+        REP[reports]
     end
 
     FS --> WALK
-    SSH --> WALK
+    SSH & WEBSRC --> WALK
     WALK --> PIPE
-    PIPE --> REGEX & AST & MORE
+    PIPE --> REGEX & AST & MORE & PII
     AST --> TAINT
-    REGEX & AST & TAINT & MORE --> FIND
-    WALK --> FILES
-    FILES -.edges.- FIND
-    FILES & FIND & EDGES --> CLI & MCP & REP
+    REGEX & AST & TAINT & MORE & PII --> FILES
+    FILES -.edges.- EDGES
+    REF -. enrich .-> FILES
+    FILES & REF & EDGES --> CLI & SERVER & MCP & REP
 ```
 
 Read on: **[Overview & layers →](./overview.md)**
