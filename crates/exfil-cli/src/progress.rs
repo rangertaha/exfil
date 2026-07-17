@@ -394,6 +394,17 @@ mod tests {
     }
 
     #[test]
+    fn severity_color_ansi_per_rank() {
+        // The ANSI escapes used for colored terminal output (never reached in
+        // tests via styled_line, since stdout isn't a TTY there).
+        assert_eq!(severity_color(Severity::Critical), "\x1b[1;91m");
+        assert_eq!(severity_color(Severity::High), "\x1b[91m");
+        assert_eq!(severity_color(Severity::Medium), "\x1b[33m");
+        assert_eq!(severity_color(Severity::Low), "\x1b[34m");
+        assert_eq!(severity_color(Severity::Info), "\x1b[36m");
+    }
+
+    #[test]
     fn severity_summary_tallies_worst_first() {
         let mut crit = m("aws");
         crit.severity = Some(Severity::Critical);
