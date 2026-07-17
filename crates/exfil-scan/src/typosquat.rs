@@ -279,5 +279,20 @@ mod tests {
         assert_eq!(osa_distance("paypal", "paypa1"), 1);
         assert_eq!(osa_distance("ab", "ba"), 1); // transposition
         assert_eq!(osa_distance("abc", "abc"), 0);
+        // Empty-operand fast paths.
+        assert_eq!(osa_distance("", "abc"), 3);
+        assert_eq!(osa_distance("abc", ""), 3);
+    }
+
+    #[test]
+    fn custom_brands_and_multi_digit_homoglyphs() {
+        let s = DomainTyposquatScanner::with_brands(vec!["greats".into()]);
+        // "9r3475" folds (9→g, 3→e, 4→a, 7→t, 5→s) to the brand "greats".
+        let m = s.analyze(&ind(&["9r3475.com"]), "f");
+        assert_eq!(m.len(), 1, "{m:?}");
+        // The exact brand isn't a typosquat, and a single-label host is ignored.
+        assert!(s
+            .analyze(&ind(&["greats.com", "localhost"]), "f")
+            .is_empty());
     }
 }
