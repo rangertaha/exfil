@@ -1351,4 +1351,109 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn normalize_and_indicator_helpers() {
+        let dir =
+            std::env::temp_dir().join(format!("exfil-store-normalize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_FINDINGS).await.unwrap();
+
+        store
+            .upsert_file(&sample_meta("aaa", "a.env"))
+            .await
+            .unwrap();
+        store
+            .add_finding(&sample_match("aws-key", "a.env"), "aaa")
+            .await
+            .unwrap();
+
+        // findings_with_ids: all, by field, by text, and an unknown field.
+        let all = store.findings_with_ids("").await.unwrap();
+        assert_eq!(all.len(), 1);
+        let (fid, m) = &all[0];
+        assert!(fid.starts_with("finding:"));
+        assert_eq!(m.rule, "aws-key");
+        assert_eq!(
+            store.findings_with_ids("rule=aws-key").await.unwrap().len(),
+            1
+        );
+        assert_eq!(store.findings_with_ids("aws").await.unwrap().len(), 1);
+        assert!(store.findings_with_ids("bogus=1").await.is_err());
+
+        // upsert_event + event_summary; upsert twice replaces, not duplicates.
+        let event = serde_json::json!({ "category": "credential-access", "action": "detected" });
+        store.upsert_event(fid, &event).await.unwrap();
+        store.upsert_event(fid, &event).await.unwrap();
+        let summary = store.event_summary().await.unwrap();
+        assert_eq!(summary, vec![("credential-access".to_string(), 1)]);
+
+        // indicator_domains: only non-empty domain lists are returned.
+        store
+            .upsert_indicators(
+                "aaa",
+                &serde_json::json!({ "domains": ["evil.example.com"] }),
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_file(&sample_meta("bbb", "b.env"))
+            .await
+            .unwrap();
+        store
+            .upsert_indicators("bbb", &serde_json::json!({ "domains": [] }))
+            .await
+            .unwrap();
+        let domains = store.indicator_domains().await.unwrap();
+        assert_eq!(
+            domains,
+            vec![("aaa".to_string(), vec!["evil.example.com".to_string()])]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn node_label_covers_every_kind() {
+        use serde_json::json;
+        let label = |k, v| node_label(k, &v);
+        assert_eq!(
+            label("finding", json!({"rule":"r","path":"p","line":9})).as_deref(),
+            Some("r @ p:9")
+        );
+        assert_eq!(
+            label("file", json!({"path":"a.env"})).as_deref(),
+            Some("a.env")
+        );
+        assert_eq!(label("rule", json!({"name":"aws"})).as_deref(), Some("aws"));
+        assert_eq!(
+            label("ast", json!({"lang":"python"})).as_deref(),
+            Some("python ast")
+        );
+        assert_eq!(
+            label("indicators", json!({"emails":["a"],"domains":["b","c"]})).as_deref(),
+            Some("indicators (1e 2d 0ip 0url 0h)")
+        );
+        assert_eq!(
+            label(
+                "event",
+                json!({"category":"c","action":"a","signature":"s"})
+            )
+            .as_deref(),
+            Some("c/a s")
+        );
+        assert_eq!(
+            label("dataset", json!({"name":"sec"})).as_deref(),
+            Some("sec")
+        );
+        assert_eq!(
+            label("source", json!({"name":"builtin"})).as_deref(),
+            Some("builtin")
+        );
+        assert_eq!(
+            label("scan", json!({"root":"/tree"})).as_deref(),
+            Some("/tree")
+        );
+        assert_eq!(label("mystery", json!({})), None);
+    }
 }
