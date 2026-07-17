@@ -25,7 +25,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use exfil_core::Match;
+use exfil_core::{Match, Severity};
 use exfil_engine::ScanEvent;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::style::{Color, Style};
@@ -33,9 +33,65 @@ use ratatui::text::Line;
 use ratatui::widgets::{Gauge, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-/// Format one match the same way everywhere (plain mode, TUI, search output).
+/// Short, fixed-width-ish severity tag shown in a finding line. `None` when the
+/// rule carries no severity, so those lines keep their original shape.
+fn severity_tag(sev: Option<Severity>) -> Option<&'static str> {
+    Some(match sev? {
+        Severity::Critical => "CRIT",
+        Severity::High => "HIGH",
+        Severity::Medium => "MED",
+        Severity::Low => "LOW",
+        Severity::Info => "INFO",
+    })
+}
+
+/// ANSI escape that colors a severity tag on a terminal (bright red for the
+/// worst, cooling down to cyan for info).
+fn severity_color(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Critical => "\x1b[1;91m", // bold bright red
+        Severity::High => "\x1b[91m",       // bright red
+        Severity::Medium => "\x1b[33m",     // yellow
+        Severity::Low => "\x1b[34m",        // blue
+        Severity::Info => "\x1b[36m",       // cyan
+    }
+}
+
+/// Format one match as plain text: `path:line:col SEV [rule] snippet`, with the
+/// severity omitted when the rule has none. `path:line:col` stays at the front
+/// so editors and `grep` can still parse it. Used for pipes, the TUI, and as
+/// the base for the colored [`styled_line`].
 pub fn match_line(m: &Match) -> String {
-    format!("{}:{}:{} [{}] {}", m.path, m.line, m.col, m.rule, m.snippet)
+    match severity_tag(m.severity) {
+        Some(tag) => format!(
+            "{}:{}:{} {tag} [{}] {}",
+            m.path, m.line, m.col, m.rule, m.snippet
+        ),
+        None => format!("{}:{}:{} [{}] {}", m.path, m.line, m.col, m.rule, m.snippet),
+    }
+}
+
+/// Whether to emit ANSI color: only when stdout is a terminal and `NO_COLOR`
+/// is unset (the de-facto standard opt-out).
+pub fn use_color() -> bool {
+    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+/// Like [`match_line`], but colors the severity tag on a terminal. Falls back
+/// to the plain line when color is disabled or the rule has no severity, so
+/// piped and redirected output is never polluted with escape codes.
+pub fn styled_line(m: &Match) -> String {
+    match m.severity {
+        Some(sev) if use_color() => {
+            let tag = severity_tag(Some(sev)).unwrap_or("");
+            let (color, reset) = (severity_color(sev), "\x1b[0m");
+            format!(
+                "{}:{}:{} {color}{tag}{reset} [{}] {}",
+                m.path, m.line, m.col, m.rule, m.snippet
+            )
+        }
+        _ => match_line(m),
+    }
 }
 
 /// Running tallies for the progress gauge, updated from [`ScanEvent`]s.
@@ -187,6 +243,23 @@ mod tests {
     #[test]
     fn match_line_format() {
         assert_eq!(match_line(&m("r")), "a.env:2:5 [r] hit");
+    }
+
+    #[test]
+    fn match_line_includes_severity_tag() {
+        let mut hit = m("aws");
+        hit.severity = Some(Severity::Critical);
+        assert_eq!(match_line(&hit), "a.env:2:5 CRIT [aws] hit");
+    }
+
+    #[test]
+    fn styled_line_is_plain_without_a_tty() {
+        // Under `cargo test` stdout is not a terminal, so styled_line must not
+        // emit ANSI escapes — it should equal the plain match_line.
+        let mut hit = m("aws");
+        hit.severity = Some(Severity::Critical);
+        assert_eq!(styled_line(&hit), match_line(&hit));
+        assert!(!styled_line(&hit).contains('\x1b'));
     }
 
     #[test]

@@ -402,7 +402,7 @@ async fn cmd_check_whois(store_dir: &std::path::Path, recent_days: i64) -> Resul
             .ok()
             .flatten();
             if let Some(m) = finding {
-                println!("{}", progress::match_line(&m));
+                println!("{}", progress::styled_line(&m));
                 store.add_finding(&m, &hash).await?;
                 flagged += 1;
             }
@@ -450,7 +450,7 @@ async fn cmd_check_dns(store_dir: &std::path::Path) -> Result<()> {
                     .ok()
                     .flatten();
             if let Some(m) = finding {
-                println!("{}", progress::match_line(&m));
+                println!("{}", progress::styled_line(&m));
                 store.add_finding(&m, &hash).await?;
                 flagged += 1;
             }
@@ -663,7 +663,7 @@ async fn cmd_search(store_dir: &std::path::Path, query: Option<String>) -> Resul
         .search_findings(query.as_deref().unwrap_or(""))
         .await?;
     for m in &findings {
-        println!("{}", progress::match_line(m));
+        println!("{}", progress::styled_line(m));
     }
     println!("{} finding(s)", findings.len());
     if findings.is_empty() {

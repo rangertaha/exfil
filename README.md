@@ -47,12 +47,12 @@ exfil rules
 exfil clean
 ```
 
-Example scan output:
+Example scan output (severity is color-coded on a terminal):
 
 ```text
-./.env:1:26 [aws-access-key-id] export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF
-./src/config.toml:1:7 [password-in-url] db = "postgres://admin:hunter2@db.internal/prod"
-scanned 3 files: 2 matches, 0 unreadable
+./.env:1:26 CRIT [aws-access-key-id] export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF
+./src/config.toml:1:7 HIGH [password-in-url] db = "postgres://admin:hunter2@db.internal/prod"
+scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 ```
 
 ## Common commands
