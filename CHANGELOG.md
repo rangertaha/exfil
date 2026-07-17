@@ -10,8 +10,8 @@ and this project adheres to
 
 ### Added
 
-- Cargo workspace with six crates: `exfill-core`, `exfill-config`,
-  `exfill-scan`, `exfill-store`, `exfill-engine`, `exfill-cli`.
+- Cargo workspace with six crates: `exfil-core`, `exfil-config`,
+  `exfil-scan`, `exfil-store`, `exfil-engine`, `exfil-cli`.
 - Embedded SurrealDB (SurrealKV) graph store: file/finding/rule/scan tables,
   relation edges, content-hash record ids, search/get APIs.
 - Parallel, gitignore-aware scan engine: blake3 hashing, binary detection,
@@ -22,22 +22,22 @@ and this project adheres to
   typosquat detection, npm install-hook analysis, insecure (http) sources.
 - Incremental rescans: stat fast-path skips unchanged files; findings are
   replaced on rescan instead of duplicated.
-- Plugin orchestration DAG (`exfill-task`): typed artifacts, `FileTask`
+- Plugin orchestration DAG (`exfil-task`): typed artifacts, `FileTask`
   needs/provides, topologically-sorted `Pipeline` with cycle/missing-producer
   detection. Scanners migrated onto it.
 - Archive expansion: `archive-expand` task unpacks zip/jar/war/tar/tar.gz/gz
   into virtual files that flow through the pipeline (depth- and size-capped),
   linked to their container by a `contained_in` graph edge.
-- Reporters (`exfill-report`): text, json, and markdown; `exfill analyze
+- Reporters (`exfil-report`): text, json, and markdown; `exfil analyze
   [query] --format <fmt>` renders the findings graph.
-- Run-level orchestration (`exfill-engine::run`): `RunStage` sequence
+- Run-level orchestration (`exfil-engine::run`): `RunStage` sequence
   fetch → scan → report sharing the graph through `RunCtx`.
-- Tree-sitter AST scanning (`exfill-scan::ast`): `AstExtractor` (Bytes→Ast)
+- Tree-sitter AST scanning (`exfil-scan::ast`): `AstExtractor` (Bytes→Ast)
   parses Python and JavaScript; `DangerousCallScanner` (Ast→Matches) flags
   dangerous sinks (eval/exec/os.system/subprocess/child_process.exec/
   pickle.loads/yaml.load) from the parse tree, so words in comments and
   strings are not false-positives. ASTs are persisted with a `has_ast` edge.
-- Taint analysis (`exfill-scan::taint`): `TaintScanner` (Ast→Matches) tracks
+- Taint analysis (`exfil-scan::taint`): `TaintScanner` (Ast→Matches) tracks
   untrusted input (input/request.*/getenv/os.environ/process.argv/env) through
   variable assignments into command/code-injection sinks, flagging only flows
   that are actually attacker-controlled. The AST is enriched with call and
@@ -45,32 +45,32 @@ and this project adheres to
 
 ### Changed
 
-- Folded `exfill update` into `exfill pull`: `pull <ref>` fetches one dataset,
+- Folded `exfil update` into `exfil pull`: `pull <ref>` fetches one dataset,
   `pull` (no argument) fetches every configured `[[update]]`.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
 - Ratatui progress gauge for `scan` (plain line output when piped).
-- Mutt-style `exfill tui`: findings index + pager, `/` limit, `:` commands,
+- Mutt-style `exfil tui`: findings index + pager, `/` limit, `:` commands,
   live scans with streaming results.
 - TOML configuration with an embedded default written on first run.
 - CI (fmt, clippy, tests on Linux/macOS/Windows) and tag-driven release
   workflow building binaries for all three platforms.
-- Dataset sources & catalog (`exfill-source`): builtin/file/http(s) sources;
+- Dataset sources & catalog (`exfil-source`): builtin/file/http(s) sources;
   `pull`/`sources`/`datasets` (list/add/show/rm); scans apply catalog rules.
 - IOC feeds: content indicators as regex rules, file-hash indicators via a
   hash scanner (`sha256:…` rule patterns); an IOC feed is just a dataset.
-- ClamAV-style scanning (`exfill-scan::clamav`): pure-Rust matcher for hash
+- ClamAV-style scanning (`exfil-scan::clamav`): pure-Rust matcher for hash
   signatures (.hdb/.hsb) and literal body signatures (.ndb) via Aho–Corasick,
   loaded from `[plugins.clamav]`.
-- Remote scanning over SSH/SFTP (`exfill-remote`, pure-Rust russh):
-  `exfill scan-remote user@host:/path` walks a host and runs the full
+- Remote scanning over SSH/SFTP (`exfil-remote`, pure-Rust russh):
+  `exfil scan-remote user@host:/path` walks a host and runs the full
   pipeline on its files (RemoteFs trait + engine::scan_remote).
-- YARA scanning (`exfill-scan::yara`): pure-Rust yara-x matcher; rules from
+- YARA scanning (`exfil-scan::yara`): pure-Rust yara-x matcher; rules from
   `[plugins.yara]`, severity/CWE read from each rule's meta block.
 - `gc`: prune superseded scans and unreachable file/finding/ast records
   (keeps the latest scan). `graph [query] --format json|dot`: emit the
   finding→file/rule graph. Scan timestamps switched to milliseconds so
   scan ordering is unambiguous.
-- Pluggable viewers (`exfill-view`): a Viewer trait + Registry keyed by node
+- Pluggable viewers (`exfil-view`): a Viewer trait + Registry keyed by node
   kind (finding/file/ast/rule + JSON fallback) — the "preview per node type"
   foundation for graph navigation. Wired into the TUI pager.
 - Graph navigator in the TUI (M1): Enter opens a two-pane edge-following
@@ -83,15 +83,15 @@ and this project adheres to
   undo stack.
 - Configurable navigator keymap (M4): keys decoupled from actions via a
   Keymap; vim defaults, remappable in `[keymap.nav]` (key = "Action").
-- MCP server (`exfill mcp`): a hand-rolled JSON-RPC 2.0 stdio server exposing
+- MCP server (`exfil mcp`): a hand-rolled JSON-RPC 2.0 stdio server exposing
   read-only tools (search/graph/neighbors/get/analyze) so AI agents can explore
   the findings graph.
-- DAG-CBOR/JSON export (`exfill export`): a portable snapshot of every record
+- DAG-CBOR/JSON export (`exfil export`): a portable snapshot of every record
   and edge table (stringified ids), via Store::export_snapshot + ciborium.
-- Finding enrichment (`exfill enrich`, `exfill-llm`): an Enricher trait with a
+- Finding enrichment (`exfil enrich`, `exfil-llm`): an Enricher trait with a
   model-free RuleBasedEnricher writing per-finding `triage` notes; the trait is
   the seam for a future offline Candle model. All CLI commands now implemented.
-- Rhai scripting (`exfill-script`, M5): a sandboxed pure-Rust script engine;
+- Rhai scripting (`exfil-script`, M5): a sandboxed pure-Rust script engine;
   `ScriptEnricher` runs a user `.rhai` script (configured via `[plugins.script]
   enrich`) over each finding to compute a triage note, plugging into the same
   Enricher trait.
@@ -127,26 +127,26 @@ and this project adheres to
   (domains/IPs/URLs from feeds), and a log-event scanner (SSH/PAM auth failures,
   privilege use) — the first plugins consuming the Indicators seam plus offline
   log triage.
-- Added `exfill processes`: scan the local host's running processes (name, exe
+- Added `exfil processes`: scan the local host's running processes (name, exe
   path, command line) through the full pipeline via a ProcessFs RemoteFs source
   — catches secrets/tokens exposed on command lines, PII, and bad domains/IPs in
   arguments. Linux procfs; other platforms enumerate nothing.
-- Added `exfill scan-tcp <host:port…>` (banner grabbing) and `exfill port-scan
+- Added `exfil scan-tcp <host:port…>` (banner grabbing) and `exfil port-scan
   <cidr> --ports <spec>` (IP/CIDR × port sweep with banner scanning and
   service/version fingerprinting), both reusing the pipeline via scan_remote.
   Authorized-testing use; expansion bounded to 65k targets.
-- Added `exfill scan-web <url>`: bounded same-origin web crawler (page/depth
+- Added `exfil scan-web <url>`: bounded same-origin web crawler (page/depth
   caps) that scans fetched HTML/JS pages through the full pipeline for leaked
   secrets, PII, and bad indicators. robots.txt not yet honored.
-- Added `exfill check-dns`: resolves domains observed during scans and flags
+- Added `exfil check-dns`: resolves domains observed during scans and flags
   those resolving to reserved/private/loopback addresses (DNS-rebinding /
   internal-exposure signal, CWE-918). Online, opt-in; keeps default scans
   offline. WHOIS registration-age enrichment is a documented follow-on.
-- Added a Splunk-CIM-style normalized data model: `exfill normalize` maps every
+- Added a Splunk-CIM-style normalized data model: `exfil normalize` maps every
   finding (from any scanner) onto shared CIM fields (category/action/signature/
   severity/src) stored as `event` graph nodes linked to their finding
   (has_event), enabling cross-source correlation. Events are browsable in the
   TUI and gc-pruned with their findings.
-- Added `exfill check-whois`: WHOIS-checks domains observed during scans and
+- Added `exfil check-whois`: WHOIS-checks domains observed during scans and
   flags newly-registered ones (a phishing signal) via a port-43 IANA-referral
   lookup, with a dependency-free date parser. Online, opt-in.

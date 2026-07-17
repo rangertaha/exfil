@@ -1,0 +1,13 @@
+[package]
+name = "exfil-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfil-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

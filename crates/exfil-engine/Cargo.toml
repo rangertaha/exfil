@@ -1,0 +1,25 @@
+[package]
+name = "exfil-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfil-core = { workspace = true }
+exfil-scan = { workspace = true }
+exfil-task = { workspace = true }
+exfil-store = { workspace = true }
+exfil-report = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+blake3 = "1"
+ignore = "0.4"
+gethostname = "0.5"
+
+[dev-dependencies]
+tokio = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

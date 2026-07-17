@@ -1766,7 +1766,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-cli"
+name = "exfil-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1774,18 +1774,18 @@ dependencies = [
  "ciborium",
  "clap",
  "crossterm",
- "exfill-config",
- "exfill-core",
- "exfill-engine",
- "exfill-llm",
- "exfill-mcp",
- "exfill-remote",
- "exfill-scan",
- "exfill-script",
- "exfill-source",
- "exfill-store",
- "exfill-task",
- "exfill-view",
+ "exfil-config",
+ "exfil-core",
+ "exfil-engine",
+ "exfil-llm",
+ "exfil-mcp",
+ "exfil-remote",
+ "exfil-scan",
+ "exfil-script",
+ "exfil-source",
+ "exfil-store",
+ "exfil-task",
+ "exfil-view",
  "ratatui",
  "serde_json",
  "sha2",
@@ -1794,7 +1794,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-config"
+name = "exfil-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1804,7 +1804,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-core"
+name = "exfil-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1812,17 +1812,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-engine"
+name = "exfil-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
- "exfill-core",
- "exfill-report",
- "exfill-scan",
- "exfill-store",
- "exfill-task",
+ "exfil-core",
+ "exfil-report",
+ "exfil-scan",
+ "exfil-store",
+ "exfil-task",
  "gethostname",
  "ignore",
  "serde_json",
@@ -1831,37 +1831,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-llm"
+name = "exfil-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "exfill-core",
- "exfill-store",
+ "exfil-core",
+ "exfil-store",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "exfill-mcp"
+name = "exfil-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "exfill-core",
- "exfill-report",
- "exfill-store",
+ "exfil-core",
+ "exfil-report",
+ "exfil-store",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "exfill-remote"
+name = "exfil-remote"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "exfill-engine",
+ "exfil-engine",
  "gethostname",
  "regex",
  "reqwest",
@@ -1871,23 +1871,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-report"
+name = "exfil-report"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "exfill-core",
+ "exfil-core",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "exfill-scan"
+name = "exfil-scan"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
- "exfill-core",
- "exfill-task",
+ "exfil-core",
+ "exfil-task",
  "flate2",
  "hex",
  "md-5",
@@ -1922,35 +1922,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-script"
+name = "exfil-script"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "exfill-core",
- "exfill-llm",
+ "exfil-core",
+ "exfil-llm",
  "rhai",
 ]
 
 [[package]]
-name = "exfill-source"
+name = "exfil-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "exfill-core",
- "exfill-scan",
+ "exfil-core",
+ "exfil-scan",
  "reqwest",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "exfill-store"
+name = "exfil-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
- "exfill-core",
+ "exfil-core",
  "serde",
  "serde_json",
  "surrealdb",
@@ -1958,16 +1958,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "exfill-task"
+name = "exfil-task"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "exfill-core",
+ "exfil-core",
  "serde",
 ]
 
 [[package]]
-name = "exfill-view"
+name = "exfil-view"
 version = "0.1.0"
 dependencies = [
  "serde_json",

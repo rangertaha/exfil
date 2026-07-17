@@ -29,21 +29,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p exfill-cli
+        run: cargo build --release --target ${{ matrix.target }} -p exfil-cli
 
       - name: Package
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
           if [[ "${{ matrix.os }}" == windows-latest ]]; then
-            7z a ../../../exfill-${{ matrix.target }}.zip exfill.exe
+            7z a ../../../exfil-${{ matrix.target }}.zip exfil.exe
           else
-            tar czf ../../../exfill-${{ matrix.target }}.tar.gz exfill
+            tar czf ../../../exfil-${{ matrix.target }}.tar.gz exfil
           fi
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            exfill-*.tar.gz
-            exfill-*.zip
+            exfil-*.tar.gz
+            exfil-*.zip

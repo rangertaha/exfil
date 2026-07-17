@@ -1,4 +1,4 @@
-# 3 · The AST Scanner (`exfill-scan::ast`)
+# 3 · The AST Scanner (`exfil-scan::ast`)
 
 ← [The engine](./engine.md) · Next: [Taint analysis →](./taint.md)
 
@@ -8,11 +8,11 @@ or a string literal. The **AST scanner** parses each source file into a real
 syntax tree and reasons over *structure* instead of text — so it flags the call
 and ignores the comment.
 
-This page explains, from the ground up: what an AST is, how exfill parses 12
+This page explains, from the ground up: what an AST is, how exfil parses 12
 languages with one small table, how it detects dangerous calls, and every Rust
 idiom involved.
 
-Source: [`crates/exfill-scan/src/ast.rs`](../../crates/exfill-scan/src/ast.rs).
+Source: [`crates/exfil-scan/src/ast.rs`](../../crates/exfil-scan/src/ast.rs).
 
 ---
 
@@ -56,27 +56,27 @@ flowchart LR
     class AST1,AST2,AST3,RX3 good
 ```
 
-exfill's `comments_and_strings_are_not_flagged` test
-([`ast.rs:663`](../../crates/exfill-scan/src/ast.rs#L663)) asserts exactly this:
+exfil's `comments_and_strings_are_not_flagged` test
+([`ast.rs:663`](../../crates/exfil-scan/src/ast.rs#L663)) asserts exactly this:
 `eval` in a comment and in a string produce **zero** findings.
 
 ---
 
 ## 2. The tool: tree-sitter
 
-exfill parses with [tree-sitter](https://tree-sitter.github.io/), a parser
+exfil parses with [tree-sitter](https://tree-sitter.github.io/), a parser
 library with a grammar per language. Two properties make it ideal here:
 
 - **Error-tolerant.** It parses incomplete or broken code into a best-effort tree
   rather than failing — important when scanning arbitrary files. Gibberish yields
   an empty result, never a crash
-  ([`ast.rs:698`](../../crates/exfill-scan/src/ast.rs#L698)).
+  ([`ast.rs:698`](../../crates/exfil-scan/src/ast.rs#L698)).
 - **Uniform tree API.** Every language's tree is walked with the same `Node` API:
   `node.kind()`, `node.child_by_field_name(...)`, `node.children(...)`. This is
   what lets one piece of code handle 12 languages.
 
 The grammars themselves are C code compiled at build time (via the `cc` crate);
-everything exfill writes on top is pure, `unsafe`-free Rust.
+everything exfil writes on top is pure, `unsafe`-free Rust.
 
 > **A hard-won lesson baked into the code.** Each grammar is compiled for a
 > specific tree-sitter *ABI*. The core was on tree-sitter 0.24, and the C#
@@ -84,7 +84,7 @@ everything exfill writes on top is pure, `unsafe`-free Rust.
 > load, silently yielding empty ASTs. Bumping the core to 0.25 fixed C# *and*
 > unlocked Bash/Lua/PowerShell. To make sure this never regresses silently, there
 > is a test — `every_grammar_loads`
-> ([`ast.rs`](../../crates/exfill-scan/src/ast.rs), in the `tests` module) — that
+> ([`ast.rs`](../../crates/exfil-scan/src/ast.rs), in the `tests` module) — that
 > parses one source per language and asserts the language tag survives. An ABI
 > mismatch now fails the build instead of quietly finding nothing.
 
@@ -93,8 +93,8 @@ everything exfill writes on top is pure, `unsafe`-free Rust.
 ## 3. One table for twelve languages: `LangSpec`
 
 The elegance of this module is that adding a language is (usually) **one struct
-literal**. A `LangSpec` ([`ast.rs:45`](../../crates/exfill-scan/src/ast.rs#L45))
-describes how one grammar names the things exfill cares about:
+literal**. A `LangSpec` ([`ast.rs:45`](../../crates/exfil-scan/src/ast.rs#L45))
+describes how one grammar names the things exfil cares about:
 
 ```rust
 pub(crate) struct LangSpec {
@@ -122,9 +122,9 @@ Why is this needed? Because grammars disagree on names. A function call is:
 
 The C-family share defaults (`DEFAULT_FN_FIELD = "function"`,
 `DEFAULT_ARGS_FIELD = "arguments"`,
-[`ast.rs:68`](../../crates/exfill-scan/src/ast.rs#L68)); the exceptions just set
+[`ast.rs:68`](../../crates/exfil-scan/src/ast.rs#L68)); the exceptions just set
 their own fields. Here are two real entries
-([`ast.rs:73`](../../crates/exfill-scan/src/ast.rs#L73)):
+([`ast.rs:73`](../../crates/exfil-scan/src/ast.rs#L73)):
 
 ```rust
 LangSpec {                              // Python
@@ -149,7 +149,7 @@ LangSpec {                              // Java — note fn_field is "name"
 },
 ```
 
-`spec_for(path)` ([`ast.rs:209`](../../crates/exfill-scan/src/ast.rs#L209)) picks
+`spec_for(path)` ([`ast.rs:209`](../../crates/exfil-scan/src/ast.rs#L209)) picks
 the spec by file extension, and that's the whole language-selection logic.
 
 > **Rust idiom — `&'static` and static promotion.** `specs()` returns
@@ -187,7 +187,7 @@ Bash and PowerShell `command` nodes carry no argument-list node, and their
 assignment targets are `variable_name`/`variable` nodes rather than identifiers.
 So they get dangerous-call detection *by callee name* (`eval`,
 `Invoke-Expression`, `os.execute`) but **no taint propagation** — their
-`assign_kinds` are deliberately empty ([`ast.rs`](../../crates/exfill-scan/src/ast.rs),
+`assign_kinds` are deliberately empty ([`ast.rs`](../../crates/exfil-scan/src/ast.rs),
 the bash/lua/powershell entries). This is a conscious false-negative: better
 silent than noisy. (VB/VBScript are unsupported — no maintained grammar exists.)
 
@@ -215,9 +215,9 @@ flowchart LR
     class M term
 ```
 
-- `AstExtractor` ([`ast.rs:236`](../../crates/exfill-scan/src/ast.rs#L236)) parses
+- `AstExtractor` ([`ast.rs:236`](../../crates/exfil-scan/src/ast.rs#L236)) parses
   bytes into an `Ast` **once**.
-- `DangerousCallScanner` ([`ast.rs`](../../crates/exfill-scan/src/ast.rs)) flags
+- `DangerousCallScanner` ([`ast.rs`](../../crates/exfil-scan/src/ast.rs)) flags
   calls to dangerous sinks.
 - `TaintScanner` (the [next page](./taint.md)) follows untrusted input into those
   sinks — *reusing the same parsed AST*, no re-parse.
@@ -229,16 +229,16 @@ That reuse is why extraction and scanning are separate: parse once, analyze twic
 
 ## 5. Extraction: walking the tree
 
-`parse()` ([`ast.rs:218`](../../crates/exfill-scan/src/ast.rs#L218)) sets the
+`parse()` ([`ast.rs:218`](../../crates/exfil-scan/src/ast.rs#L218)) sets the
 grammar, parses, and depth-first walks the tree, collecting three kinds of fact
-into an `Ast` (the type is defined in `exfill-task`,
-[`task/src/lib.rs:76`](../../crates/exfill-task/src/lib.rs#L76)):
+into an `Ast` (the type is defined in `exfil-task`,
+[`task/src/lib.rs:76`](../../crates/exfil-task/src/lib.rs#L76)):
 
 - **symbols** — every call site and function definition (`Symbol { kind, name, line }`).
 - **calls** — call sites with argument facts, for taint (`Call`).
 - **assigns** — assignments with right-hand-side facts, for taint (`Assign`).
 
-The heart is `walk()` ([`ast.rs:333`](../../crates/exfill-scan/src/ast.rs#L333)).
+The heart is `walk()` ([`ast.rs:333`](../../crates/exfil-scan/src/ast.rs#L333)).
 For each node it asks: is this a call, a function, or an assignment?
 
 ```mermaid
@@ -254,20 +254,20 @@ flowchart TD
 The callee is the **full dotted text**: `os.system`, `child_process.exec`,
 `std::process::Command::new`. That matters downstream — the sink matcher needs the
 whole name to tell `child_process.exec` from a bare `exec`
-([`ast.rs:335-337`](../../crates/exfill-scan/src/ast.rs#L264)).
+([`ast.rs:335-337`](../../crates/exfil-scan/src/ast.rs#L264)).
 
 ### Two helpers that absorb grammar quirks
 
 Real grammars have irregularities. Two small helpers keep the walk uniform:
 
-**`first_identifier`** ([`ast.rs:317`](../../crates/exfill-scan/src/ast.rs#L317)) —
+**`first_identifier`** ([`ast.rs:317`](../../crates/exfil-scan/src/ast.rs#L317)) —
 some assignment targets aren't a bare identifier but *wrap* one. Go's
 `c := r.FormValue(...)` has an `expression_list` target; a Rust `let` has a
 pattern. This helper returns the node's text if it *is* an identifier, else
 recurses to find the first identifier inside — so a wrapped target still yields a
 variable name.
 
-**`assignment_parts`** ([`ast.rs:241`](../../crates/exfill-scan/src/ast.rs#L241)) —
+**`assignment_parts`** ([`ast.rs:241`](../../crates/exfil-scan/src/ast.rs#L241)) —
 splits an assignment into `(target, rhs)`, trying field names in order: `left` /
 `name` / `pattern` for the target, `right` / `value` for the RHS. It ends with a
 **positional fallback** for C#, whose `var x = expr` declarator holds the
@@ -286,7 +286,7 @@ let rhs = node.child_by_field_name("right")
 ```
 
 That fallback is why C# taint works — `csharp_taint_from_console_readline`
-([`ast.rs`](../../crates/exfill-scan/src/ast.rs), tests module) exercises exactly
+([`ast.rs`](../../crates/exfil-scan/src/ast.rs), tests module) exercises exactly
 `var c = Console.ReadLine(); Process.Start(c);`.
 
 > **Rust idiom — `Option` combinators.** `child_by_field_name` returns
@@ -300,7 +300,7 @@ That fallback is why C# taint works — `csharp_taint_from_console_readline`
 ## 6. Detection: `sink_for`
 
 With the tree walked, `DangerousCallScanner` iterates the call symbols and asks
-`sink_for(name)` ([`ast.rs:441`](../../crates/exfill-scan/src/ast.rs#L441)):
+`sink_for(name)` ([`ast.rs:441`](../../crates/exfil-scan/src/ast.rs#L441)):
 *is this callee a dangerous sink, and if so, how do I classify it?*
 
 ```mermaid
@@ -326,12 +326,12 @@ The design uses **cross-language prefix checks first, then a `match`** on the fu
 name and its last component. This ordering matters:
 
 - Full-name checks come first so `child_process.exec` is a child-process sink, not
-  a bare `exec` ([`ast.rs:516`](../../crates/exfill-scan/src/ast.rs#L516)).
+  a bare `exec` ([`ast.rs:516`](../../crates/exfil-scan/src/ast.rs#L516)).
 - The last-component fallback lets both `system` and `os.system` resolve
-  ([`ast.rs:441`](../../crates/exfill-scan/src/ast.rs#L441)).
+  ([`ast.rs:441`](../../crates/exfil-scan/src/ast.rs#L441)).
 
 Each sink carries a rule name, `Severity`, CWE, and a human "what" string
-([`ast.rs:432`](../../crates/exfill-scan/src/ast.rs#L432)), which become the
+([`ast.rs:432`](../../crates/exfil-scan/src/ast.rs#L432)), which become the
 finding's fields.
 
 A representative slice of what's detected across languages:
@@ -352,7 +352,7 @@ A representative slice of what's detected across languages:
 | `yaml.load` (Python) | `ast-yaml-load` | CWE-502 | yaml.load without SafeLoader |
 
 Every row above has a language-specific test in the module
-([`ast.rs:770`](../../crates/exfill-scan/src/ast.rs#L770) onward): Go
+([`ast.rs:770`](../../crates/exfil-scan/src/ast.rs#L770) onward): Go
 `exec.Command`, Rust `Command::new`, Java `Runtime.exec`, C `system`/`popen`, TS
 `child_process`, Bash `eval`, Lua `os.execute`/`loadstring`, PowerShell
 `Invoke-Expression`, C# `Process.Start`.
@@ -383,7 +383,7 @@ sequenceDiagram
 ```
 
 The engine's `ast_scanner_flags_dangerous_calls_and_stores_ast` test
-([`engine/src/lib.rs:799`](../../crates/exfill-engine/src/lib.rs#L799)) drives
+([`engine/src/lib.rs:799`](../../crates/exfil-engine/src/lib.rs#L799)) drives
 exactly this and additionally asserts the AST was persisted and linked to the file
 with a `has_ast` edge you can then navigate in the [TUI](./cli-tui.md).
 
@@ -394,14 +394,14 @@ with a `has_ast` edge you can then navigate in the [TUI](./cli-tui.md).
 To appreciate how contained this is, here's the full recipe:
 
 1. Add the grammar crate to
-   [`exfill-scan/Cargo.toml`](../../crates/exfill-scan/Cargo.toml).
+   [`exfil-scan/Cargo.toml`](../../crates/exfil-scan/Cargo.toml).
 2. Add one `LangSpec` entry to `specs()` — extensions, grammar loader, and the
    node-kind/field names its calls/functions/assignments use. (Discover those by
    printing `tree.root_node().to_sexp()` on a sample — that's literally how
    Bash/Lua/PowerShell were mapped.)
 3. If it has language-specific sinks, add them to `sink_for`.
 4. Add it to the `[plugins.ast].languages` list in
-   [`config.toml`](../../crates/exfill-config/config.toml).
+   [`config.toml`](../../crates/exfil-config/config.toml).
 5. Write a test; `every_grammar_loads` covers the ABI check for free.
 
 No change to the walk, the engine, or the store. That is the payoff of the

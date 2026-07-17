@@ -11,7 +11,7 @@ into each box.
 
 ## 1. Why a Cargo *workspace* of many crates?
 
-exfill is not one big program — it is **14 small libraries plus one binary**,
+exfil is not one big program — it is **14 small libraries plus one binary**,
 assembled in a *Cargo workspace*. A workspace is a set of related packages
 ("crates") that share one `Cargo.lock`, one `target/` build directory, and one
 set of lint rules, but compile as separate units.
@@ -24,11 +24,11 @@ set of lint rules, but compile as separate units.
 Why split one tool into 14 crates? Three concrete payoffs:
 
 1. **Enforced layering.** A crate can only use another crate if it explicitly
-   depends on it. `exfill-core` depends on *nothing*, so nothing in the core
+   depends on it. `exfil-core` depends on *nothing*, so nothing in the core
    types can accidentally reach into the database or the UI. The compiler
    enforces the architecture — you cannot create a dependency cycle between
    crates.
-2. **Parallel, incremental builds.** Change the TUI and only `exfill-cli`
+2. **Parallel, incremental builds.** Change the TUI and only `exfil-cli`
    recompiles, not the scanner or the database layer.
 3. **Clear seams for plugins.** Each analysis capability (regex, AST, YARA…)
    lives behind a trait in one crate, so adding one is a local change.
@@ -46,14 +46,14 @@ all = { level = "warn", priority = -1 }
 
 Every crate ends with `[lints] workspace = true` to inherit these. **`unsafe_code
 = "deny"`** is a strong claim: there is no hand-written unsafe memory access
-anywhere in exfill's own code.
+anywhere in exfil's own code.
 
 ---
 
 ## 2. The repository file structure
 
 ```text
-exfill/
+exfil/
 ├── Cargo.toml            ← workspace manifest: members, shared deps, lint rules
 ├── Cargo.lock            ← exact resolved dependency versions (committed)
 ├── LICENSE               ← MIT
@@ -61,11 +61,11 @@ exfill/
 ├── CHANGELOG.md          ← human-written history of notable changes
 │
 ├── crates/               ← ALL source code lives here, one directory per crate
-│   ├── exfill-core/      ← shared vocabulary: Match, Rule, Severity, FileMeta…
-│   ├── exfill-task/      ← the plugin DAG: FileTask, Artifact, Pipeline
-│   ├── exfill-config/    ← TOML config loading + defaults
-│   ├── exfill-store/     ← the SurrealDB graph store (files, findings, edges)
-│   ├── exfill-scan/      ← the scanners: regex, ast, taint, yara, clamav, ioc…
+│   ├── exfil-core/      ← shared vocabulary: Match, Rule, Severity, FileMeta…
+│   ├── exfil-task/      ← the plugin DAG: FileTask, Artifact, Pipeline
+│   ├── exfil-config/    ← TOML config loading + defaults
+│   ├── exfil-store/     ← the SurrealDB graph store (files, findings, edges)
+│   ├── exfil-scan/      ← the scanners: regex, ast, taint, yara, clamav, ioc…
 │   │   └── src/
 │   │       ├── lib.rs        ← regex scanner + default_pipeline()
 │   │       ├── ast.rs        ← tree-sitter AST scanner (12 languages)
@@ -76,18 +76,18 @@ exfill/
 │   │       ├── clamav.rs     ← ClamAV signature matching
 │   │       ├── yara.rs       ← YARA rule matching
 │   │       └── builtin.rs    ← built-in secret rules
-│   ├── exfill-source/    ← fetch/refresh rule datasets & IOC feeds
-│   ├── exfill-engine/    ← ORCHESTRATION: the parallel walk + run stages
+│   ├── exfil-source/    ← fetch/refresh rule datasets & IOC feeds
+│   ├── exfil-engine/    ← ORCHESTRATION: the parallel walk + run stages
 │   │   └── src/
 │   │       ├── lib.rs        ← scan() / scan_remote(): walk, hash, persist
 │   │       └── run.rs        ← RunStage: fetch → scan → report
-│   ├── exfill-remote/    ← SSH/SFTP RemoteFs for scanning other hosts
-│   ├── exfill-report/    ← render findings as text / json / markdown
-│   ├── exfill-view/      ← pluggable Viewer trait + Registry (TUI content)
-│   ├── exfill-mcp/       ← MCP server: expose the graph to AI agents
-│   ├── exfill-llm/       ← offline LLM / rule-based finding enrichment
-│   ├── exfill-script/    ← Rhai scripting for user triage rules
-│   └── exfill-cli/       ← THE BINARY: argument parsing, TUI, wiring
+│   ├── exfil-remote/    ← SSH/SFTP RemoteFs for scanning other hosts
+│   ├── exfil-report/    ← render findings as text / json / markdown
+│   ├── exfil-view/      ← pluggable Viewer trait + Registry (TUI content)
+│   ├── exfil-mcp/       ← MCP server: expose the graph to AI agents
+│   ├── exfil-llm/       ← offline LLM / rule-based finding enrichment
+│   ├── exfil-script/    ← Rhai scripting for user triage rules
+│   └── exfil-cli/       ← THE BINARY: argument parsing, TUI, wiring
 │       └── src/
 │           ├── main.rs       ← subcommands (scan, tui, analyze, gc…)
 │           ├── tui.rs        ← the ratatui mutt-style terminal UI
@@ -104,7 +104,7 @@ exfill/
 Every crate follows the same internal shape — the Rust convention:
 
 ```text
-crates/exfill-<name>/
+crates/exfil-<name>/
 ├── Cargo.toml     ← this crate's own dependencies
 └── src/
     └── lib.rs     ← the crate root (or main.rs for the binary)
@@ -125,32 +125,32 @@ design honest.
 ```mermaid
 flowchart TD
     subgraph L7["① Binary"]
-        CLI[exfill-cli<br/>main · tui · keymap · progress]
+        CLI[exfil-cli<br/>main · tui · keymap · progress]
     end
     subgraph L6["② Remote"]
-        REMOTE[exfill-remote<br/>SSH/SFTP RemoteFs]
+        REMOTE[exfil-remote<br/>SSH/SFTP RemoteFs]
     end
     subgraph L5["③ Orchestration"]
-        ENGINE[exfill-engine<br/>parallel walk · run stages]
+        ENGINE[exfil-engine<br/>parallel walk · run stages]
     end
     subgraph L4["④ Capabilities"]
-        SCAN[exfill-scan<br/>all scanners]
-        SOURCE[exfill-source<br/>dataset fetch]
-        REPORT[exfill-report<br/>renderers]
-        MCP[exfill-mcp]
-        LLM[exfill-llm]
-        SCRIPT[exfill-script]
-        VIEW[exfill-view]
+        SCAN[exfil-scan<br/>all scanners]
+        SOURCE[exfil-source<br/>dataset fetch]
+        REPORT[exfil-report<br/>renderers]
+        MCP[exfil-mcp]
+        LLM[exfil-llm]
+        SCRIPT[exfil-script]
+        VIEW[exfil-view]
     end
     subgraph L3["⑤ Storage"]
-        STORE[exfill-store<br/>SurrealDB graph]
+        STORE[exfil-store<br/>SurrealDB graph]
     end
     subgraph L2["⑥ Primitives"]
-        TASK[exfill-task<br/>FileTask · Pipeline]
-        CONFIG[exfill-config]
+        TASK[exfil-task<br/>FileTask · Pipeline]
+        CONFIG[exfil-config]
     end
     subgraph L1["⑦ Foundation"]
-        CORE[exfill-core<br/>Match · Rule · FileMeta · Severity]
+        CORE[exfil-core<br/>Match · Rule · FileMeta · Severity]
     end
 
     CLI --> REMOTE & ENGINE & SCAN & SOURCE & MCP & LLM & SCRIPT & VIEW & CONFIG & STORE
@@ -170,24 +170,24 @@ flowchart TD
 
 | Layer | Crates | Responsibility |
 |-------|--------|----------------|
-| ① Binary | `exfill-cli` | The one executable. Parses arguments, owns the TUI, wires every other crate together. Depends on all of them. |
-| ② Remote | `exfill-remote` | Implements the engine's `RemoteFs` trait over SSH so a scan can target another host. |
-| ③ Orchestration | `exfill-engine` | Drives a whole scan: walk the tree, run the pipeline per file, persist results. The subject of [page 2](./engine.md). |
-| ④ Capabilities | `exfill-scan`, `-source`, `-report`, `-mcp`, `-llm`, `-script`, `-view` | The actual features. Each is independent and plugs into the store or the pipeline. |
-| ⑤ Storage | `exfill-store` | The findings graph — SurrealDB. Everything that produces or reads results goes through here. [Page 6](./store.md). |
-| ⑥ Primitives | `exfill-task`, `exfill-config` | The plugin-DAG machinery and config loading. `exfill-task` is [page 1](./pipeline.md). |
-| ⑦ Foundation | `exfill-core` | The shared types every layer speaks: `Match`, `Rule`, `Severity`, `FileMeta`, `Symbol`, `VirtualFile`. Depends on nothing. |
+| ① Binary | `exfil-cli` | The one executable. Parses arguments, owns the TUI, wires every other crate together. Depends on all of them. |
+| ② Remote | `exfil-remote` | Implements the engine's `RemoteFs` trait over SSH so a scan can target another host. |
+| ③ Orchestration | `exfil-engine` | Drives a whole scan: walk the tree, run the pipeline per file, persist results. The subject of [page 2](./engine.md). |
+| ④ Capabilities | `exfil-scan`, `-source`, `-report`, `-mcp`, `-llm`, `-script`, `-view` | The actual features. Each is independent and plugs into the store or the pipeline. |
+| ⑤ Storage | `exfil-store` | The findings graph — SurrealDB. Everything that produces or reads results goes through here. [Page 6](./store.md). |
+| ⑥ Primitives | `exfil-task`, `exfil-config` | The plugin-DAG machinery and config loading. `exfil-task` is [page 1](./pipeline.md). |
+| ⑦ Foundation | `exfil-core` | The shared types every layer speaks: `Match`, `Rule`, `Severity`, `FileMeta`, `Symbol`, `VirtualFile`. Depends on nothing. |
 
-Notice `exfill-core` sits alone at the bottom depending on nothing, and
-`exfill-cli` sits alone at the top depending on everything. That is the signature
+Notice `exfil-core` sits alone at the bottom depending on nothing, and
+`exfil-cli` sits alone at the top depending on everything. That is the signature
 of a clean layered design.
 
 ---
 
-## 4. The foundation vocabulary (`exfill-core`)
+## 4. The foundation vocabulary (`exfil-core`)
 
 Because every layer speaks these types, learn them first. They live in
-[`exfill-core/src/lib.rs`](../../crates/exfill-core/src/lib.rs):
+[`exfil-core/src/lib.rs`](../../crates/exfil-core/src/lib.rs):
 
 | Type | File:line | What it is |
 |------|-----------|------------|
@@ -210,8 +210,8 @@ everywhere:
   portable across platforms with different time representations
   (`lib.rs:169`).
 
-`exfill-core` also isolates the only OS-specific logic in
-[`platform.rs`](../../crates/exfill-core/src/platform.rs): `ownership()` has
+`exfil-core` also isolates the only OS-specific logic in
+[`platform.rs`](../../crates/exfil-core/src/platform.rs): `ownership()` has
 three definitions — one for Unix (`platform.rs:32`), one for Windows
 (`platform.rs:47`), one fallback (`platform.rs:53`) — and the compiler picks
 exactly one per target via `#[cfg(unix)]` / `#[cfg(windows)]`. See
@@ -221,7 +221,7 @@ exactly one per target via `#[cfg(unix)]` / `#[cfg(windows)]`. See
 
 ## 5. The end-to-end flow of one scan
 
-Putting the layers in motion, here is what happens when you run `exfill scan .`:
+Putting the layers in motion, here is what happens when you run `exfil scan .`:
 
 ```mermaid
 sequenceDiagram

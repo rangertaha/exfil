@@ -1,0 +1,18 @@
+[package]
+name = "exfil-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfil-core = { workspace = true }
+exfil-store = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

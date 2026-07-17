@@ -1,13 +1,13 @@
-# 1 · The Plugin DAG (`exfill-task`)
+# 1 · The Plugin DAG (`exfil-task`)
 
 ← [Overview](./overview.md) · Next: [The engine →](./engine.md)
 
-This is the single most important design idea in exfill. Once you understand it,
+This is the single most important design idea in exfil. Once you understand it,
 the engine, the scanners, and the AST analysis all fall into place — because they
 are all just *plugins on this one mechanism*.
 
-Source: [`crates/exfill-task/src/lib.rs`](../../crates/exfill-task/src/lib.rs)
-(442 lines, no external dependencies beyond `exfill-core` and serde).
+Source: [`crates/exfil-task/src/lib.rs`](../../crates/exfil-task/src/lib.rs)
+(442 lines, no external dependencies beyond `exfil-core` and serde).
 
 ---
 
@@ -25,7 +25,7 @@ the archive. If you hard-code the order, every new capability means editing the
 one big function that wires everything together — and getting the order right by
 hand.
 
-exfill inverts this. Each capability is a **plugin that declares what kind of
+exfil inverts this. Each capability is a **plugin that declares what kind of
 data it consumes and what kind it produces**, and a scheduler figures out the
 order. Adding taint analysis is just: "I consume an `Ast`, I produce `Matches`."
 Nobody edits a central sequence.
@@ -40,7 +40,7 @@ Nobody edits a central sequence.
 ## 2. The four data kinds
 
 Everything flowing through the pipeline is one of four `ArtifactKind`s
-([`lib.rs:34`](../../crates/exfill-task/src/lib.rs#L34)):
+([`lib.rs:34`](../../crates/exfil-task/src/lib.rs#L34)):
 
 ```rust
 pub enum ArtifactKind {
@@ -52,7 +52,7 @@ pub enum ArtifactKind {
 ```
 
 `ArtifactKind` is just the *tag* — a lightweight label. The actual data travels
-in the parallel `Artifact` enum ([`lib.rs:92`](../../crates/exfill-task/src/lib.rs#L92)),
+in the parallel `Artifact` enum ([`lib.rs:92`](../../crates/exfil-task/src/lib.rs#L92)),
 where each variant carries a real payload:
 
 ```rust
@@ -65,10 +65,10 @@ pub enum Artifact {
 ```
 
 > **Rust idiom — two enums, one tag / one payload.** `ArtifactKind` derives
-> `Copy + Hash + Eq` ([`lib.rs:33`](../../crates/exfill-task/src/lib.rs#L33)) so it
+> `Copy + Hash + Eq` ([`lib.rs:33`](../../crates/exfil-task/src/lib.rs#L33)) so it
 > can be a cheap `HashMap` key. `Artifact` holds `Vec<u8>` and other big data, so
 > it is *not* `Copy`. `Artifact::kind()`
-> ([`lib.rs:105`](../../crates/exfill-task/src/lib.rs#L105)) bridges the two by
+> ([`lib.rs:105`](../../crates/exfil-task/src/lib.rs#L105)) bridges the two by
 > matching the payload and returning its tag. See the
 > [primer on enums](./rust-primer.md#enums-with-data).
 
@@ -77,7 +77,7 @@ pub enum Artifact {
 ## 3. A plugin is a `FileTask`
 
 Every plugin implements the `FileTask` *trait*
-([`lib.rs:120`](../../crates/exfill-task/src/lib.rs#L120)) — Rust's word for an
+([`lib.rs:120`](../../crates/exfil-task/src/lib.rs#L120)) — Rust's word for an
 interface:
 
 ```rust
@@ -101,7 +101,7 @@ pub trait FileTask: Send + Sync {
   required, because the engine runs the pipeline on many threads at once.
 
 Here are the real plugins and their edges (from
-[`exfill-scan`](../../crates/exfill-scan/src/lib.rs)):
+[`exfil-scan`](../../crates/exfil-scan/src/lib.rs)):
 
 | Plugin | `needs()` | `provides()` | `applies()` to |
 |--------|-----------|--------------|----------------|
@@ -165,9 +165,9 @@ it; it is the output.
 ## 5. How the scheduler orders plugins — Kahn's algorithm
 
 You hand `Pipeline::new`
-([`lib.rs:175`](../../crates/exfill-task/src/lib.rs#L175)) a `Vec` of plugins **in
+([`lib.rs:175`](../../crates/exfil-task/src/lib.rs#L175)) a `Vec` of plugins **in
 any order**. It calls `toposort`
-([`lib.rs:228`](../../crates/exfill-task/src/lib.rs#L228)) to sort them so every
+([`lib.rs:228`](../../crates/exfil-task/src/lib.rs#L228)) to sort them so every
 plugin runs after its input exists. The algorithm is small enough to read whole:
 
 ```rust
@@ -201,10 +201,10 @@ Step by step:
 
 **If the loop ever can't find a ready task but tasks remain**, that is a cycle or
 a plugin whose input nothing produces — and it fails *here, at build time*
-([`lib.rs:236-242`](../../crates/exfill-task/src/lib.rs#L236)), never mid-scan.
+([`lib.rs:236-242`](../../crates/exfil-task/src/lib.rs#L236)), never mid-scan.
 
 The key guarantee, and there is a test for exactly this
-([`lib.rs:302`](../../crates/exfill-task/src/lib.rs#L302)): even if you register
+([`lib.rs:302`](../../crates/exfil-task/src/lib.rs#L302)): even if you register
 `taint` (`Ast → Matches`) *before* `ast` (`Bytes → Ast`), the sort still schedules
 `ast` first — because on the first pass only `Bytes`-consumers are "available,"
 so `taint` is skipped until `Ast` joins `available`.
@@ -220,9 +220,9 @@ flowchart TD
 
 Two failure modes it catches, each with a test:
 
-- **Missing producer** ([`lib.rs:319`](../../crates/exfill-task/src/lib.rs#L319)):
+- **Missing producer** ([`lib.rs:319`](../../crates/exfil-task/src/lib.rs#L319)):
   register only `taint` (needs `Ast`) with nothing producing `Ast` → `Err`.
-- **Cycle** ([`lib.rs:331`](../../crates/exfill-task/src/lib.rs#L331)): `a: Ast →
+- **Cycle** ([`lib.rs:331`](../../crates/exfil-task/src/lib.rs#L331)): `a: Ast →
   Matches` and `b: Matches → Ast` depend on each other → neither can start → `Err`.
 
 ---
@@ -230,7 +230,7 @@ Two failure modes it catches, each with a test:
 ## 6. Running the pipeline for one file
 
 Once sorted, `run_file`
-([`lib.rs:188`](../../crates/exfill-task/src/lib.rs#L188)) executes the plugins for
+([`lib.rs:188`](../../crates/exfil-task/src/lib.rs#L188)) executes the plugins for
 one file's bytes:
 
 ```mermaid
@@ -257,16 +257,16 @@ sequenceDiagram
 
 The rules that make this work (all in `run_file`):
 
-- **A map of what's available** ([`lib.rs:189`](../../crates/exfill-task/src/lib.rs#L189)),
+- **A map of what's available** ([`lib.rs:189`](../../crates/exfil-task/src/lib.rs#L189)),
   seeded with `Bytes`. Each task's output is inserted so later tasks can read it.
-- **`Matches` accumulate** ([`lib.rs:204`](../../crates/exfill-task/src/lib.rs#L204)):
+- **`Matches` accumulate** ([`lib.rs:204`](../../crates/exfil-task/src/lib.rs#L204)):
   every scanner *appends*, so regex findings and taint findings all collect
   together. Every other kind *overwrites* (keep the latest).
-- **The `Ast` is both surfaced and kept** ([`lib.rs:210-215`](../../crates/exfill-task/src/lib.rs#L210)):
+- **The `Ast` is both surfaced and kept** ([`lib.rs:210-215`](../../crates/exfil-task/src/lib.rs#L210)):
   it goes into `out.ast` (so the engine can persist it) *and* into `available` (so
   `DangerousCallScanner` and `TaintScanner` can consume it).
 - **Tasks that don't apply, or whose input never appeared, are silently skipped**
-  ([`lib.rs:194-199`](../../crates/exfill-task/src/lib.rs#L194)). Build-time
+  ([`lib.rs:194-199`](../../crates/exfil-task/src/lib.rs#L194)). Build-time
   validation guarantees a producer *exists in the pipeline*, not that it *ran for
   this file* — e.g. `AstExtractor` doesn't apply to a `.txt`, so `TaintScanner`
   finds no `Ast` and is skipped. No error; just nothing to do.
@@ -274,13 +274,13 @@ The rules that make this work (all in `run_file`):
 > **Subtle point worth knowing.** When `ArchiveExpander` produces `Files`, the
 > real entries go into `out.expanded` for the *engine* to re-process as separate
 > files; the value left in the in-pipeline `available` map is an *empty* `Files`
-> placeholder ([`lib.rs:205-209`](../../crates/exfill-task/src/lib.rs#L205)). So a
+> placeholder ([`lib.rs:205-209`](../../crates/exfil-task/src/lib.rs#L205)). So a
 > hypothetical `Files → …` task would run but receive nothing — archive contents
 > are scanned by the engine looping them back through `run_file`, not by chaining
 > inside one run. The [engine page](./engine.md#archives) shows that loop.
 
 The result is `FileArtifacts`
-([`lib.rs:160`](../../crates/exfill-task/src/lib.rs#L160)): `matches` (all
+([`lib.rs:160`](../../crates/exfil-task/src/lib.rs#L160)): `matches` (all
 findings), `expanded` (archive entries to re-process), and `ast` (to persist).
 
 ---
@@ -295,7 +295,7 @@ findings), `expanded` (archive entries to re-process), and `ast` (to persist).
 - **Work is shared.** The AST is parsed once and consumed by every `Ast`-based
   scanner.
 - **It is testable in isolation.** The tests
-  ([`lib.rs:252-441`](../../crates/exfill-task/src/lib.rs#L252)) use tiny fake
+  ([`lib.rs:252-441`](../../crates/exfil-task/src/lib.rs#L252)) use tiny fake
   tasks to prove ordering, cycle detection, and accumulation — no real files
   needed.
 

@@ -1,9 +1,9 @@
-# 9 · Rust Primer — Every Concept exfill Uses
+# 9 · Rust Primer — Every Concept exfil Uses
 
 ← [Integrations](./integrations.md) · [Back to index](./README.md)
 
 This page teaches the Rust concepts the rest of the guide relies on, each with the
-*exact code in exfill that uses it*. You don't need to read it top to bottom — the
+*exact code in exfil that uses it*. You don't need to read it top to bottom — the
 other pages link into specific sections. But if you're new to Rust, reading it once
 will make everything else click.
 
@@ -16,27 +16,27 @@ that is one of several shapes). There is no garbage collector and no null.
 
 ## Crates and modules {#crates-and-modules}
 
-A **crate** is the unit of compilation — a library or a binary. exfill is a
+A **crate** is the unit of compilation — a library or a binary. exfil is a
 *workspace* of 14 crates ([overview](./overview.md#1-why-a-cargo-workspace-of-many-crates)).
 Inside a crate, code is organized into **modules**. `lib.rs` is the crate root; a
 `pub mod ast;` line pulls in `ast.rs` as a submodule
-([`scan/lib.rs`](../../crates/exfill-scan/src/lib.rs)).
+([`scan/lib.rs`](../../crates/exfil-scan/src/lib.rs)).
 
 - `pub` makes an item visible outside its module/crate. No `pub` = private.
 - `pub(crate)` means visible within this crate only — e.g. `LangSpec`
-  ([`ast.rs:45`](../../crates/exfill-scan/src/ast.rs#L45)) is an internal type.
-- `use` brings a path into scope: `use exfill_core::Match;`.
+  ([`ast.rs:45`](../../crates/exfil-scan/src/ast.rs#L45)) is an internal type.
+- `use` brings a path into scope: `use exfil_core::Match;`.
 
 ---
 
 ## Structs and enums
 
-A **struct** groups named fields. `Match` ([`core/lib.rs:97`](../../crates/exfill-core/src/lib.rs#L97))
+A **struct** groups named fields. `Match` ([`core/lib.rs:97`](../../crates/exfil-core/src/lib.rs#L97))
 is one hit: `rule`, `path`, `line`, `col`, `snippet`, plus optional classification.
 
 ### Enums with no data (C-like) {#enums-c-like}
 
-`Severity` ([`core/lib.rs:29`](../../crates/exfill-core/src/lib.rs#L29)) is a closed
+`Severity` ([`core/lib.rs:29`](../../crates/exfil-core/src/lib.rs#L29)) is a closed
 set of named values:
 
 ```rust
@@ -49,9 +49,9 @@ compiler finds every place you forgot to update.
 
 ### Enums with data (sum types) {#enums-with-data}
 
-This is the one that surprises newcomers and is everywhere in exfill. An enum
+This is the one that surprises newcomers and is everywhere in exfil. An enum
 variant can *carry a value*, so the enum is "exactly one of these shapes, each with
-its own data." `Artifact` ([`task/lib.rs:92`](../../crates/exfill-task/src/lib.rs#L92)):
+its own data." `Artifact` ([`task/lib.rs:92`](../../crates/exfil-task/src/lib.rs#L92)):
 
 ```rust
 pub enum Artifact {
@@ -84,18 +84,18 @@ undo/redo falls right out of it.
 
 Rust has **no null**. A value that might be absent is an
 `Option<T>` — either `Some(value)` or `None`. `Match.severity` is
-`Option<Severity>` ([`core/lib.rs:111`](../../crates/exfill-core/src/lib.rs#L111)):
+`Option<Severity>` ([`core/lib.rs:111`](../../crates/exfil-core/src/lib.rs#L111)):
 a finding may or may not be classified.
 
 You can't accidentally use a missing value — the compiler forces you to handle
 `None`. Common tools:
 
 - **`?` on an `Option`** returns `None` from the function early if the value is
-  absent. In MCP, `id.as_ref()?;` ([`mcp/lib.rs:66`](../../crates/exfill-mcp/src/lib.rs#L66))
+  absent. In MCP, `id.as_ref()?;` ([`mcp/lib.rs:66`](../../crates/exfil-mcp/src/lib.rs#L66))
   drops a notification (no id → return `None`).
 - **`.or_else(|| ...)`** tries an alternative only if `None` — the AST
   `assignment_parts` chains field lookups this way
-  ([`ast.rs:182`](../../crates/exfill-scan/src/ast.rs#L182)).
+  ([`ast.rs:182`](../../crates/exfil-scan/src/ast.rs#L182)).
 - **`.map(...)`, `.and_then(...)`, `.unwrap_or(...)`** transform or supply a default.
 
 ---
@@ -103,7 +103,7 @@ You can't accidentally use a missing value — the compiler forces you to handle
 ## `Result` and error handling {#result-and-error-handling}
 
 A fallible operation returns `Result<T, E>` — either `Ok(value)` or `Err(error)`.
-exfill uses the [`anyhow`](https://docs.rs/anyhow) crate so every error is one type
+exfil uses the [`anyhow`](https://docs.rs/anyhow) crate so every error is one type
 (`anyhow::Error`) and functions return `Result<T>`.
 
 The **`?` operator** is the workhorse: on `Ok`, it unwraps the value; on `Err`, it
@@ -115,13 +115,13 @@ let src = std::fs::read_to_string(&path)
 ```
 
 reads a file, and if it fails, returns an error *annotated* with which file
-([`config/lib.rs:98`](../../crates/exfill-config/src/lib.rs#L98)). `with_context`
+([`config/lib.rs:98`](../../crates/exfil-config/src/lib.rs#L98)). `with_context`
 adds a human message; `bail!("...")` returns an error immediately. This is how the
 whole codebase propagates failure without exceptions.
 
 > `.ok()?` converts a `Result` into an `Option` and short-circuits — the Rhai
 > enricher uses it so a script *runtime* error becomes "no note" instead of a crash
-> ([`script/lib.rs:89`](../../crates/exfill-script/src/lib.rs#L89)).
+> ([`script/lib.rs:89`](../../crates/exfil-script/src/lib.rs#L89)).
 
 ---
 
@@ -129,17 +129,17 @@ whole codebase propagates failure without exceptions.
 
 A **trait** is an interface: a set of methods a type promises to implement. This is
 how Rust does polymorphism (there's no class inheritance). `FileTask`
-([`task/lib.rs:120`](../../crates/exfill-task/src/lib.rs#L120)) is the plugin
+([`task/lib.rs:120`](../../crates/exfil-task/src/lib.rs#L120)) is the plugin
 interface — anything implementing `name`/`needs`/`provides`/`run` *is* a plugin.
 
-exfill is built almost entirely on a handful of traits: `FileTask`, `Scanner`,
+exfil is built almost entirely on a handful of traits: `FileTask`, `Scanner`,
 `Reporter`, `Enricher`, `Viewer`, `Source`, `RemoteFs`, `RunStage`. Define a trait,
 implement it, register it — that's the extension pattern everywhere.
 
 ### Trait default methods {#trait-default-methods}
 
 A trait can supply a default so implementors only override what differs. `FileTask::applies`
-defaults to `true` ([`task/lib.rs:134`](../../crates/exfill-task/src/lib.rs#L134)):
+defaults to `true` ([`task/lib.rs:134`](../../crates/exfil-task/src/lib.rs#L134)):
 
 ```rust
 fn applies(&self, _path: &Path) -> bool { true }
@@ -150,7 +150,7 @@ run only on source files.
 
 ### `Send + Sync` bounds
 
-`pub trait FileTask: Send + Sync` ([`task/lib.rs:120`](../../crates/exfill-task/src/lib.rs#L120))
+`pub trait FileTask: Send + Sync` ([`task/lib.rs:120`](../../crates/exfil-task/src/lib.rs#L120))
 requires every plugin to be safe to *send* between threads (`Send`) and *share*
 between threads (`Sync`). The compiler **proves** this — it's why the
 [engine](./engine.md#4-the-two-worlds-concurrency-model) can run plugins on many
@@ -162,7 +162,7 @@ threads without data races.
 
 When you need a *list of different types that share a trait*, you use a **trait
 object**: `Box<dyn FileTask>`. The `Pipeline` holds
-`Vec<Box<dyn FileTask>>` ([`task/lib.rs:148`](../../crates/exfill-task/src/lib.rs#L148))
+`Vec<Box<dyn FileTask>>` ([`task/lib.rs:148`](../../crates/exfil-task/src/lib.rs#L148))
 — a heterogeneous list of different plugin types, each behind the `FileTask`
 interface.
 
@@ -172,7 +172,7 @@ interface.
   sizes and a `Vec` needs uniform-sized elements.
 
 The same pattern holds every plugin list: `Vec<Box<dyn Viewer>>`
-([view](./cli-tui.md#6-pluggable-viewers-exfill-view)), `Vec<Box<dyn Source>>`,
+([view](./cli-tui.md#6-pluggable-viewers-exfil-view)), `Vec<Box<dyn Source>>`,
 `&[Box<dyn RunStage>]`. Trait objects are how a plugin architecture works in Rust.
 
 ---
@@ -181,13 +181,13 @@ The same pattern holds every plugin list: `Vec<Box<dyn Viewer>>`
 
 Where trait objects choose a type at *runtime*, **generics** choose at *compile
 time* and get specialized code. `ScanTask<S: Scanner>`
-([`scan/lib.rs:66`](../../crates/exfill-scan/src/lib.rs#L66)) works for any `S` that
+([`scan/lib.rs:66`](../../crates/exfil-scan/src/lib.rs#L66)) works for any `S` that
 implements `Scanner`.
 
 The store uses generics to steer the database: `res.take(0)?` deserializes rows
 into whatever type you annotate — `let rows: Vec<FileStat> = res.take(0)?;`
-([`store/lib.rs:139`](../../crates/exfill-store/src/lib.rs#L139)). The config's
-`plugin::<T>` ([`config/lib.rs:115`](../../crates/exfill-config/src/lib.rs#L115))
+([`store/lib.rs:139`](../../crates/exfil-store/src/lib.rs#L139)). The config's
+`plugin::<T>` ([`config/lib.rs:115`](../../crates/exfil-config/src/lib.rs#L115))
 decodes a TOML table into any type you ask for.
 
 ---
@@ -207,8 +207,8 @@ This is why you see `&` everywhere.
 
 **Lifetimes** name how long a borrow is valid. Usually inferred; occasionally
 written as `'a` or the anonymous `'_`, as in `Formatter<'_>`
-([`task/lib.rs:152`](../../crates/exfill-task/src/lib.rs#L152)). `&'static`
-([`ast.rs:47`](../../crates/exfill-scan/src/ast.rs#L47)) means "lives for the whole
+([`task/lib.rs:152`](../../crates/exfil-task/src/lib.rs#L152)). `&'static`
+([`ast.rs:47`](../../crates/exfil-scan/src/ast.rs#L47)) means "lives for the whole
 program" — the `LangSpec` table is `&'static` because it's baked into the binary.
 
 ### `move` closures {#move-closures}
@@ -216,7 +216,7 @@ program" — the `LangSpec` table is `&'static` because it's baked into the bina
 A **closure** is an anonymous function that can capture variables. `move` transfers
 *ownership* of the captures into the closure — essential for threads, since a thread
 may outlive the code that spawned it. The engine's per-thread worker is
-`Box::new(move |entry| ...)` ([`engine/lib.rs:170`](../../crates/exfill-engine/src/lib.rs#L170)):
+`Box::new(move |entry| ...)` ([`engine/lib.rs:170`](../../crates/exfil-engine/src/lib.rs#L170)):
 each thread owns its cloned `tx`/`host`/`index`, so no thread borrows another's
 locals — the compiler enforces it.
 
@@ -224,19 +224,19 @@ locals — the compiler enforces it.
 
 ## Concurrency: threads, `Arc`, channels {#concurrency}
 
-exfill mixes two concurrency models on purpose
+exfil mixes two concurrency models on purpose
 ([engine](./engine.md#4-the-two-worlds-concurrency-model)):
 
 - **Threads** for CPU-bound file work (the parallel walk).
 - **`Arc<T>`** — an *atomically reference-counted* shared pointer — lets many
   threads share one read-only value. The stat index is `Arc<HashMap<...>>`
-  ([`engine/lib.rs:152`](../../crates/exfill-engine/src/lib.rs#L152)); cloning an
+  ([`engine/lib.rs:152`](../../crates/exfil-engine/src/lib.rs#L152)); cloning an
   `Arc` just bumps a counter, it doesn't copy the map.
 - **`Arc<Mutex<T>>`** when the shared value must be *mutated* — the report sink is
-  `Arc<Mutex<dyn Write + Send>>` ([`run.rs:121`](../../crates/exfill-engine/src/run.rs#L121)).
+  `Arc<Mutex<dyn Write + Send>>` ([`run.rs:121`](../../crates/exfil-engine/src/run.rs#L121)).
 - **Channels (`mpsc`)** pass values between threads. Worker threads send
   `WalkOutcome`s; the main task receives them
-  ([`engine/lib.rs:161`](../../crates/exfill-engine/src/lib.rs#L161)). Dropping the
+  ([`engine/lib.rs:161`](../../crates/exfil-engine/src/lib.rs#L161)). Dropping the
   last sender closes the channel — that's the loop's natural end.
 
 ---
@@ -245,7 +245,7 @@ exfill mixes two concurrency models on purpose
 
 `async fn` marks a function that can *pause* (at `.await` points) without blocking a
 thread — ideal for I/O like database and network calls. The store and MCP are async;
-`scan()` is `async` ([`engine/lib.rs:139`](../../crates/exfill-engine/src/lib.rs#L139)).
+`scan()` is `async` ([`engine/lib.rs:139`](../../crates/exfil-engine/src/lib.rs#L139)).
 The [tokio](https://tokio.rs) runtime drives these futures.
 
 ### `#[async_trait]` {#async-traits}
@@ -253,7 +253,7 @@ The [tokio](https://tokio.rs) runtime drives these futures.
 A plain `async fn` inside a trait can't yet be used behind `dyn` (a technical "object
 safety" limit). The `#[async_trait]` macro rewrites each async trait method to
 return a boxed future, which *is* object-safe — so `Box<dyn RunStage>` works
-([`run.rs:41`](../../crates/exfill-engine/src/run.rs#L41)). You'll see it on
+([`run.rs:41`](../../crates/exfil-engine/src/run.rs#L41)). You'll see it on
 `RunStage`, `RemoteFs`, and `Source`.
 
 ### Bridging async and blocking
@@ -268,7 +268,7 @@ a tokio `Handle`: `handle.block_on(fut)` runs one async op to completion,
 ## Derive macros {#derive-macros}
 
 `#[derive(...)]` auto-generates trait implementations at compile time — no
-reflection, no runtime cost. Common ones in exfill:
+reflection, no runtime cost. Common ones in exfil:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,10 +279,10 @@ pub enum Severity { ... }
 - `Clone` / `Copy` → duplicable (`Copy` for cheap, bitwise-copyable types).
 - `PartialEq` / `Eq` → comparable with `==`.
 - `Hash` → usable as a `HashMap`/`HashSet` key (that's why `ArtifactKind` derives it
-  — [`task/lib.rs:33`](../../crates/exfill-task/src/lib.rs#L33)).
+  — [`task/lib.rs:33`](../../crates/exfil-task/src/lib.rs#L33)).
 - `Serialize` / `Deserialize` → convertible to/from JSON/TOML via
   [serde](https://serde.rs). Attributes like `#[serde(default)]` and
-  `#[serde(rename = "ref")]` ([`config/lib.rs:57`](../../crates/exfill-config/src/lib.rs#L57),
+  `#[serde(rename = "ref")]` ([`config/lib.rs:57`](../../crates/exfil-config/src/lib.rs#L57),
   because `ref` is a keyword) tune the mapping.
 
 ---
@@ -290,7 +290,7 @@ pub enum Severity { ... }
 ## The newtype pattern {#newtype-pattern}
 
 Wrapping a type in a one-field struct to add behavior without touching the original.
-`ScanTask<S: Scanner>(pub S)` ([`scan/lib.rs:66`](../../crates/exfill-scan/src/lib.rs#L66))
+`ScanTask<S: Scanner>(pub S)` ([`scan/lib.rs:66`](../../crates/exfil-scan/src/lib.rs#L66))
 wraps any `Scanner` to give it a `FileTask` impl — adapting one interface to another
 cleanly.
 
@@ -300,7 +300,7 @@ cleanly.
 
 `#[cfg(...)]` compiles code only for certain targets. `ownership()` has three
 definitions — `#[cfg(unix)]`, `#[cfg(windows)]`, and a fallback
-([`platform.rs:31`](../../crates/exfill-core/src/platform.rs#L31)) — and exactly one
+([`platform.rs:31`](../../crates/exfil-core/src/platform.rs#L31)) — and exactly one
 is compiled per platform. `#[cfg(test)]` marks test-only code, so tests don't ship
 in the release binary. `#[tokio::test]` and `#[cfg(unix)]` gate individual tests.
 

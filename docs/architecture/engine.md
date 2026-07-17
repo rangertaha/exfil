@@ -1,8 +1,8 @@
-# 2 · The Engine (`exfill-engine`)
+# 2 · The Engine (`exfil-engine`)
 
 ← [The plugin DAG](./pipeline.md) · Next: [The AST scanner →](./ast.md)
 
-The engine is the heart of exfill. Everything else is a plugin or a data type;
+The engine is the heart of exfil. Everything else is a plugin or a data type;
 the engine is the thing that **puts them in motion**: it walks the filesystem on
 many threads, reads and hashes each file once, drives the [plugin DAG](./pipeline.md)
 over its bytes, and streams the results into the [graph store](./store.md).
@@ -10,9 +10,9 @@ over its bytes, and streams the results into the [graph store](./store.md).
 This page is deliberately diagram-heavy. Read the diagrams first, then the prose.
 
 Source:
-[`crates/exfill-engine/src/lib.rs`](../../crates/exfill-engine/src/lib.rs) (the
+[`crates/exfil-engine/src/lib.rs`](../../crates/exfil-engine/src/lib.rs) (the
 scan machinery) and
-[`crates/exfill-engine/src/run.rs`](../../crates/exfill-engine/src/run.rs) (the
+[`crates/exfil-engine/src/run.rs`](../../crates/exfil-engine/src/run.rs) (the
 coarse fetch → scan → report stages).
 
 ---
@@ -53,7 +53,7 @@ We cover the run level briefly, then spend most of the page on the file level.
 
 ## 2. Run level: fetch → scan → report
 
-A `RunStage` ([`run.rs:41`](../../crates/exfill-engine/src/run.rs#L41)) is one
+A `RunStage` ([`run.rs:41`](../../crates/exfil-engine/src/run.rs#L41)) is one
 phase of a run:
 
 ```rust
@@ -64,7 +64,7 @@ pub trait RunStage: Send + Sync {
 }
 ```
 
-`run_stages` ([`run.rs:52`](../../crates/exfill-engine/src/run.rs#L52)) executes
+`run_stages` ([`run.rs:52`](../../crates/exfil-engine/src/run.rs#L52)) executes
 them in order and stops at the first error, tagging it with the stage name:
 
 ```mermaid
@@ -91,11 +91,11 @@ The three stages:
 
 | Stage | File:line | Does |
 |-------|-----------|------|
-| `FetchStage` | [`run.rs:67`](../../crates/exfill-engine/src/run.rs#L67) | Refresh datasets/rules. A **declared no-op today** — the shape is in place for when sources land, so nothing else has to be reshaped later. |
-| `ScanStage` | [`run.rs:84`](../../crates/exfill-engine/src/run.rs#L84) | Calls `scan(root, pipeline, store, skip_dir, events)`. |
-| `ReportStage` | [`run.rs:114`](../../crates/exfill-engine/src/run.rs#L114) | Reads findings via `gather_analysis`, picks a `reporter_for(format)`, renders into a shared sink. |
+| `FetchStage` | [`run.rs:67`](../../crates/exfil-engine/src/run.rs#L67) | Refresh datasets/rules. A **declared no-op today** — the shape is in place for when sources land, so nothing else has to be reshaped later. |
+| `ScanStage` | [`run.rs:84`](../../crates/exfil-engine/src/run.rs#L84) | Calls `scan(root, pipeline, store, skip_dir, events)`. |
+| `ReportStage` | [`run.rs:114`](../../crates/exfil-engine/src/run.rs#L114) | Reads findings via `gather_analysis`, picks a `reporter_for(format)`, renders into a shared sink. |
 
-They share `RunCtx` ([`run.rs:32`](../../crates/exfill-engine/src/run.rs#L32)),
+They share `RunCtx` ([`run.rs:32`](../../crates/exfil-engine/src/run.rs#L32)),
 which holds an `Arc<Store>` (a cheap-to-clone, thread-safe graph handle) and an
 optional progress-event sender. The scan stage *writes* findings to the graph;
 the report stage *reads them back*. That indirection — never a direct call
@@ -104,14 +104,14 @@ between stages — is what lets you add or reorder stages freely.
 > **Rust idiom — `#[async_trait]`.** A plain `async fn` inside a trait can't yet
 > be used behind `dyn` (object safety). The `#[async_trait]` macro rewrites each
 > `async fn` to return a boxed future, which *is* object-safe, so
-> `Box<dyn RunStage>` works ([`run.rs:10-15`](../../crates/exfill-engine/src/run.rs#L10)).
+> `Box<dyn RunStage>` works ([`run.rs:10-15`](../../crates/exfil-engine/src/run.rs#L10)).
 > See the [primer](./rust-primer.md#async-traits).
 
 ---
 
 ## 3. File level: the anatomy of `scan()`
 
-`scan()` ([`lib.rs:139`](../../crates/exfill-engine/src/lib.rs#L139)) is the big
+`scan()` ([`lib.rs:139`](../../crates/exfil-engine/src/lib.rs#L139)) is the big
 one. Its signature:
 
 ```rust
@@ -154,17 +154,17 @@ flowchart TD
 
 The five phases:
 
-1. **Pre-count** ([`lib.rs:146`](../../crates/exfill-engine/src/lib.rs#L146)) — if
+1. **Pre-count** ([`lib.rs:146`](../../crates/exfil-engine/src/lib.rs#L146)) — if
    a progress channel is attached, do a cheap stat-only walk to count files and
    send `ScanEvent::Total(n)` first, so a progress bar knows the denominator.
-2. **Load the stat index** ([`lib.rs:152`](../../crates/exfill-engine/src/lib.rs#L152))
+2. **Load the stat index** ([`lib.rs:152`](../../crates/exfil-engine/src/lib.rs#L152))
    — the incremental cache from the last scan, wrapped in `Arc` so every worker
    thread shares one read-only copy.
-3. **Parallel walk** ([`lib.rs:164`](../../crates/exfill-engine/src/lib.rs#L164))
+3. **Parallel walk** ([`lib.rs:164`](../../crates/exfil-engine/src/lib.rs#L164))
    — worker threads each `process_file` and send a `WalkOutcome` over a channel.
-4. **Drain and persist** ([`lib.rs:211`](../../crates/exfill-engine/src/lib.rs#L211))
+4. **Drain and persist** ([`lib.rs:211`](../../crates/exfil-engine/src/lib.rs#L211))
    — this async task reads outcomes off the channel and writes to the store.
-5. **Commit** ([`lib.rs:245`](../../crates/exfill-engine/src/lib.rs#L245)) — write
+5. **Commit** ([`lib.rs:245`](../../crates/exfil-engine/src/lib.rs#L245)) — write
    the `scan` record linking every file this scan saw.
 
 ---
@@ -205,16 +205,16 @@ flowchart LR
 - **The database is async.** SurrealDB writes are `.await`ed by the single
   `scan()` task after workers produce results. I/O-bound DB work belongs on the
   async runtime.
-- **They meet at an `mpsc` channel** ([`lib.rs:161`](../../crates/exfill-engine/src/lib.rs#L161)):
+- **They meet at an `mpsc` channel** ([`lib.rs:161`](../../crates/exfil-engine/src/lib.rs#L161)):
   *multi-producer* (every worker gets a clone of the sender `tx`),
   *single-consumer* (only `scan()` reads `rx`).
 
 There is an elegant detail in how the loop *ends*. There is no "I'm done" signal.
 Each worker holds a clone of `tx`; the original is explicitly dropped with
-`drop(tx)` ([`lib.rs:204`](../../crates/exfill-engine/src/lib.rs#L204)). When the
+`drop(tx)` ([`lib.rs:204`](../../crates/exfil-engine/src/lib.rs#L204)). When the
 last worker finishes and its clone drops, the channel has no senders left, so
 `rx.recv()` returns `Err` and the `while let Ok(res) = rx.recv()` drain loop
-([`lib.rs:211`](../../crates/exfill-engine/src/lib.rs#L211)) naturally exits.
+([`lib.rs:211`](../../crates/exfil-engine/src/lib.rs#L211)) naturally exits.
 
 ```mermaid
 flowchart LR
@@ -225,7 +225,7 @@ flowchart LR
 ```
 
 > **Rust idiom — `move` closures own their captures.** The per-thread closure is
-> `Box::new(move |entry| ...)` ([`lib.rs:170`](../../crates/exfill-engine/src/lib.rs#L170)).
+> `Box::new(move |entry| ...)` ([`lib.rs:170`](../../crates/exfil-engine/src/lib.rs#L170)).
 > `move` transfers ownership of the cloned `tx`/`host`/`index` into the closure,
 > so each thread owns its handles outright — the compiler forbids one thread from
 > borrowing another's locals. See the [primer](./rust-primer.md#move-closures).
@@ -235,7 +235,7 @@ flowchart LR
 ## 5. Processing one file: `process_file`
 
 Each worker calls `process_file`
-([`lib.rs:379`](../../crates/exfill-engine/src/lib.rs#L379)). This is where the
+([`lib.rs:379`](../../crates/exfil-engine/src/lib.rs#L379)). This is where the
 **incremental fast-path** lives — the reason a rescan is fast.
 
 ```mermaid
@@ -255,7 +255,7 @@ flowchart TD
     class FAST fast
 ```
 
-The fast-path condition ([`lib.rs:395`](../../crates/exfill-engine/src/lib.rs#L395)):
+The fast-path condition ([`lib.rs:395`](../../crates/exfil-engine/src/lib.rs#L395)):
 
 ```rust
 if let Some(prev) = index.get(&abs.display().to_string()) {
@@ -272,7 +272,7 @@ as-is, and the stored hash keeps it in this scan's file list. This is what makes
 rescanning a large tree cheap: only changed files pay the read/hash/scan cost.
 
 The three possible outcomes of a file are the `WalkOutcome` enum
-([`lib.rs:77`](../../crates/exfill-engine/src/lib.rs#L77)):
+([`lib.rs:77`](../../crates/exfil-engine/src/lib.rs#L77)):
 
 | Outcome | Meaning | Effect on `Summary` |
 |---------|---------|---------------------|
@@ -282,15 +282,15 @@ The three possible outcomes of a file are the `WalkOutcome` enum
 
 That last row matters operationally: an unreadable file (permission denied,
 deleted mid-scan) **counts but never aborts the scan**
-([`lib.rs:184-187`](../../crates/exfill-engine/src/lib.rs#L184)). There is a Unix
+([`lib.rs:184-187`](../../crates/exfil-engine/src/lib.rs#L184)). There is a Unix
 test that sets a file to `0o000` and asserts the scan still completes with
-`errors == 1` ([`lib.rs:614`](../../crates/exfill-engine/src/lib.rs#L614)).
+`errors == 1` ([`lib.rs:614`](../../crates/exfil-engine/src/lib.rs#L614)).
 
 ---
 
 ## 6. What actually gets scanned: `run_pipeline`
 
-`run_pipeline` ([`lib.rs:445`](../../crates/exfill-engine/src/lib.rs#L445)) decides
+`run_pipeline` ([`lib.rs:445`](../../crates/exfil-engine/src/lib.rs#L445)) decides
 *how* a file's bytes are handled before handing them to the [plugin DAG](./pipeline.md):
 
 ```mermaid
@@ -307,11 +307,11 @@ flowchart TD
 
 Two guards, each preventing garbage findings:
 
-- **Archives are containers, not content** ([`lib.rs:449-462`](../../crates/exfill-engine/src/lib.rs#L449)).
+- **Archives are containers, not content** ([`lib.rs:449-462`](../../crates/exfil-engine/src/lib.rs#L449)).
   A `.zip`'s raw compressed bytes would match rules by coincidence (compression
   looks random). So an archive is *expanded* but never content-scanned; only its
   inner files are scanned, individually, after expansion.
-- **Binary files are recorded but not scanned** ([`lib.rs:464-468`](../../crates/exfill-engine/src/lib.rs#L464)).
+- **Binary files are recorded but not scanned** ([`lib.rs:464-468`](../../crates/exfil-engine/src/lib.rs#L464)).
   A NUL byte in the first 8 KB (`BINARY_SNIFF_LEN`) marks a file as binary. It
   still gets a file record (full filesystem coverage) but text scanners would
   produce noise on it, so they are skipped. (Hash-based scanners like IOC/ClamAV
@@ -322,7 +322,7 @@ Two guards, each preventing garbage findings:
 ## 7. Archives: recursive expansion {#archives}
 
 When `run_pipeline` expands an archive, `expand_into`
-([`lib.rs:481`](../../crates/exfill-engine/src/lib.rs#L481)) turns each entry into
+([`lib.rs:481`](../../crates/exfil-engine/src/lib.rs#L481)) turns each entry into
 its own `FileResult`, scans it, and **recurses into nested archives** — a zip
 inside a tar inside a zip:
 
@@ -344,23 +344,23 @@ Key facts:
   *zip-slip*: entry names like `../../etc/passwd` become display paths, never
   filesystem writes. See [scanners](./scanners.md#archive-safety).)
 - Every expanded file records a `contained_in` edge to its container's hash
-  ([`lib.rs:513`](../../crates/exfill-engine/src/lib.rs#L513)), so the graph knows
+  ([`lib.rs:513`](../../crates/exfil-engine/src/lib.rs#L513)), so the graph knows
   which archive a finding came from.
 - Recursion stops at `MAX_EXPAND_DEPTH = 8`
-  ([`lib.rs:47`](../../crates/exfill-engine/src/lib.rs#L47), checked at
-  [`lib.rs:489`](../../crates/exfill-engine/src/lib.rs#L489)) — a bound against
+  ([`lib.rs:47`](../../crates/exfil-engine/src/lib.rs#L47), checked at
+  [`lib.rs:489`](../../crates/exfil-engine/src/lib.rs#L489)) — a bound against
   hostile zip-in-zip-in-zip "bombs."
 
 There is a test that zips a secret with no copy on disk, scans, and asserts both
 the archive and its inner file are recorded and linked
-([`lib.rs:858`](../../crates/exfill-engine/src/lib.rs#L858)).
+([`lib.rs:858`](../../crates/exfil-engine/src/lib.rs#L858)).
 
 ---
 
 ## 8. Persistence: replace, don't append
 
 Back in the drain loop, for each scanned file the engine writes
-([`lib.rs:213-234`](../../crates/exfill-engine/src/lib.rs#L213)):
+([`lib.rs:213-234`](../../crates/exfil-engine/src/lib.rs#L213)):
 
 ```mermaid
 flowchart LR
@@ -376,18 +376,18 @@ flowchart LR
 ```
 
 The critical line is `clear_findings` **before** `add_finding`
-([`lib.rs:220`](../../crates/exfill-engine/src/lib.rs#L220)): findings are
+([`lib.rs:220`](../../crates/exfil-engine/src/lib.rs#L220)): findings are
 **replaced, not appended**. Rescanning the same content removes the previous
 scan's findings for that file hash before inserting fresh ones — so a rescan can
 never *duplicate* findings. The engine's integration test rescans a tree three
 times and asserts the finding count stays correct
-([`lib.rs:524`](../../crates/exfill-engine/src/lib.rs#L524)).
+([`lib.rs:524`](../../crates/exfil-engine/src/lib.rs#L524)).
 
 Because files are **content-addressed** (the record id *is* the blake3 hash),
 editing a file produces a *new* record at the new hash; the old content's record
 lingers, orphaned, until [garbage collection](./store.md#gc) prunes it.
 
-Finally, `commit_scan` ([`lib.rs:245`](../../crates/exfill-engine/src/lib.rs#L245))
+Finally, `commit_scan` ([`lib.rs:245`](../../crates/exfil-engine/src/lib.rs#L245))
 writes a `scan` record with an `includes` edge to every file hash this scan saw —
 whether freshly scanned or reused via the fast-path. That is what ties a scan
 together and lets `gc` later keep "the latest scan and everything it reaches."
@@ -397,7 +397,7 @@ together and lets `gc` later keep "the latest scan and everything it reaches."
 ## 9. Live progress: the `ScanEvent` channel
 
 The engine **never prints**. It reports through an optional channel of
-`ScanEvent`s ([`lib.rs:92`](../../crates/exfill-engine/src/lib.rs#L92)) and lets
+`ScanEvent`s ([`lib.rs:92`](../../crates/exfil-engine/src/lib.rs#L92)) and lets
 the caller decide how to render — a plain line printer, a
 [ratatui gauge](./cli-tui.md#progress), or nothing at all:
 
@@ -424,7 +424,7 @@ and test paths run silently.
 ## 10. Remote scans: `scan_remote`
 
 Scanning another host over SSH reuses *everything* above except the walk. The
-engine defines a `RemoteFs` trait ([`lib.rs:264`](../../crates/exfill-engine/src/lib.rs#L264)):
+engine defines a `RemoteFs` trait ([`lib.rs:264`](../../crates/exfil-engine/src/lib.rs#L264)):
 
 ```rust
 #[async_trait]
@@ -435,7 +435,7 @@ pub trait RemoteFs: Send + Sync {
 }
 ```
 
-`scan_remote` ([`lib.rs:280`](../../crates/exfill-engine/src/lib.rs#L280)) lists
+`scan_remote` ([`lib.rs:280`](../../crates/exfil-engine/src/lib.rs#L280)) lists
 files, reads each one's bytes, and runs the **exact same** `run_pipeline` +
 `expand_into` + persistence. The scanners never know the bytes came over a
 network:
@@ -462,16 +462,16 @@ Differences from a local scan, by design:
 - **Files are tagged with the remote host** (`abs = "{host}:{path}"`), so findings
   say where they came from.
 
-The real implementation is [`SshFs`](./integrations.md#remote) in `exfill-remote`
+The real implementation is [`SshFs`](./integrations.md#remote) in `exfil-remote`
 (pure-Rust `russh`, no C libssh). Tests use an in-memory `MemoryFs`
-([`lib.rs:648`](../../crates/exfill-engine/src/lib.rs#L648)) so remote logic is
+([`lib.rs:648`](../../crates/exfil-engine/src/lib.rs#L648)) so remote logic is
 verified without a network — the trait is the seam that makes that possible.
 
 ---
 
 ## 11. The `Summary` you get back
 
-Every scan returns a `Summary` ([`lib.rs:50`](../../crates/exfill-engine/src/lib.rs#L50)):
+Every scan returns a `Summary` ([`lib.rs:50`](../../crates/exfil-engine/src/lib.rs#L50)):
 
 | Field | Meaning |
 |-------|---------|
@@ -491,7 +491,7 @@ the store from before.
 
 ```mermaid
 flowchart TD
-    CLI["exfill scan ."] --> STAGE["ScanStage.run"]
+    CLI["exfil scan ."] --> STAGE["ScanStage.run"]
     STAGE --> SCAN["scan(root, pipeline, store)"]
     SCAN --> COUNT["pre-count → Total"]
     SCAN --> IDX["stat index (Arc)"]

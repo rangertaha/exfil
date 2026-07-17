@@ -1,0 +1,14 @@
+[package]
+name = "exfil-report"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfil-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

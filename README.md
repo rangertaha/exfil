@@ -1,12 +1,12 @@
-# exfill
+# exfil
 
 > **Ex**tra **Fi**le **L**ang **L**ookup — an offline, cross-platform,
 > plugin-based filesystem analysis and SAST engine.
 
-[![CI](https://github.com/Rangertaha/exfill/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfill/actions/workflows/ci.yml)
+[![CI](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-exfill walks a directory tree in parallel, scans every file against security
+exfil walks a directory tree in parallel, scans every file against security
 rulesets (leaked credentials, dangerous patterns), and stores the results as a
 queryable **graph** — files → findings → rules — in an embedded, pure-Rust
 database ([SurrealDB](https://surrealdb.com) on SurrealKV). Everything runs
@@ -20,7 +20,7 @@ machine.
 - **Graph storage with provenance** — findings are records linked by real
   graph edges (`finding → in_file → file`, `scan → includes → file`), addressed
   by content hash for dedup, queryable with SurrealQL.
-- **Mutt-style TUI** — `exfill tui` is a live workbench: run scans (with a
+- **Mutt-style TUI** — `exfil tui` is a live workbench: run scans (with a
   progress gauge and findings streaming in), browse the index, open a finding
   in the pager with its file record, `/` to limit, `:` for commands.
 - **Supply-chain compromise detection** — dependency manifests (`package.json`,
@@ -38,7 +38,7 @@ machine.
   they consume/produce (`Bytes → Ast → Matches`, `Bytes → Files`); a
   topological scheduler wires them by dependency, so new analyzers slot in
   without touching the engine. Run-level stages sequence fetch → scan → report.
-- **Multiple report formats** — `exfill analyze --format text|json|markdown`
+- **Multiple report formats** — `exfil analyze --format text|json|markdown`
   renders the findings graph with severity tallies and a risk score.
 - **AST-aware analysis** — Python and JavaScript are parsed with tree-sitter and
   checked for dangerous calls (`eval`, `os.system`, `child_process.exec`,
@@ -48,8 +48,8 @@ machine.
   `process.argv`, env) through variable assignments into command/code-injection
   sinks, so `os.system(request.args['cmd'])` is flagged while `os.system('ls')`
   is not — the attacker-controlled flow, not just the dangerous call.
-- **Datasets & IOC feeds** — `exfill pull <ref>` downloads rule/IOC datasets
-  (builtin, local file, or `https://`) into a catalog; `exfill datasets`
+- **Datasets & IOC feeds** — `exfil pull <ref>` downloads rule/IOC datasets
+  (builtin, local file, or `https://`) into a catalog; `exfil datasets`
   add/show/rm/list manages them. IOCs ride the same pipeline: content
   indicators are regex rules, file-hash indicators (`sha256:…`) match digests.
 - **Malware signatures** — a pure-Rust ClamAV-signature scanner matches files
@@ -57,7 +57,7 @@ machine.
   (configured under `[plugins.clamav]`), no libclamav needed.
 - **YARA** — pure-Rust `yara-x` matches files against YARA rules configured
   under `[plugins.yara]`, with severity/CWE read from each rule's `meta` block.
-- **Remote scanning** — `exfill scan-remote user@host:/path` walks a host over
+- **Remote scanning** — `exfil scan-remote user@host:/path` walks a host over
   SSH/SFTP (pure-Rust russh) and runs every scanner against its files, tagging
   findings with the remote host.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
@@ -69,30 +69,30 @@ machine.
 
 ```sh
 # from a source checkout
-cargo install --path crates/exfill-cli
+cargo install --path crates/exfil-cli
 
 # or just build it
-cargo build --release   # binary at target/release/exfill
+cargo build --release   # binary at target/release/exfil
 ```
 
 ## Quick start
 
 ```sh
 # scan the current directory (streams matches; progress bar on a terminal)
-exfill scan
+exfil scan
 
 # query stored findings
-exfill search                      # everything
-exfill search severity=critical    # by field: rule/cwe/severity/path
-exfill search aws                  # free text against rule names
+exfil search                      # everything
+exfil search severity=critical    # by field: rule/cwe/severity/path
+exfil search aws                  # free text against rule names
 
 # open the live TUI (mutt-style index + pager)
-exfill tui
+exfil tui
 
 # look at one record, list rules, clean up
-exfill get file:<blake3-hash>
-exfill rules
-exfill clean
+exfil get file:<blake3-hash>
+exfil rules
+exfil clean
 ```
 
 Example scan output:
@@ -118,11 +118,11 @@ scanned 3 files: 2 matches, 0 unreadable
 ## Configuration
 
 The first run writes a default TOML config to the user config directory
-(e.g. `~/.config/exfill/config.toml`). Each plugin has its own
+(e.g. `~/.config/exfil/config.toml`). Each plugin has its own
 `[plugins.<name>]` table:
 
 ```toml
-store = ".exfill"
+store = ".exfil"
 
 [plugins.regex]
 datasets = []            # empty = built-in security ruleset
@@ -131,20 +131,20 @@ datasets = []            # empty = built-in security ruleset
 languages = ["go", "python", "javascript", "rust"]
 ```
 
-The findings store (default `.exfill/`, override with `--store`) is local to
-the scanned project and removed by `exfill clean`; downloaded datasets live in
+The findings store (default `.exfil/`, override with `--store`) is local to
+the scanned project and removed by `exfil clean`; downloaded datasets live in
 the config directory and survive cleaning.
 
 ## Workspace layout
 
 | Crate | Purpose |
 |---|---|
-| `exfill-core` | shared domain types (rules, matches, file metadata) |
-| `exfill-config` | TOML config with embedded default |
-| `exfill-scan` | `Scanner` trait, registry, regex scanner, builtin ruleset |
-| `exfill-store` | embedded SurrealDB graph store (schema, upserts, queries) |
-| `exfill-engine` | parallel walk → hash → scan → persist pipeline |
-| `exfill-cli` | the `exfill` binary: CLI commands, progress UI, TUI |
+| `exfil-core` | shared domain types (rules, matches, file metadata) |
+| `exfil-config` | TOML config with embedded default |
+| `exfil-scan` | `Scanner` trait, registry, regex scanner, builtin ruleset |
+| `exfil-store` | embedded SurrealDB graph store (schema, upserts, queries) |
+| `exfil-engine` | parallel walk → hash → scan → persist pipeline |
+| `exfil-cli` | the `exfil` binary: CLI commands, progress UI, TUI |
 
 The full architecture, data model, and milestone plan live in
 [docs/PLAN.md](docs/PLAN.md).

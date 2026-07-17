@@ -2,7 +2,7 @@
 /target/
 
 # Local findings store
-.exfill/
+.exfil/
 
 # Coverage artifacts
 *.profraw

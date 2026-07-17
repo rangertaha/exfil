@@ -1,10 +1,10 @@
-# exfill Architecture Guide
+# exfil Architecture Guide
 
-A multi-page tour of how **exfill** is built — written for someone new to Rust.
+A multi-page tour of how **exfil** is built — written for someone new to Rust.
 Every page explains *what* a component does, *why* it is shaped that way, and
 *how* the Rust works, with links straight into the source (`crate/file.rs:line`).
 
-exfill is an **offline, cross-platform, plugin-based filesystem-analysis and
+exfil is an **offline, cross-platform, plugin-based filesystem-analysis and
 SAST engine**. It walks a directory tree (or a remote host over SSH), reads each
 file once, runs a set of analysis plugins over it, and stores every result in an
 embedded graph database you can then query, navigate, and report on.
@@ -30,7 +30,7 @@ every page links into it when it uses an idiom for the first time.
 
 ## The one-paragraph version
 
-The engine ([`exfill-engine`](./engine.md)) walks the filesystem on many threads.
+The engine ([`exfil-engine`](./engine.md)) walks the filesystem on many threads.
 For each file it builds a [`Pipeline`](./pipeline.md) of plugins — small objects
 that each declare "I turn *this* kind of data into *that* kind of data." The
 pipeline sorts itself so every plugin runs after its inputs exist, with no plugin

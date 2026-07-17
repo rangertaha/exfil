@@ -1,4 +1,4 @@
-# 4 · Taint Analysis (`exfill-scan::taint`)
+# 4 · Taint Analysis (`exfil-scan::taint`)
 
 ← [The AST scanner](./ast.md) · Next: [The other scanners →](./scanners.md)
 
@@ -8,7 +8,7 @@ actually flow into that sink?** A call to `os.system("ls")` is fine;
 `os.system(user_input)` is a command-injection bug. Taint tracking tells them
 apart.
 
-Source: [`crates/exfill-scan/src/taint.rs`](../../crates/exfill-scan/src/taint.rs)
+Source: [`crates/exfil-scan/src/taint.rs`](../../crates/exfil-scan/src/taint.rs)
 (259 lines).
 
 ---
@@ -31,15 +31,15 @@ flowchart LR
 ```
 
 1. **Sources** produce tainted data — `is_source`
-   ([`taint.rs:36`](../../crates/exfill-scan/src/taint.rs#L36)).
+   ([`taint.rs:36`](../../crates/exfil-scan/src/taint.rs#L36)).
 2. **Propagation** spreads taint through assignments — the forward pass in
-   `analyze` ([`taint.rs:119`](../../crates/exfill-scan/src/taint.rs#L119)).
+   `analyze` ([`taint.rs:119`](../../crates/exfil-scan/src/taint.rs#L119)).
 3. **Sinks** are where tainted data becomes dangerous — `taint_sink`
-   ([`taint.rs:69`](../../crates/exfill-scan/src/taint.rs#L69)).
+   ([`taint.rs:69`](../../crates/exfil-scan/src/taint.rs#L69)).
 
 Crucially, this task consumes the `Ast` the extractor **already produced** — it is
 an `Ast → Matches` plugin, so it adds *no extra parse*
-([`taint.rs:1-12`](../../crates/exfill-scan/src/taint.rs#L1)). It reuses the
+([`taint.rs:1-12`](../../crates/exfil-scan/src/taint.rs#L1)). It reuses the
 `calls` and `assigns` facts the [AST walk](./ast.md#5-extraction-walking-the-tree)
 recorded.
 
@@ -47,7 +47,7 @@ recorded.
 
 ## 2. The algorithm
 
-`analyze` ([`taint.rs:119`](../../crates/exfill-scan/src/taint.rs#L119)) is a
+`analyze` ([`taint.rs:119`](../../crates/exfil-scan/src/taint.rs#L119)) is a
 **single forward pass**, intentionally simple and cheap:
 
 ```mermaid
@@ -66,7 +66,7 @@ flowchart TD
     Q3 -->|no| SKIP3["ignore — constant arg"]
 ```
 
-In code, the propagation pass ([`taint.rs:122-129`](../../crates/exfill-scan/src/taint.rs#L122)):
+In code, the propagation pass ([`taint.rs:122-129`](../../crates/exfil-scan/src/taint.rs#L122)):
 
 ```rust
 let mut tainted: HashSet<&str> = HashSet::new();
@@ -79,7 +79,7 @@ for a in &ast.assigns {
 }
 ```
 
-Then the sink check ([`taint.rs:132-156`](../../crates/exfill-scan/src/taint.rs#L132)):
+Then the sink check ([`taint.rs:132-156`](../../crates/exfil-scan/src/taint.rs#L132)):
 a call is flagged if a tainted variable is among its arguments (`via_var`), or a
 source call is nested directly in its arguments like `os.system(input())`
 (`direct`).
@@ -97,9 +97,9 @@ flowchart LR
 ```
 
 The `transitive_taint_across_two_vars` test
-([`taint.rs:214`](../../crates/exfill-scan/src/taint.rs#L214)) is exactly this
+([`taint.rs:214`](../../crates/exfil-scan/src/taint.rs#L214)) is exactly this
 case. And `untainted_constant_is_not_flagged`
-([`taint.rs:221`](../../crates/exfill-scan/src/taint.rs#L221)) proves the opposite:
+([`taint.rs:221`](../../crates/exfil-scan/src/taint.rs#L221)) proves the opposite:
 `cmd = 'ls -la'; os.system(cmd)` produces **nothing**, because `cmd` was never
 tainted.
 
@@ -107,7 +107,7 @@ tainted.
 
 ## 3. What counts as a source
 
-`is_source` ([`taint.rs:36`](../../crates/exfill-scan/src/taint.rs#L36)) recognizes
+`is_source` ([`taint.rs:36`](../../crates/exfil-scan/src/taint.rs#L36)) recognizes
 untrusted-input surfaces across languages:
 
 | Language | Sources |
@@ -120,14 +120,14 @@ untrusted-input surfaces across languages:
 
 There's a subtlety the code handles: most sources are **member reads**
 (`os.Args`, `process.argv`), not calls. The [AST walk](./ast.md) records member
-accesses as source-check candidates ([`ast.rs:287`](../../crates/exfill-scan/src/ast.rs#L287))
+accesses as source-check candidates ([`ast.rs:287`](../../crates/exfil-scan/src/ast.rs#L287))
 precisely so `process.argv[2]` is recognized as untrusted.
 
 ---
 
 ## 4. What counts as a sink
 
-`taint_sink` ([`taint.rs:69`](../../crates/exfill-scan/src/taint.rs#L69)) mirrors
+`taint_sink` ([`taint.rs:69`](../../crates/exfil-scan/src/taint.rs#L69)) mirrors
 the dangerous-call sinks but classifies them as injection when fed taint. It uses
 the same **cross-language prefix check first, then `match`** structure as
 `sink_for`:
@@ -147,15 +147,15 @@ flowchart TD
     class CMD,R1,R2,R3,R4,R5 s
 ```
 
-The prefix check ([`taint.rs:74-87`](../../crates/exfill-scan/src/taint.rs#L74))
+The prefix check ([`taint.rs:74-87`](../../crates/exfil-scan/src/taint.rs#L74))
 exists because of a real bug: Go's `exec.Command` has *last component* `Command`,
 which matched no `match` arm, so Go taint silently returned nothing. Checking the
 full callee text first fixed it — and `go_taint_from_form_value`
-([`ast.rs:811`](../../crates/exfill-scan/src/ast.rs#L811)) now proves
+([`ast.rs:811`](../../crates/exfil-scan/src/ast.rs#L811)) now proves
 `c := r.FormValue("cmd"); exec.Command(c)` is flagged.
 
 Every taint finding is `Severity::Critical`
-([`taint.rs:151`](../../crates/exfill-scan/src/taint.rs#L151)) — a proven data flow
+([`taint.rs:151`](../../crates/exfil-scan/src/taint.rs#L151)) — a proven data flow
 from untrusted input to a dangerous sink is the real, exploitable bug, not a
 maybe.
 
@@ -164,7 +164,7 @@ maybe.
 ## 5. Honest limitations
 
 The module documents its own blind spots
-([`taint.rs:24-25`](../../crates/exfill-scan/src/taint.rs#L24)), and that honesty
+([`taint.rs:24-25`](../../crates/exfil-scan/src/taint.rs#L24)), and that honesty
 is a feature:
 
 - **Intra-file only** — no cross-function or cross-file flow.

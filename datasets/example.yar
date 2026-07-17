@@ -1,8 +1,8 @@
 /*
- * Example YARA rules for exfill. Run with:
- *   exfill scan <path> --yara datasets/example.yar
+ * Example YARA rules for exfil. Run with:
+ *   exfil scan <path> --yara datasets/example.yar
  *
- * Rule metadata (severity, cwe, cve) flows into exfill findings.
+ * Rule metadata (severity, cwe, cve) flows into exfil findings.
  */
 
 rule EICAR_Test_File : malware {

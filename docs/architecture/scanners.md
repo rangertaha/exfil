@@ -1,13 +1,13 @@
-# 5 · The Other Scanners (`exfill-scan`)
+# 5 · The Other Scanners (`exfil-scan`)
 
 ← [Taint analysis](./taint.md) · Next: [The graph store →](./store.md)
 
-Beyond the [AST](./ast.md) and [taint](./taint.md) scanners, `exfill-scan` ships
+Beyond the [AST](./ast.md) and [taint](./taint.md) scanners, `exfil-scan` ships
 six more detection plugins. This page covers each one: what it finds, how, and the
 safety limits that keep hostile input from turning a scan into a denial of
 service.
 
-Source: [`crates/exfill-scan/src/`](../../crates/exfill-scan/src/) —
+Source: [`crates/exfil-scan/src/`](../../crates/exfil-scan/src/) —
 `lib.rs` (regex + wiring), `expand.rs`, `ioc.rs`, `supply.rs`, `clamav.rs`,
 `yara.rs`.
 
@@ -16,7 +16,7 @@ Source: [`crates/exfill-scan/src/`](../../crates/exfill-scan/src/) —
 ## 1. Two plugin shapes: `Scanner` vs `FileTask`
 
 Most scanners share a simpler interface than the raw `FileTask`. The `Scanner`
-trait ([`lib.rs:51`](../../crates/exfill-scan/src/lib.rs#L51)) is a
+trait ([`lib.rs:51`](../../crates/exfil-scan/src/lib.rs#L51)) is a
 content-in-matches-out shape:
 
 ```rust
@@ -27,7 +27,7 @@ pub trait Scanner: Send + Sync {
 }
 ```
 
-A `ScanTask<S>` newtype ([`lib.rs:66`](../../crates/exfill-scan/src/lib.rs#L66))
+A `ScanTask<S>` newtype ([`lib.rs:66`](../../crates/exfil-scan/src/lib.rs#L66))
 wraps any `Scanner` into a `FileTask` that declares `Bytes → Matches`. So every
 detection scanner is a `Scanner`; only the archive expander (`Bytes → Files`)
 implements `FileTask` directly.
@@ -53,9 +53,9 @@ flowchart TD
 > interface to another. See the [primer](./rust-primer.md#newtype-pattern).
 
 Two pipeline builders assemble these:
-`default_pipeline()` ([`lib.rs:98`](../../crates/exfill-scan/src/lib.rs#L98)) uses
+`default_pipeline()` ([`lib.rs:98`](../../crates/exfil-scan/src/lib.rs#L98)) uses
 built-in rules only (expander, regex, supply-chain, AST, taint);
-`pipeline_with_rules(...)` ([`lib.rs:116`](../../crates/exfill-scan/src/lib.rs#L116))
+`pipeline_with_rules(...)` ([`lib.rs:116`](../../crates/exfil-scan/src/lib.rs#L116))
 is the full lineup that also wires IOC, ClamAV, and YARA from loaded datasets, and
 returns the names of any regex rules it had to skip.
 
@@ -64,7 +64,7 @@ returns the names of any regex rules it had to skip.
 ## 2. RegexScanner — secrets and patterns
 
 The workhorse. It matches configured regex `Rule`s against file content, line by
-line ([`lib.rs:204`](../../crates/exfill-scan/src/lib.rs#L204)).
+line ([`lib.rs:204`](../../crates/exfil-scan/src/lib.rs#L204)).
 
 ```mermaid
 flowchart LR
@@ -79,14 +79,14 @@ flowchart LR
 Details that matter:
 
 - **Line-oriented** — one match per line per rule, with a 1-based char column
-  ([`lib.rs:218`](../../crates/exfill-scan/src/lib.rs#L218)). The matched line is
+  ([`lib.rs:218`](../../crates/exfil-scan/src/lib.rs#L218)). The matched line is
   the snippet.
 - **Rust `regex`, not PCRE** — the `regex` crate has no backtracking, so no
   lookahead/lookbehind. External rule sets (like gitleaks) that use those features
   won't compile.
-- **Strict vs lenient loading** — `new` ([`lib.rs:154`](../../crates/exfill-scan/src/lib.rs#L154))
+- **Strict vs lenient loading** — `new` ([`lib.rs:154`](../../crates/exfil-scan/src/lib.rs#L154))
   fails fast on any bad pattern (good for built-in rules); `new_lenient`
-  ([`lib.rs:171`](../../crates/exfill-scan/src/lib.rs#L171)) collects the *names* of
+  ([`lib.rs:171`](../../crates/exfil-scan/src/lib.rs#L171)) collects the *names* of
   patterns it couldn't compile and carries on (good for third-party datasets that
   may use unsupported syntax).
 - **Hash-IOC rules are skipped here** — a rule whose pattern is `sha256:...` isn't
@@ -95,7 +95,7 @@ Details that matter:
   the two scanners from double-handling a rule.
 
 The built-in secret rules live in
-[`builtin.rs`](../../crates/exfill-scan/src/builtin.rs) (AWS keys, GitHub tokens,
+[`builtin.rs`](../../crates/exfil-scan/src/builtin.rs) (AWS keys, GitHub tokens,
 etc.) and are what `default_pipeline` scans with.
 
 ---
@@ -108,7 +108,7 @@ re-processes. It is the one detection-adjacent plugin that produces `Files`, not
 `Matches`.
 
 The interesting part is **defending against hostile archives**. Limits
-([`expand.rs:29`](../../crates/exfill-scan/src/expand.rs#L29)) bound the work:
+([`expand.rs:29`](../../crates/exfil-scan/src/expand.rs#L29)) bound the work:
 
 | Limit | Default | Guards against |
 |-------|---------|----------------|
@@ -131,11 +131,11 @@ flowchart TD
 Two safety notes worth internalizing:
 
 - **Decompression is bounded at the source.** `gunzip` wraps the decoder in
-  `.take(cap)` ([`expand.rs:127`](../../crates/exfill-scan/src/expand.rs#L127)), so
+  `.take(cap)` ([`expand.rs:127`](../../crates/exfil-scan/src/expand.rs#L127)), so
   a 10 KB gz that expands to 10 GB is cut off — it can't exhaust memory.
 - **Zip-slip has no filesystem effect.** Entry names may contain `../` or absolute
   paths, but they are only used to build a *display path*
-  `container!inner` ([`expand.rs:121`](../../crates/exfill-scan/src/expand.rs#L121)).
+  `container!inner` ([`expand.rs:121`](../../crates/exfil-scan/src/expand.rs#L121)).
   Nothing is written to disk — expanded entries are `VirtualFile`s in memory — so a
   malicious entry name can't escape a directory. Safety is by construction.
 
@@ -144,7 +144,7 @@ Two safety notes worth internalizing:
 ## 4. HashIocScanner — known-bad file hashes
 
 An IOC (Indicator of Compromise) feed lists hashes of known-malicious files. This
-scanner ([`ioc.rs:69`](../../crates/exfill-scan/src/ioc.rs#L69)) computes each
+scanner ([`ioc.rs:69`](../../crates/exfil-scan/src/ioc.rs#L69)) computes each
 file's digest and looks it up:
 
 ```mermaid
@@ -156,10 +156,10 @@ flowchart LR
 ```
 
 - **Only the needed algorithms are computed.** If the feed has only SHA-256 IOCs,
-  only SHA-256 is hashed ([`ioc.rs:130`](../../crates/exfill-scan/src/ioc.rs#L130)).
+  only SHA-256 is hashed ([`ioc.rs:130`](../../crates/exfil-scan/src/ioc.rs#L130)).
   `applies` returns false when no hash IOCs are loaded, so hashing is skipped
   entirely.
-- **`is_hash_ioc`** ([`ioc.rs:40`](../../crates/exfill-scan/src/ioc.rs#L40)) parses
+- **`is_hash_ioc`** ([`ioc.rs:40`](../../crates/exfil-scan/src/ioc.rs#L40)) parses
   a rule pattern like `sha256:abcd...`, validating the hex length matches the
   algorithm. This same function is what the regex scanner uses to *exclude* IOC
   rules — one definition, no drift.
@@ -170,7 +170,7 @@ flowchart LR
 
 ## 5. SupplyChainScanner — dependency risks, offline
 
-This scanner ([`supply.rs:166`](../../crates/exfill-scan/src/supply.rs#L166))
+This scanner ([`supply.rs:166`](../../crates/exfil-scan/src/supply.rs#L166))
 inspects dependency manifests — `package.json` (npm), `Cargo.toml` (crates.io),
 `requirements*.txt` (PyPI) — with **no network feeds**, using four offline
 heuristics:
@@ -188,14 +188,14 @@ flowchart TD
 ```
 
 - **Typosquatting** is detected with **Damerau-Levenshtein (OSA) edit distance
-  == 1** ([`supply.rs:97`](../../crates/exfill-scan/src/supply.rs#L97)) against a
+  == 1** ([`supply.rs:97`](../../crates/exfil-scan/src/supply.rs#L97)) against a
   curated list of popular packages: `reqeusts` (for `requests`), `loadash` (for
   `lodash`), etc. Names that *are* themselves popular are excluded so `react`
   doesn't flag as a typo of `preact`.
 - **Install hooks** are npm's classic supply-chain vector. A `postinstall` script
   is Medium by default, escalated to **Critical** if it contains red-flag tokens
   like `curl`, `wget`, `base64`, `eval(`, `| sh`
-  ([`supply.rs:89`](../../crates/exfill-scan/src/supply.rs#L89)).
+  ([`supply.rs:89`](../../crates/exfil-scan/src/supply.rs#L89)).
 
 Each ecosystem has its own parser (JSON for npm, TOML for crates.io, line-based
 for PyPI), and unparseable manifests are silently ignored rather than erroring.
@@ -204,8 +204,8 @@ for PyPI), and unparseable manifests are silently ignored rather than erroring.
 
 ## 6. ClamavScanner — antivirus signatures
 
-exfill can consume a subset of [ClamAV](https://www.clamav.net/) signatures
-([`clamav.rs:39`](../../crates/exfill-scan/src/clamav.rs#L39)) — the open antivirus
+exfil can consume a subset of [ClamAV](https://www.clamav.net/) signatures
+([`clamav.rs:39`](../../crates/exfil-scan/src/clamav.rs#L39)) — the open antivirus
 database format:
 
 ```mermaid
@@ -221,12 +221,12 @@ flowchart LR
 ```
 
 - **Hash signatures** match a file's MD5/SHA-256 with an optional exact-size gate
-  ([`clamav.rs:149`](../../crates/exfill-scan/src/clamav.rs#L149)).
+  ([`clamav.rs:149`](../../crates/exfil-scan/src/clamav.rs#L149)).
 - **Body signatures** are literal hex byte-strings compiled into a single
   [Aho-Corasick](https://docs.rs/aho-corasick) automaton — one pass finds any of
   thousands of patterns. ClamAV *wildcard* syntax (`*`, `?`, `{...}`) is **not**
   supported; such signatures are skipped and counted
-  ([`clamav.rs:215`](../../crates/exfill-scan/src/clamav.rs#L215)).
+  ([`clamav.rs:215`](../../crates/exfil-scan/src/clamav.rs#L215)).
 - Because Aho-Corasick runs on raw bytes, body sigs match **binary** files —
   unlike the text-oriented regex scanner.
 
@@ -235,8 +235,8 @@ flowchart LR
 ## 7. YaraScanner — the malware-analyst's language
 
 [YARA](https://virustotal.github.io/yara/) is the standard rule language for
-describing malware families. exfill uses **`yara-x`**
-([`yara.rs:21`](../../crates/exfill-scan/src/yara.rs#L21)) — a *pure-Rust* YARA
+describing malware families. exfil uses **`yara-x`**
+([`yara.rs:21`](../../crates/exfil-scan/src/yara.rs#L21)) — a *pure-Rust* YARA
 engine, so there's no C `libyara` dependency:
 
 ```mermaid
@@ -248,11 +248,11 @@ flowchart LR
 ```
 
 - Rules are compiled once from concatenated source; empty source yields an inert
-  scanner ([`yara.rs:29`](../../crates/exfill-scan/src/yara.rs#L29)).
+  scanner ([`yara.rs:29`](../../crates/exfil-scan/src/yara.rs#L29)).
 - A fresh `yara_x::Scanner` is created per file (the compiled `Rules` are
   `Send + Sync`, the scanner is not).
 - A finding's rule id is `yara:<identifier>`; its severity and CWE come from the
-  rule's `meta` block ([`yara.rs:78`](../../crates/exfill-scan/src/yara.rs#L78)),
+  rule's `meta` block ([`yara.rs:78`](../../crates/exfil-scan/src/yara.rs#L78)),
   defaulting to High if unspecified.
 
 ---

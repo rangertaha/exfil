@@ -1,0 +1,19 @@
+[package]
+name = "exfil-source"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+exfil-core = { workspace = true }
+exfil-scan = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+serde_json = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

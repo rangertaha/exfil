@@ -1,6 +1,6 @@
-# exfill — Architecture & Build Plan (Rust)
+# exfil — Architecture & Build Plan (Rust)
 
-**exfill** (Extra File Lang Lookup) is an offline, cross-platform, plugin-based
+**exfil** (Extra File Lang Lookup) is an offline, cross-platform, plugin-based
 filesystem-analysis and SAST engine. It builds a queryable graph of files →
 AST → findings → rules with full provenance, backed by an embedded database,
 and can optionally enrich results with an embedded offline LLM. Written in
@@ -32,27 +32,27 @@ This document supersedes the Go prototype and the earlier Go plan.
 | Scan model | Parallel (`rayon` + `ignore` walker); stat fast-path incremental |
 | VFS coverage | A record for **every regular file** (metadata + hash, never contents) |
 | Provenance | Finding → Rule → Dataset → Source edges |
-| LLM | Embedded **Candle** runtime (pure-Rust, CPU); GGUF weights downloaded by `exfill update` into config |
+| LLM | Embedded **Candle** runtime (pure-Rust, CPU); GGUF weights downloaded by `exfil update` into config |
 | Config | **TOML** via `toml`, embedded default (`include_str!`), per-plugin `[plugins.<name>]` tables |
 | Platforms | Windows/macOS/Linux/Unix; metadata via `cfg`-gated `MetadataExt` |
 
 ## Workspace layout
 
 ```
-exfill/
+exfil/
   Cargo.toml                 # workspace
   crates/
-    exfill-core/     domain types: FileMeta, Symbol, Rule, Dataset, Match, VirtualFile, Severity
-    exfill-task/     ✅ plugin DAG: Artifact/ArtifactKind, FileTask, Pipeline (toposort)
-    exfill-store/    SurrealDB graph store: schema, upsert, queries, DAG-CBOR export
-    exfill-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
-    exfill-source/   Source trait + registry: builtin, file, http (reqwest)
-    exfill-report/   ✅ Reporter trait: text, json, markdown
-    exfill-llm/      ✅ Enricher trait + rule-based triage (Candle model = future impl); `enrich`
-    exfill-config/   ✅ TOML config with embedded default + per-plugin decode
-    exfill-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
-    exfill-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
-  crates/exfill-cli/ (bin "exfill")  ✅ clap commands + progress + mutt-style TUI
+    exfil-core/     domain types: FileMeta, Symbol, Rule, Dataset, Match, VirtualFile, Severity
+    exfil-task/     ✅ plugin DAG: Artifact/ArtifactKind, FileTask, Pipeline (toposort)
+    exfil-store/    SurrealDB graph store: schema, upsert, queries, DAG-CBOR export
+    exfil-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
+    exfil-source/   Source trait + registry: builtin, file, http (reqwest)
+    exfil-report/   ✅ Reporter trait: text, json, markdown
+    exfil-llm/      ✅ Enricher trait + rule-based triage (Candle model = future impl); `enrich`
+    exfil-config/   ✅ TOML config with embedded default + per-plugin decode
+    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
+    exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
+  crates/exfil-cli/ (bin "exfil")  ✅ clap commands + progress + mutt-style TUI
 ```
 
 ## Plugin orchestration (implemented)
@@ -60,7 +60,7 @@ exfill/
 Two levels of dependency-ordered orchestration replace the old fixed
 "read then scan" sequence:
 
-- **Per-file DAG** (`exfill-task`) — plugins are `FileTask`s declaring the
+- **Per-file DAG** (`exfil-task`) — plugins are `FileTask`s declaring the
   `ArtifactKind` they consume/produce (`Bytes`, `Files`, `Ast`, `Matches`). A
   `Pipeline` topologically sorts them (Kahn's algorithm) and fails fast on
   cycles or missing producers. This is how the archive expander (`Bytes →
@@ -71,11 +71,11 @@ Two levels of dependency-ordered orchestration replace the old fixed
   them (depth-capped, zip-bomb-bounded) and links each to its container with a
   `contained_in` graph edge, so scanners see files inside zip/jar/tar/gz with
   no changes.
-- **Run-level stages** (`exfill-engine::run`) — `RunStage`s sequence a whole
+- **Run-level stages** (`exfil-engine::run`) — `RunStage`s sequence a whole
   invocation **fetch → scan → report**, sharing the graph through `RunCtx` and
   communicating *through* it (scan writes findings, report reads them). Fetch
   is a declared stub until sources (M2) land; reporting is live via
-  `exfill-report` (`exfill analyze --format text|json|markdown`).
+  `exfil-report` (`exfil analyze --format text|json|markdown`).
 
 Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 
@@ -91,7 +91,7 @@ Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 | AST | `tree-sitter` + grammars | Go, Python, JS/TS, Rust, C/C++, Java, … |
 | YARA | `yara-x` | official Rust YARA engine |
 | HTTP | `reqwest` (rustls) | dataset + model downloads, no OpenSSL |
-| Progress/TUI | `ratatui` (+`crossterm`) | inline scan gauge; mutt-style `exfill tui` |
+| Progress/TUI | `ratatui` (+`crossterm`) | inline scan gauge; mutt-style `exfil tui` |
 | Config | `toml` | pure-Rust, mature, per-plugin tables |
 | LLM | `candle-core`, `candle-transformers`, `tokenizers` | pure-Rust GGUF inference (CPU) |
 | Serde | `serde`, `serde_json` | reports, MCP |
@@ -128,8 +128,8 @@ edges. The graph is naturally queryable and traversable — no hand-built index.
 - analyze: `SELECT severity, count() FROM finding GROUP BY severity`
 
 **Stores / locations**
-- Findings DB: local, at `--store` (default `.exfill/`), removed by `exfill clean`.
-- Datasets + rules DB: user config dir (`~/.config/exfill/…`), survives `clean`.
+- Findings DB: local, at `--store` (default `.exfil/`), removed by `exfil clean`.
+- Datasets + rules DB: user config dir (`~/.config/exfil/…`), survives `clean`.
   (Two SurrealDB namespaces/databases, or two embedded instances.)
 
 ## Scan pipeline
@@ -161,13 +161,13 @@ fields fill in where available. ACL/xattr and security labels are a follow-up.
   CPU, cross-platform, no CGo. Compiled in behind an `Llm` trait
   (`available()`, `extract(text, schema)`, `enrich(finding)`); every call is a
   **no-op when disabled or the model is absent**.
-- **Weights are a data file** — the GGUF is downloaded by `exfill update` into
-  the LLM plugin's config dir (`~/.config/exfill/plugins/llm/`), like a dataset:
+- **Weights are a data file** — the GGUF is downloaded by `exfil update` into
+  the LLM plugin's config dir (`~/.config/exfil/plugins/llm/`), like a dataset:
   fetched once, offline thereafter, preserved across `clean`. Precedence:
   downloaded model → optional tiny `include_bytes!` default → disabled.
 - **Uses** — (1) extract structure from unstructured text (logs/docs/config
   prose) into finding/entity records; (2) triage/enrich findings. Runs as a
-  separate **`exfill enrich`** pass over the stored graph so scans stay fast.
+  separate **`exfil enrich`** pass over the stored graph so scans stay fast.
 
 ## Plugin traits
 
@@ -188,14 +188,14 @@ The engine reads each file once and passes `content` to scanners.
 ## Commands
 
 ```
-exfill sources | pull | update | datasets | rules
-exfill scan [path]        # parallel, incremental, streaming
-exfill search [query]     # SurrealQL under the hood (rule/lang/cwe/severity)
-exfill graph  [query]     # findings graph (dot/json) via traversal
-exfill analyze [query]    # whole-graph report (text/json/markdown)
-exfill enrich             # offline LLM pass (structure extraction + triage)
-exfill config | clean | gc | mcp | get <id>
-exfill tui                # mutt-style live workbench (scan/browse/query)
+exfil sources | pull | update | datasets | rules
+exfil scan [path]        # parallel, incremental, streaming
+exfil search [query]     # SurrealQL under the hood (rule/lang/cwe/severity)
+exfil graph  [query]     # findings graph (dot/json) via traversal
+exfil analyze [query]    # whole-graph report (text/json/markdown)
+exfil enrich             # offline LLM pass (structure extraction + triage)
+exfil config | clean | gc | mcp | get <id>
+exfil tui                # mutt-style live workbench (scan/browse/query)
 ```
 
 `update` downloads dataset refs *and* the LLM GGUF into their plugin config dirs
@@ -207,7 +207,7 @@ Per-plugin config is a `[plugins.<name>]` table; each plugin decodes its own
 table into its own struct (the "custom fields per plugin").
 
 ```toml
-store = ".exfill"
+store = ".exfil"
 
 [plugins.regex]
 datasets = ["security", "gitleaks"]
@@ -235,11 +235,11 @@ ref = "https://…/model.gguf"
 
 - **M0 Scaffold** ✅ — Cargo workspace, `clap` skeleton, SurrealKV store
   open/close, TOML config + embedded default, cross-platform metadata.
-- **M1 Graph + scan** — mostly done: schema + edges (✅ `exfill-store`), regex
-  scanner + builtin ruleset (✅ `exfill-scan`), parallel walk → hash → scan →
-  upsert engine with live `ScanEvent` streaming (✅ `exfill-engine`),
+- **M1 Graph + scan** — mostly done: schema + edges (✅ `exfil-store`), regex
+  scanner + builtin ruleset (✅ `exfil-scan`), parallel walk → hash → scan →
+  upsert engine with live `ScanEvent` streaming (✅ `exfil-engine`),
   `scan`/`search`/`get`/`rules` wired with a ratatui progress gauge (✅), and
-  a mutt-style `exfill tui` workbench (✅ index/pager, `/` limit, `:` commands,
+  a mutt-style `exfil tui` workbench (✅ index/pager, `/` limit, `:` commands,
   live scans). Still to do: incremental rescan (stat fast-path; today a rescan
   re-reads and re-creates findings — dedup/replace prior scan's findings),
   tree-sitter AST scanner + `has_ast` edges, `flagged_by`/rule provenance
@@ -266,13 +266,13 @@ ref = "https://…/model.gguf"
 ## Graph-vim workbench (in progress)
 
 A layered "neovim for graph traversal/editing" over the findings graph:
-- ✅ M3 pluggable viewers (`exfill-view`): preview-per-node-kind registry.
+- ✅ M3 pluggable viewers (`exfil-view`): preview-per-node-kind registry.
 - ✅ M1 navigation core: two-pane edge-following navigator (Store::neighbors),
   jumplist (</>), breadcrumbs, node view via viewers.
 - ✅ M2 CRUD: field edit (`c`), edge delete (`d`), undo/redo (`u`/`U`) via
   reversible EditOps (Store::set_field/create_edge/delete_edge).
 - ✅ M4 keymaps: vim defaults, remappable via `[keymap.nav]` in config.
-- ✅ M5 scripting: Rhai script enricher (`exfill-script`, `[plugins.script] enrich`).
+- ✅ M5 scripting: Rhai script enricher (`exfil-script`, `[plugins.script] enrich`).
 
 ## Backlog (user-requested)
 
@@ -288,10 +288,10 @@ A layered "neovim for graph traversal/editing" over the findings graph:
   pipeline, then scan for them: file-hash IOCs check the already-computed
   blake3/sha256, content IOCs become regex/aho-corasick rules.
 - **Dataset management (CRUD)** — create, update, list, and view datasets per
-  plugin: `exfill datasets` grows `add/edit/show/rm` (and TUI views), backed by
+  plugin: `exfil datasets` grows `add/edit/show/rm` (and TUI views), backed by
   the catalog store, so users can maintain their own rule/IOC collections.
 - **Supply-chain detection, dataset-driven** — v1 ships (offline heuristics in
-  `exfill-scan::supply`: known-malware list, typosquats, install hooks,
+  `exfil-scan::supply`: known-malware list, typosquats, install hooks,
   insecure sources); next step is feeding it OSV/malicious-package datasets via
   `update` for version-aware compromise detection (e.g. `ua-parser-js`-style
   hijacks).

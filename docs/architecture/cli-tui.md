@@ -1,13 +1,13 @@
-# 7 · CLI, TUI & Graph Navigator (`exfill-cli`)
+# 7 · CLI, TUI & Graph Navigator (`exfil-cli`)
 
 ← [The graph store](./store.md) · Next: [Integrations →](./integrations.md)
 
-`exfill-cli` is the one **binary** — the executable a user actually runs. It parses
+`exfil-cli` is the one **binary** — the executable a user actually runs. It parses
 arguments, wires every other crate together, and hosts a mutt-style terminal UI
 with a vim-style graph navigator. This page maps the commands, then dissects the
 TUI.
 
-Source: [`crates/exfill-cli/src/`](../../crates/exfill-cli/src/) — `main.rs`
+Source: [`crates/exfil-cli/src/`](../../crates/exfil-cli/src/) — `main.rs`
 (commands), `tui.rs` (the UI), `keymap.rs` (bindings), `progress.rs` (the gauge).
 
 ---
@@ -15,12 +15,12 @@ Source: [`crates/exfill-cli/src/`](../../crates/exfill-cli/src/) — `main.rs`
 ## 1. The command surface
 
 `main.rs` uses [clap](https://docs.rs/clap) to declare subcommands. Two global
-flags apply to all: `-s/--store` (findings store path, default `.exfill`) and
+flags apply to all: `-s/--store` (findings store path, default `.exfil`) and
 `-c/--config` (config file).
 
 ```mermaid
 flowchart TD
-    EXF["exfill"] --> SCAN["scan / scan-remote — walk & analyze"]
+    EXF["exfil"] --> SCAN["scan / scan-remote — walk & analyze"]
     EXF --> QUERY["search / graph / analyze / get — read results"]
     EXF --> DATA["sources / pull / datasets / rules — manage rules"]
     EXF --> MAINT["gc / clean / export — maintenance"]
@@ -31,22 +31,22 @@ flowchart TD
 
 | Command | Does | Handler |
 |---------|------|---------|
-| `scan [path]` | Walk a tree, scan, persist; live progress | [`main.rs:182`](../../crates/exfill-cli/src/main.rs#L182) |
-| `scan-remote <target>` | Scan a host over SSH (`-p` port, `-k` key; `$EXFILL_SSH_PASSWORD`) | [`main.rs:207`](../../crates/exfill-cli/src/main.rs#L207) |
-| `search [query]` | Query stored findings (`field=value` or free text) | [`main.rs:410`](../../crates/exfill-cli/src/main.rs#L410) |
-| `analyze [query] -f <fmt>` | Render a report (`text`/`json`/`markdown`/`junit`) | [`main.rs:423`](../../crates/exfill-cli/src/main.rs#L423) |
-| `graph [query] -f <fmt>` | Emit the findings graph as JSON or DOT | [`main.rs:439`](../../crates/exfill-cli/src/main.rs#L439) |
-| `get <id>` | Print one record by id as JSON | [`main.rs:534`](../../crates/exfill-cli/src/main.rs#L534) |
-| `datasets [list/show/add/rm]` | Manage the rule catalog | [`main.rs:350`](../../crates/exfill-cli/src/main.rs#L350) |
-| `pull [ref]` / `sources` / `rules` | Fetch datasets / list sources / show built-in rules | [`main.rs:317`](../../crates/exfill-cli/src/main.rs#L317) / `302` / `544` |
-| `enrich` | Run offline LLM/script triage over findings | [`main.rs:468`](../../crates/exfill-cli/src/main.rs#L468) |
-| `gc` / `clean` / `export -o -f` | Prune / delete store / snapshot (CBOR or JSON) | [`main.rs:523`](../../crates/exfill-cli/src/main.rs#L523) / `563` / `490` |
-| `mcp` | Serve MCP over stdio for AI agents | [`main.rs:149`](../../crates/exfill-cli/src/main.rs#L149) |
-| `tui` | Open the interactive UI | [`main.rs:155`](../../crates/exfill-cli/src/main.rs#L155) |
+| `scan [path]` | Walk a tree, scan, persist; live progress | [`main.rs:182`](../../crates/exfil-cli/src/main.rs#L182) |
+| `scan-remote <target>` | Scan a host over SSH (`-p` port, `-k` key; `$EXFIL_SSH_PASSWORD`) | [`main.rs:207`](../../crates/exfil-cli/src/main.rs#L207) |
+| `search [query]` | Query stored findings (`field=value` or free text) | [`main.rs:410`](../../crates/exfil-cli/src/main.rs#L410) |
+| `analyze [query] -f <fmt>` | Render a report (`text`/`json`/`markdown`/`junit`) | [`main.rs:423`](../../crates/exfil-cli/src/main.rs#L423) |
+| `graph [query] -f <fmt>` | Emit the findings graph as JSON or DOT | [`main.rs:439`](../../crates/exfil-cli/src/main.rs#L439) |
+| `get <id>` | Print one record by id as JSON | [`main.rs:534`](../../crates/exfil-cli/src/main.rs#L534) |
+| `datasets [list/show/add/rm]` | Manage the rule catalog | [`main.rs:350`](../../crates/exfil-cli/src/main.rs#L350) |
+| `pull [ref]` / `sources` / `rules` | Fetch datasets / list sources / show built-in rules | [`main.rs:317`](../../crates/exfil-cli/src/main.rs#L317) / `302` / `544` |
+| `enrich` | Run offline LLM/script triage over findings | [`main.rs:468`](../../crates/exfil-cli/src/main.rs#L468) |
+| `gc` / `clean` / `export -o -f` | Prune / delete store / snapshot (CBOR or JSON) | [`main.rs:523`](../../crates/exfil-cli/src/main.rs#L523) / `563` / `490` |
+| `mcp` | Serve MCP over stdio for AI agents | [`main.rs:149`](../../crates/exfil-cli/src/main.rs#L149) |
+| `tui` | Open the interactive UI | [`main.rs:155`](../../crates/exfil-cli/src/main.rs#L155) |
 
-`main` is `#[tokio::main]` ([`main.rs:129`](../../crates/exfill-cli/src/main.rs#L129))
+`main` is `#[tokio::main]` ([`main.rs:129`](../../crates/exfil-cli/src/main.rs#L129))
 — async, because the store and network are async. `build_pipeline`
-([`main.rs:244`](../../crates/exfill-cli/src/main.rs#L244)) assembles the scanners
+([`main.rs:244`](../../crates/exfil-cli/src/main.rs#L244)) assembles the scanners
 from built-in rules + catalog datasets + ClamAV/YARA files.
 
 ---
@@ -54,7 +54,7 @@ from built-in rules + catalog datasets + ClamAV/YARA files.
 ## 2. The async/blocking bridge
 
 The TUI is *blocking* (it owns the terminal and polls keys in a loop), but the rest
-of exfill is *async*. The bridge: run the TUI on a dedicated blocking thread via
+of exfil is *async*. The bridge: run the TUI on a dedicated blocking thread via
 `spawn_blocking`, handing it a tokio `Handle` so it can run async store operations
 on demand.
 
@@ -74,8 +74,8 @@ the UI. See the [primer on async](./rust-primer.md#async-await).
 ## 3. The TUI: a mode state machine
 
 The UI is a **state machine** driven by keypresses. `App`
-([`tui.rs:249`](../../crates/exfill-cli/src/tui.rs#L249)) holds all state; `Mode`
-([`tui.rs:161`](../../crates/exfill-cli/src/tui.rs#L161)) is which screen you're in:
+([`tui.rs:249`](../../crates/exfil-cli/src/tui.rs#L249)) holds all state; `Mode`
+([`tui.rs:161`](../../crates/exfil-cli/src/tui.rs#L161)) is which screen you're in:
 
 ```mermaid
 stateDiagram-v2
@@ -92,7 +92,7 @@ stateDiagram-v2
     end note
 ```
 
-The event loop ([`tui.rs:959`](../../crates/exfill-cli/src/tui.rs#L959)) is one tick:
+The event loop ([`tui.rs:959`](../../crates/exfil-cli/src/tui.rs#L959)) is one tick:
 
 ```mermaid
 flowchart LR
@@ -105,17 +105,17 @@ flowchart LR
 ```
 
 It is deliberately **backend-generic** (`B: Backend`) and takes the key source as a
-closure ([`tui.rs:959`](../../crates/exfill-cli/src/tui.rs#L959)), which is what lets
+closure ([`tui.rs:959`](../../crates/exfil-cli/src/tui.rs#L959)), which is what lets
 tests drive the whole UI against a `TestBackend` with scripted keystrokes — no real
 terminal needed. There is an end-to-end navigator test that follows edges, goes
 back/forward, edits with undo/redo, and deletes an edge
-([`tui.rs:1077`](../../crates/exfill-cli/src/tui.rs#L1077)).
+([`tui.rs:1077`](../../crates/exfil-cli/src/tui.rs#L1077)).
 
 A mutt-style command bar handles `:` commands, `/` search, and `set field=value`
-edits, parsed by `parse_command` ([`tui.rs:95`](../../crates/exfill-cli/src/tui.rs#L95))
-and run by `execute` ([`tui.rs:581`](../../crates/exfill-cli/src/tui.rs#L581)). A
+edits, parsed by `parse_command` ([`tui.rs:95`](../../crates/exfil-cli/src/tui.rs#L95))
+and run by `execute` ([`tui.rs:581`](../../crates/exfil-cli/src/tui.rs#L581)). A
 background scan started from the UI streams `ScanEvent::Match` into the findings
-list *live* via `pump_scan` ([`tui.rs:659`](../../crates/exfill-cli/src/tui.rs#L659)).
+list *live* via `pump_scan` ([`tui.rs:659`](../../crates/exfil-cli/src/tui.rs#L659)).
 
 ---
 
@@ -137,7 +137,7 @@ flowchart LR
     BREAD --- SCREEN
 ```
 
-State lives in `NavState` ([`tui.rs:210`](../../crates/exfill-cli/src/tui.rs#L210)):
+State lives in `NavState` ([`tui.rs:210`](../../crates/exfil-cli/src/tui.rs#L210)):
 
 - **`stack`** — the breadcrumb trail; the last entry is the current node.
 - **`forward`** — the jumplist for redo/forward after going back.
@@ -154,18 +154,18 @@ flowchart TD
     PREV --> FWD["Forward →<br/>nav_forward: pop forward back"]
 ```
 
-- **Follow an edge**: `nav_follow` ([`tui.rs:392`](../../crates/exfill-cli/src/tui.rs#L392))
+- **Follow an edge**: `nav_follow` ([`tui.rs:392`](../../crates/exfil-cli/src/tui.rs#L392))
   builds the selected neighbor's node, pushes it on `stack`, clears `forward`.
-- **Jumplist back/forward**: `nav_back` ([`tui.rs:408`](../../crates/exfill-cli/src/tui.rs#L408))
-  and `nav_forward` ([`tui.rs:423`](../../crates/exfill-cli/src/tui.rs#L423)) move
+- **Jumplist back/forward**: `nav_back` ([`tui.rs:408`](../../crates/exfil-cli/src/tui.rs#L408))
+  and `nav_forward` ([`tui.rs:423`](../../crates/exfil-cli/src/tui.rs#L423)) move
   nodes between `stack` and `forward` — exactly vim's `Ctrl-o`/`Ctrl-i` jumplist.
 
 ### CRUD with undo/redo
 
 Every edit is a **reversible operation**, `EditOp`
-([`tui.rs:190`](../../crates/exfill-cli/src/tui.rs#L190)): set a field, or
+([`tui.rs:190`](../../crates/exfil-cli/src/tui.rs#L190)): set a field, or
 create/delete an edge. Applying one *returns its inverse*
-([`apply_edit`, tui.rs:453](../../crates/exfill-cli/src/tui.rs#L453)):
+([`apply_edit`, tui.rs:453](../../crates/exfil-cli/src/tui.rs#L453)):
 
 ```mermaid
 flowchart LR
@@ -187,11 +187,11 @@ well.
 ## 5. Configurable keybindings (`keymap.rs`)
 
 The navigator's keys default to vim but are fully remappable. `NavAction`
-([`keymap.rs:15`](../../crates/exfill-cli/src/keymap.rs#L15)) is the set of
-abstract actions; `Keymap` ([`keymap.rs:78`](../../crates/exfill-cli/src/keymap.rs#L78))
+([`keymap.rs:15`](../../crates/exfil-cli/src/keymap.rs#L15)) is the set of
+abstract actions; `Keymap` ([`keymap.rs:78`](../../crates/exfil-cli/src/keymap.rs#L78))
 maps key strings to them.
 
-Defaults ([`keymap.rs:84`](../../crates/exfill-cli/src/keymap.rs#L84)):
+Defaults ([`keymap.rs:84`](../../crates/exfil-cli/src/keymap.rs#L84)):
 
 | Keys | Action | Keys | Action |
 |------|--------|------|--------|
@@ -203,7 +203,7 @@ Defaults ([`keymap.rs:84`](../../crates/exfill-cli/src/keymap.rs#L84)):
 | `q` / `i` / `Esc` | Quit | | |
 
 Remapping is a `[keymap.nav]` TOML table
-([`keymap.rs:115`](../../crates/exfill-cli/src/keymap.rs#L115)): each `key =
+([`keymap.rs:115`](../../crates/exfil-cli/src/keymap.rs#L115)): each `key =
 "ActionName"` overlays the defaults. Unknown action names are silently ignored, so
 a typo can't break your keymap — it just doesn't take effect.
 
@@ -214,12 +214,12 @@ x = "Edit"        # bind x to edit instead of c
 
 ---
 
-## 6. Pluggable viewers (`exfill-view`)
+## 6. Pluggable viewers (`exfil-view`)
 
 How a node is *rendered* in the navigator's left pane is itself pluggable. A
-`Viewer` ([`view/src/lib.rs:45`](../../crates/exfill-view/src/lib.rs#L45)) turns a
+`Viewer` ([`view/src/lib.rs:45`](../../crates/exfil-view/src/lib.rs#L45)) turns a
 node's stored JSON into display lines; a `Registry`
-([`view/src/lib.rs:57`](../../crates/exfill-view/src/lib.rs#L57)) picks the first
+([`view/src/lib.rs:57`](../../crates/exfil-view/src/lib.rs#L57)) picks the first
 viewer that `handles` a node's kind.
 
 ```mermaid
@@ -237,15 +237,15 @@ Viewers render purely from JSON — terminal-agnostic, no ANSI (the caller style
 which is why they're a separate crate with no UI dependency. Registering a custom
 viewer for a new kind takes precedence for that kind; there's a test where a
 `HexViewer` handles a `"blob"` kind
-([`view/src/lib.rs:289`](../../crates/exfill-view/src/lib.rs#L289)).
+([`view/src/lib.rs:289`](../../crates/exfil-view/src/lib.rs#L289)).
 
 ---
 
 ## 7. The progress gauge (`progress.rs`) {#progress}
 
-When you run `exfill scan`, the [engine](./engine.md#9-live-progress-the-scanevent-channel)
+When you run `exfil scan`, the [engine](./engine.md#9-live-progress-the-scanevent-channel)
 streams `ScanEvent`s; `progress.rs` renders them. It picks its renderer based on
-whether stdout is a terminal ([`progress.rs:82`](../../crates/exfill-cli/src/progress.rs#L82)):
+whether stdout is a terminal ([`progress.rs:82`](../../crates/exfil-cli/src/progress.rs#L82)):
 
 ```mermaid
 flowchart TD
@@ -256,9 +256,9 @@ flowchart TD
 
 The interactive path uses a ratatui `Gauge` on an inline 1-line viewport, inserting
 each match *above* the moving gauge via `terminal.insert_before`
-([`progress.rs:131`](../../crates/exfill-cli/src/progress.rs#L131)) so hits stay in
+([`progress.rs:131`](../../crates/exfil-cli/src/progress.rs#L131)) so hits stay in
 scrollback while the bar advances. The non-terminal path prints only match lines,
-so `exfill scan | grep ...` works cleanly. Both run on a dedicated OS thread and
+so `exfil scan | grep ...` works cleanly. Both run on a dedicated OS thread and
 shut down when the event channel closes.
 
 ---

@@ -1,4 +1,4 @@
-# exfill — Extra File Lang Lookup
+# exfil — Extra File Lang Lookup
 # Offline, cross-platform, plugin-based filesystem analysis & SAST engine.
 [workspace]
 resolver = "2"
@@ -8,7 +8,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Rangertaha/exfill"
+repository = "https://github.com/Rangertaha/exfil"
 
 # Lint levels shared by every crate (each opts in with `[lints] workspace = true`).
 [workspace.lints.rust]
@@ -19,19 +19,19 @@ unsafe_code = "deny"
 all = { level = "warn", priority = -1 }
 
 [workspace.dependencies]
-exfill-core = { path = "crates/exfill-core" }
-exfill-config = { path = "crates/exfill-config" }
-exfill-store = { path = "crates/exfill-store" }
-exfill-scan = { path = "crates/exfill-scan" }
-exfill-task = { path = "crates/exfill-task" }
-exfill-source = { path = "crates/exfill-source" }
-exfill-remote = { path = "crates/exfill-remote" }
-exfill-report = { path = "crates/exfill-report" }
-exfill-view = { path = "crates/exfill-view" }
-exfill-mcp = { path = "crates/exfill-mcp" }
-exfill-llm = { path = "crates/exfill-llm" }
-exfill-script = { path = "crates/exfill-script" }
-exfill-engine = { path = "crates/exfill-engine" }
+exfil-core = { path = "crates/exfil-core" }
+exfil-config = { path = "crates/exfil-config" }
+exfil-store = { path = "crates/exfil-store" }
+exfil-scan = { path = "crates/exfil-scan" }
+exfil-task = { path = "crates/exfil-task" }
+exfil-source = { path = "crates/exfil-source" }
+exfil-remote = { path = "crates/exfil-remote" }
+exfil-report = { path = "crates/exfil-report" }
+exfil-view = { path = "crates/exfil-view" }
+exfil-mcp = { path = "crates/exfil-mcp" }
+exfil-llm = { path = "crates/exfil-llm" }
+exfil-script = { path = "crates/exfil-script" }
+exfil-engine = { path = "crates/exfil-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
