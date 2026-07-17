@@ -223,4 +223,15 @@ mod tests {
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    #[test]
+    fn store_defaults_when_omitted() {
+        // A config file that omits `store` falls back to default_store().
+        let path = tmp("no-store.toml");
+        std::fs::write(&path, "[plugins.regex]\ndatasets = []\n").unwrap();
+        let cfg = load(Some(&path)).unwrap();
+        assert_eq!(cfg.store, ".exfil");
+        assert_eq!(cfg.path, path);
+        let _ = std::fs::remove_file(&path);
+    }
 }
