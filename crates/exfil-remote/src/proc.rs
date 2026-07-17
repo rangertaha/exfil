@@ -121,6 +121,11 @@ mod tests {
         assert_eq!(ProcessFs::pid_of("/etc/passwd"), None);
     }
 
+    #[test]
+    fn default_matches_new() {
+        assert_eq!(ProcessFs::default().host(), ProcessFs::new().host());
+    }
+
     #[tokio::test]
     async fn host_is_set_and_paths_are_proc_urls() {
         let fs = ProcessFs::new();
