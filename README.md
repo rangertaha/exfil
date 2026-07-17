@@ -1,17 +1,55 @@
 # exfil
 
 > **Ex**tra **Fi**le **L**ang **L**ookup — an offline, cross-platform,
-> plugin-based filesystem analysis and SAST engine.
+> plugin-based DevSecOps engine for static analysis.
 
 [![CI](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-exfil walks a directory tree in parallel, scans every file against security
-rulesets (leaked credentials, dangerous patterns), and stores the results as a
-queryable **graph** — files → findings → rules — in an embedded, pure-Rust
-database ([SurrealDB](https://surrealdb.com) on SurrealKV). Everything runs
-locally: no network access is needed to analyze, and nothing leaves the
-machine.
+exfil is a DevSecOps tool for static analysis across the whole delivery
+surface — **application source code**, **infrastructure-as-code**, **operating
+systems**, **container artifacts**, and more. It catches problems before they
+ship: **privacy leaks**, **OPSEC violations**, **data leaks**, and **vulnerable
+code** headed for deployment.
+
+It walks a target in parallel, scans every file against security rulesets
+(leaked credentials, dangerous code patterns, insecure configuration,
+supply-chain compromise), and stores the results as a queryable **graph** —
+files → findings → rules — in an embedded, pure-Rust database
+([SurrealDB](https://surrealdb.com) on SurrealKV). Everything runs locally: no
+network access is needed to analyze, and nothing leaves the machine — the same
+property it helps you enforce on your own code.
+
+## What it analyzes
+
+- **Source code** — 17 languages parsed with tree-sitter (Python, JS/TS, C#,
+  Rust, Go, C, C++, Java, Ruby, Dart, Bash, Lua, PowerShell, Swift, Kotlin,
+  Groovy including `Jenkinsfile`s) for dangerous calls and taint flow, plus
+  regex/secret scanning over any text file.
+- **Infrastructure code** — Terraform/HCL, Dockerfiles, Kubernetes/YAML
+  manifests, and other config formats scanned for hardcoded secrets and
+  insecure directives.
+- **Operating systems** — a local filesystem tree, or a remote host over
+  SSH/SFTP (`exfil scan-remote user@host:/path`), walked and scanned in place.
+- **Container & package artifacts** — zip/jar/war/tar/tar.gz/gz archives (image
+  layers and build outputs included) are unpacked into virtual files that flow
+  through the same scanners, depth- and size-capped against bombs.
+- **Dependencies** — `package.json`, `requirements*.txt`, and `Cargo.toml`
+  manifests checked for known-malicious packages, typosquats, and malicious
+  install hooks.
+
+## What it prevents
+
+- **Privacy & data leaks** — regex/secret rules catch API keys, tokens,
+  passwords-in-URLs, and other credentials before they land in a commit,
+  image, or config; IOC/hash feeds flag known-bad content.
+- **OPSEC violations** — hardcoded secrets, cleartext dependency sources, and
+  insecure infrastructure directives are surfaced where they hide, in code and
+  config alike.
+- **Vulnerable code shipping to production** — tree-sitter AST analysis and
+  taint tracking flag dangerous calls and attacker-controlled data flow, while
+  ClamAV/YARA signatures and supply-chain checks catch malicious artifacts and
+  dependencies.
 
 ## Highlights
 
@@ -139,11 +177,19 @@ the config directory and survive cleaning.
 
 | Crate | Purpose |
 |---|---|
-| `exfil-core` | shared domain types (rules, matches, file metadata) |
-| `exfil-config` | TOML config with embedded default |
-| `exfil-scan` | `Scanner` trait, registry, regex scanner, builtin ruleset |
+| `exfil-core` | shared domain types (rules, datasets, matches, findings, file metadata) — no I/O |
+| `exfil-config` | TOML config with embedded default and per-plugin `[plugins.<name>]` tables |
+| `exfil-scan` | `Scanner` trait and registry: regex/secret, supply-chain, archive, tree-sitter AST, taint, IOC, ClamAV, YARA |
+| `exfil-task` | plugin DAG that turns one file's bytes into findings, AST, and expanded archive entries |
 | `exfil-store` | embedded SurrealDB graph store (schema, upserts, queries) |
 | `exfil-engine` | parallel walk → hash → scan → persist pipeline |
+| `exfil-source` | dataset/IOC sources (`builtin://`, file, `https://`) |
+| `exfil-remote` | remote scanning over SSH/SFTP (`RemoteFs` via pure-Rust russh) |
+| `exfil-report` | pluggable reporters rendering the findings graph (text/json/markdown) |
+| `exfil-view` | pluggable node viewers — the TUI's preview-pane layer |
+| `exfil-llm` | finding enrichment: triage notes via the `Enricher` trait (rule-based default) |
+| `exfil-script` | user scripting over findings via sandboxed Rhai |
+| `exfil-mcp` | Model Context Protocol server exposing the findings graph to AI agents over stdio |
 | `exfil-cli` | the `exfil` binary: CLI commands, progress UI, TUI |
 
 The full architecture, data model, and milestone plan live in
