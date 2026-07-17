@@ -53,6 +53,8 @@ fn hint(msg: &str) {
     version,
     about = "exfil — an offline DevSecOps engine for static analysis of code, infrastructure & systems",
     after_help = EXAMPLES,
+    // A bare `exfil` shows the help/examples instead of a terse usage error.
+    arg_required_else_help = true,
 )]
 struct Cli {
     /// Path to the local findings store.
