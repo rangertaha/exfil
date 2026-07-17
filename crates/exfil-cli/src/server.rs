@@ -361,6 +361,21 @@ mod tests {
         assert!(stats.contains(r#""total":1"#) && stats.contains(r#""critical":1"#));
         assert!(get(addr, "/nope").await.contains("404 Not Found"));
 
+        // Error branches: an invalid filter is a 400; unsupported methods and
+        // non-GraphQL POSTs are 405s.
+        assert!(get(addr, "/findings?q=bogus=1")
+            .await
+            .contains("400 Bad Request"));
+        let put = http(
+            addr,
+            "PUT / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(put.contains("405 Method Not Allowed"), "{put}");
+        assert!(post(addr, "/findings", "{}")
+            .await
+            .contains("405 Method Not Allowed"));
+
         // GraphiQL IDE.
         let ide = get(addr, "/graphql").await;
         assert!(ide.contains("text/html") && ide.to_lowercase().contains("graphiql"));
