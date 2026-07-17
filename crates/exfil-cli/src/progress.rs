@@ -94,6 +94,36 @@ pub fn styled_line(m: &Match) -> String {
     }
 }
 
+/// A one-line severity tally for a set of findings, worst-first and colored on
+/// a terminal: `CRIT 2  HIGH 5  MED 1`. Returns `None` when nothing is rated,
+/// so callers can skip an empty line. Zero-count severities are omitted.
+pub fn severity_summary(findings: &[Match]) -> Option<String> {
+    let order = [
+        Severity::Critical,
+        Severity::High,
+        Severity::Medium,
+        Severity::Low,
+        Severity::Info,
+    ];
+    let color = use_color();
+    let parts: Vec<String> = order
+        .into_iter()
+        .filter_map(|sev| {
+            let n = findings.iter().filter(|m| m.severity == Some(sev)).count();
+            if n == 0 {
+                return None;
+            }
+            let tag = severity_tag(Some(sev)).unwrap_or("");
+            Some(if color {
+                format!("{}{tag} {n}\x1b[0m", severity_color(sev))
+            } else {
+                format!("{tag} {n}")
+            })
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("  "))
+}
+
 /// Running tallies for the progress gauge, updated from [`ScanEvent`]s.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProgressState {
@@ -250,6 +280,21 @@ mod tests {
         let mut hit = m("aws");
         hit.severity = Some(Severity::Critical);
         assert_eq!(match_line(&hit), "a.env:2:5 CRIT [aws] hit");
+    }
+
+    #[test]
+    fn severity_summary_tallies_worst_first() {
+        let mut crit = m("aws");
+        crit.severity = Some(Severity::Critical);
+        let mut med = m("pii");
+        med.severity = Some(Severity::Medium);
+        // Two criticals, one medium, one unrated → "CRIT 2  MED 1".
+        let findings = vec![crit.clone(), crit, med, m("plain")];
+        assert_eq!(
+            severity_summary(&findings).as_deref(),
+            Some("CRIT 2  MED 1")
+        );
+        assert_eq!(severity_summary(&[]), None);
     }
 
     #[test]

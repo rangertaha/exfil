@@ -676,6 +676,9 @@ async fn cmd_search(store_dir: &std::path::Path, query: Option<String>) -> Resul
         println!("{}", progress::styled_line(m));
     }
     println!("{} finding(s)", findings.len());
+    if let Some(summary) = progress::severity_summary(&findings) {
+        println!("{summary}");
+    }
     if findings.is_empty() {
         hint("No findings. Run `exfil scan` to populate the store, or broaden your query (`exfil search` with no args lists everything).");
     }
