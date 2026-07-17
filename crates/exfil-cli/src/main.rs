@@ -163,7 +163,15 @@ enum Command {
         recent_days: i64,
     },
     /// Query stored findings.
-    Search { query: Option<String> },
+    ///
+    /// With no query, lists every finding. A `field=value` term filters on one
+    /// of `rule`, `cwe`, `severity`, or `path`; any other text matches against
+    /// rule names. Examples: `severity=critical`, `cwe=CWE-798`, `path=src/`,
+    /// or just `aws`.
+    Search {
+        /// `field=value` (rule/cwe/severity/path) or free text; empty lists all.
+        query: Option<String>,
+    },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
     Graph {
         /// Optional finding filter (same syntax as `search`).
@@ -206,7 +214,13 @@ enum Command {
     /// Open the mutt-style TUI: scan, browse, and query the graph live.
     Tui,
     /// Print a stored record by id.
-    Get { id: String },
+    ///
+    /// The id is `table:key`, e.g. `file:<blake3-hash>` or `finding:<id>`, as
+    /// shown by `search` and the graph. Prints the record as pretty JSON.
+    Get {
+        /// Record id as `table:key`, e.g. `file:<blake3-hash>`.
+        id: String,
+    },
     /// Print a shell completion script (bash, zsh, fish, powershell, elvish).
     Completions {
         /// Target shell, e.g. `bash`. Source or install the output; for bash:
