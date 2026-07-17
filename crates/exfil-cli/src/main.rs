@@ -81,8 +81,20 @@ struct Cli {
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
+    /// When to colorize output: auto (default), always, or never.
+    #[arg(long, value_enum, default_value_t = ColorWhen::Auto, global = true)]
+    color: ColorWhen,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// `--color` choices, mapped onto [`progress::ColorChoice`].
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ColorWhen {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Subcommand)]
@@ -245,6 +257,11 @@ enum DatasetCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    progress::set_color_choice(match cli.color {
+        ColorWhen::Auto => progress::ColorChoice::Auto,
+        ColorWhen::Always => progress::ColorChoice::Always,
+        ColorWhen::Never => progress::ColorChoice::Never,
+    });
     let store_dir = PathBuf::from(&cli.store);
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,

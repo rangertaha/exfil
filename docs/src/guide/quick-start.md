@@ -23,7 +23,8 @@ exfil clean
 Each finding is `path:line:col SEVERITY [rule] snippet`. The severity tag is
 color-coded on a terminal (bright red for critical down to cyan for info) and
 plain text when piped, so `grep CRIT` still works. Set `NO_COLOR=1` to disable
-color.
+color, or use `--color always|never|auto` to override detection (e.g.
+`exfil search --color always | less -R`).
 
 ```text
 ./.env:1:26 CRIT [aws-access-key-id] export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF

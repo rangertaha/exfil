@@ -82,10 +82,39 @@ pub fn severity_style(sev: Option<Severity>) -> Style {
     }
 }
 
-/// Whether to emit ANSI color: only when stdout is a terminal and `NO_COLOR`
-/// is unset (the de-facto standard opt-out).
+/// When to emit ANSI color, set once from the `--color` flag. `Auto` (the
+/// default) detects a terminal and honors `NO_COLOR`.
+#[derive(Clone, Copy)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+// Process-wide color choice: 0=auto, 1=always, 2=never. A plain atomic keeps
+// `use_color()` callable from anywhere (including the render thread) without
+// threading the choice through every signature.
+static COLOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Record the `--color` choice for the rest of the run.
+pub fn set_color_choice(choice: ColorChoice) {
+    let v = match choice {
+        ColorChoice::Auto => 0,
+        ColorChoice::Always => 1,
+        ColorChoice::Never => 2,
+    };
+    COLOR.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether to emit ANSI color. `always`/`never` force the answer; `auto` emits
+/// color only when stdout is a terminal and `NO_COLOR` is unset (the de-facto
+/// standard opt-out).
 pub fn use_color() -> bool {
-    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    match COLOR.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    }
 }
 
 /// Like [`match_line`], but colors the severity tag on a terminal. Falls back
