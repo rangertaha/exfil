@@ -923,6 +923,32 @@ impl App {
         format!("-*- {} ", parts.join(" --- "))
     }
 
+    /// Guidance shown in the index when it has no rows, tailored to why it is
+    /// empty: mid-scan, a filtered-out limit, a never-scanned store, or an
+    /// empty browsed table.
+    fn empty_index_message(&self) -> String {
+        if self.scan.is_some() {
+            return "Scanning…".into();
+        }
+        if self.browse == ObjectType::Findings {
+            if self.limit.is_empty() {
+                "No findings yet.\n\nPress  s  to scan the current directory\n\
+                 :  for a command   ·   ?  for help"
+                    .into()
+            } else {
+                format!(
+                    "No findings match limit \"{}\".\n\nPress  /  to change the limit   ·   r  to reload",
+                    self.limit
+                )
+            }
+        } else {
+            format!(
+                "No {}.\n\nTab  switches type   ·   :  for a command   ·   ?  for help",
+                self.browse.title()
+            )
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         let [help, main, status, msg] = Layout::vertical([
             Constraint::Length(1),
@@ -948,6 +974,15 @@ impl App {
 
         // Main area: index, text pager, or graph navigator.
         match self.mode {
+            Mode::Index if self.index_len() == 0 => {
+                // An empty index would be a blank screen with no cue; show
+                // guidance tailored to why it's empty instead.
+                frame.render_widget(
+                    Paragraph::new(self.empty_index_message())
+                        .alignment(ratatui::layout::Alignment::Center),
+                    main,
+                );
+            }
             Mode::Index => {
                 let rows: Vec<ListItem> = if self.browse == ObjectType::Findings {
                     self.findings
@@ -1583,6 +1618,13 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             let store = handle.block_on(Store::open_findings(&dir)).unwrap();
             let mut app = App::new(store, dir.clone(), crate::keymap::Keymap::defaults());
+
+            // A fresh store has no findings; the index shows onboarding guidance
+            // rather than a blank screen.
+            assert!(
+                screen(&mut app).contains("No findings yet"),
+                "empty-state guidance renders"
+            );
 
             // Scripted keys: move down, open a prompt and cancel it, then quit.
             let mut keys = vec![
