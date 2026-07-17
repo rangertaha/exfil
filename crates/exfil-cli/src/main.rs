@@ -18,6 +18,7 @@
 
 mod keymap;
 mod progress;
+mod server;
 mod tui;
 
 use std::path::PathBuf;
@@ -235,6 +236,13 @@ enum Command {
     },
     /// Run an MCP server on stdio for AI agents.
     Mcp,
+    /// Run a long-lived service exposing a read-only HTTP API over the findings
+    /// graph (`/health`, `/findings`, `/rules`, `/stats`) until interrupted.
+    Server {
+        /// Address to bind, e.g. `127.0.0.1:8080` or `0.0.0.0:8080`.
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+    },
     /// Open the mutt-style TUI: scan, browse, and query the graph live.
     Tui,
     /// Print a stored record by id.
@@ -323,6 +331,7 @@ async fn main() -> Result<()> {
             let store = exfil_store::Store::open_findings(&store_dir).await?;
             exfil_mcp::serve(store).await?;
         }
+        Command::Server { addr } => cmd_server(&store_dir, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
         Command::Clean { yes } => cmd_clean(&store_dir, yes)?,
@@ -923,6 +932,22 @@ async fn cmd_get(store_dir: &std::path::Path, id: &str) -> Result<()> {
         None => println!("no record {id:?}"),
     }
     Ok(())
+}
+
+/// Run the long-lived HTTP API service until interrupted. Binds `addr`, opens
+/// the findings store, and serves read-only JSON endpoints; a graceful
+/// shutdown (Ctrl-C / SIGTERM) stops accepting connections and returns.
+async fn cmd_server(store_dir: &std::path::Path, addr: &str) -> Result<()> {
+    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("bind {addr}"))?;
+    eprintln!(
+        "[server] serving findings from {} — Ctrl-C to stop",
+        store_dir.display()
+    );
+    eprintln!("[server]   GET /health  /findings[?q=…]  /rules  /stats");
+    server::serve(listener, store, server::shutdown_signal()).await
 }
 
 /// Print a shell completion script for `shell` to stdout. Generated from the

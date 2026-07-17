@@ -63,6 +63,7 @@ exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 |---|---|
 | `exfil tui` | Open the mutt-style TUI: scan, browse, and query the graph live |
 | `exfil mcp` | Run an MCP server on stdio for AI agents |
+| `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
 | `exfil export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
 | `exfil gc` | Garbage-collect unreachable records |
@@ -88,3 +89,24 @@ exfil completions fish > ~/.config/fish/completions/exfil.fish
 > The banner-grabbing and web/port scanners reach out over the network and are
 > intended for **authorized security testing only**. The core filesystem, code,
 > and archive scanning is fully offline.
+
+## HTTP API server
+
+`exfil server` runs a long-lived, read-only HTTP service over the findings
+store, shutting down gracefully on Ctrl-C or SIGTERM:
+
+```sh
+exfil server                       # binds 127.0.0.1:8080
+exfil server --addr 0.0.0.0:9000   # serve other hosts
+```
+
+| Route | Returns |
+|---|---|
+| `GET /health` | `{"status":"ok","service":"exfil"}` |
+| `GET /findings` | Every finding, worst-first (JSON array) |
+| `GET /findings?q=<filter>` | Filtered — same grammar as `search` (`severity=high`, `path=…`, text) |
+| `GET /rules` | The built-in ruleset |
+| `GET /stats` | Total findings and a per-severity breakdown |
+
+It is read-only, so it is safe to expose, but bind it to loopback unless you
+intend to serve other hosts.
