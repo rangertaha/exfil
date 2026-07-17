@@ -1,6 +1,6 @@
 # exfil — Architecture & Build Plan (Rust)
 
-**exfil** (Extra File Lang Lookup) is an offline, cross-platform, plugin-based
+**exfil** (**EX**amine **F**iles, **I**nfrastructure & **L**ibraries) is an offline, cross-platform, plugin-based
 filesystem-analysis and SAST engine. It builds a queryable graph of files →
 AST → findings → rules with full provenance, backed by an embedded database,
 and can optionally enrich results with an embedded offline LLM. Written in

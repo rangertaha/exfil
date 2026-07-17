@@ -1,6 +1,6 @@
 # Exfil
 
-A plugin-based DevSecOps engine for static analysis.
+***EX**amine **F**iles, **I**nfrastructure & **L**ibraries* — a plugin-based DevSecOps engine for static analysis.
 
 [![CI](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml)
 [![Docs](https://github.com/Rangertaha/exfil/actions/workflows/docs.yml/badge.svg)](https://rangertaha.github.io/exfil/)

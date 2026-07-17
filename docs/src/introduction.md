@@ -1,6 +1,6 @@
 # Introduction
 
-**exfil** — *Extra File Lang Lookup* — is an offline, plugin-based DevSecOps
+**exfil** — ***EX**amine **F**iles, **I**nfrastructure & **L**ibraries* — is an offline, plugin-based DevSecOps
 engine that scans your whole delivery surface for security problems and files
 every finding into a queryable graph — so you catch leaked secrets, vulnerable
 code, and risky configuration before they ship, with nothing leaving your
