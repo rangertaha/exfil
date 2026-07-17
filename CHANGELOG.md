@@ -82,6 +82,9 @@ and this project adheres to
   regexes), and the threat-intel formats STIX 2.x, MISP, and OpenIOC (a `.json`
   feed is content-sniffed between native/STIX/MISP; a `.xml` feed between
   OpenIOC and RSS/Atom), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
+- TAXII 2.x feeds: a `taxii2+…` feed URL is polled over the TAXII transport (a
+  collection's `objects/` endpoint, with `more`/`next` pagination and basic-auth
+  from the URL) and its STIX objects normalized into IOC rules.
 
 ### Changed
 

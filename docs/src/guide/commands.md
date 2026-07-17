@@ -102,6 +102,20 @@ Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/
 Each pulled feed becomes a dataset named after the feed; its rules join the
 catalog and apply on the next scan.
 
+### TAXII 2.x collections
+
+A feed URL prefixed `taxii2+` is polled over the [TAXII 2.x](https://oasis-open.github.io/cti-documentation/taxii/intro.html)
+transport instead of downloaded as a file. Point it at a collection's
+`objects/` endpoint; exfil sends the TAXII media type, follows `more`/`next`
+pagination, and normalizes the returned STIX objects into IOC rules:
+
+```sh
+exfil feeds add ti "taxii2+https://taxii.example.com/api/collections/<id>/objects/"
+# private collection — basic-auth credentials in the URL:
+exfil feeds add ti "taxii2+https://user:pass@taxii.example.com/api/collections/<id>/objects/"
+exfil feeds pull ti
+```
+
 ## Shell completions
 
 Generate a completion script for your shell and install it so `exfil <Tab>`

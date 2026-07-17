@@ -21,6 +21,10 @@
 //! without the network; [`fetch_feed`] is the thin download layer on top.
 //! Adding a format is a new arm here — the catalog, storage, and CLI don't
 //! change.
+//!
+//! A feed URL prefixed `taxii2+` is polled over the TAXII 2.x transport (a
+//! collection's `objects/` endpoint, paginated) instead of downloaded, and its
+//! STIX objects flow through the same STIX normalizer.
 
 use std::io::Read;
 
@@ -78,10 +82,18 @@ impl FeedFormat {
     }
 }
 
+/// A `taxii2+` URL prefix marks a feed served over the TAXII 2.x transport
+/// rather than a plain file download (`taxii2+https://server/…/objects/`).
+const TAXII_PREFIX: &str = "taxii2+";
+
 /// Download `url`, decompress, and parse every member into one [`Dataset`]
 /// named `name`. Members that fail to parse are skipped with a warning, so one
-/// bad file in an archive doesn't sink the whole feed.
+/// bad file in an archive doesn't sink the whole feed. A `taxii2+…` URL is
+/// polled over the TAXII 2.x API instead ([`fetch_taxii`]).
 pub async fn fetch_feed(name: &str, url: &str) -> Result<Dataset> {
+    if let Some(endpoint) = url.strip_prefix(TAXII_PREFIX) {
+        return fetch_taxii(name, endpoint).await;
+    }
     let bytes = reqwest::get(url)
         .await
         .with_context(|| format!("download feed {url}"))?
@@ -92,6 +104,66 @@ pub async fn fetch_feed(name: &str, url: &str) -> Result<Dataset> {
         .context("read feed body")?;
     let dataset = ingest(name, filename_of(url), &bytes)?;
     Ok(dataset)
+}
+
+/// Poll a TAXII 2.x collection's `objects/` endpoint and normalize the STIX
+/// objects it returns into IOC rules. `endpoint` is the collection URL with the
+/// `taxii2+` prefix already stripped. Sends the TAXII media type, follows
+/// `more`/`next` pagination (bounded), and applies HTTP basic auth from any
+/// `user:pass@` in the URL, so a private collection works with credentials
+/// embedded in the feed URL.
+async fn fetch_taxii(name: &str, endpoint: &str) -> Result<Dataset> {
+    const ACCEPT_TAXII: &str = "application/taxii+json;version=2.1";
+    const MAX_PAGES: usize = 50;
+    let client = reqwest::Client::new();
+    let mut rules = Vec::new();
+    let mut page_url = endpoint.to_string();
+    for _ in 0..MAX_PAGES {
+        let parsed =
+            reqwest::Url::parse(&page_url).with_context(|| format!("bad TAXII url {page_url}"))?;
+        let mut req = client
+            .get(parsed.clone())
+            .header(reqwest::header::ACCEPT, ACCEPT_TAXII);
+        if !parsed.username().is_empty() {
+            req = req.basic_auth(parsed.username(), parsed.password());
+        }
+        let bytes = req
+            .send()
+            .await
+            .with_context(|| format!("TAXII request {page_url}"))?
+            .error_for_status()
+            .context("TAXII request failed")?
+            .bytes()
+            .await
+            .context("read TAXII body")?;
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).context("parse TAXII envelope")?;
+        rules.extend(stix_iocs(&body, name));
+        let more = body.get("more").and_then(|m| m.as_bool()).unwrap_or(false);
+        match body.get("next").and_then(|n| n.as_str()) {
+            Some(next) if more && !next.is_empty() => page_url = taxii_next(endpoint, next)?,
+            _ => break,
+        }
+    }
+    Ok(Dataset {
+        name: name.to_string(),
+        rules,
+    })
+}
+
+/// Set (or replace) the `next` pagination cursor on a TAXII endpoint URL.
+fn taxii_next(base: &str, next: &str) -> Result<String> {
+    let mut u = reqwest::Url::parse(base).with_context(|| format!("bad TAXII url {base}"))?;
+    let kept: Vec<(String, String)> = u
+        .query_pairs()
+        .filter(|(k, _)| k != "next")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    u.query_pairs_mut()
+        .clear()
+        .extend_pairs(&kept)
+        .append_pair("next", next);
+    Ok(u.to_string())
 }
 
 /// The pure core of [`fetch_feed`]: given the payload bytes and the source
@@ -890,6 +962,45 @@ mod tests {
         assert!(pats.contains(&"ip:203.0.113.9"), "{pats:?}");
         assert!(pats.contains(&"sha256:abcdef"), "{pats:?}");
         assert_eq!(rules.len(), 3);
+    }
+
+    #[test]
+    fn taxii_envelope_objects_become_iocs() {
+        // A TAXII 2.1 response is an envelope of STIX objects — the same shape
+        // stix_iocs already reads, just delivered over the transport.
+        let envelope = r#"{
+          "objects": [
+            {"type":"indicator","pattern":"[domain-name:value = 'taxii.evil.test']"},
+            {"type":"indicator","pattern":"[ipv4-addr:value = '198.51.100.4']"}
+          ],
+          "more": false
+        }"#;
+        let v: serde_json::Value = serde_json::from_str(envelope).unwrap();
+        let pats: Vec<String> = stix_iocs(&v, "taxii")
+            .into_iter()
+            .map(|r| r.pattern)
+            .collect();
+        assert!(
+            pats.contains(&"domain:taxii.evil.test".to_string()),
+            "{pats:?}"
+        );
+        assert!(pats.contains(&"ip:198.51.100.4".to_string()), "{pats:?}");
+    }
+
+    #[test]
+    fn taxii_next_cursor_is_set_and_replaced() {
+        // Cursor added to a bare endpoint.
+        let a = taxii_next("https://s/api/collections/c/objects/", "abc").unwrap();
+        assert!(a.ends_with("next=abc"), "{a}");
+        // Existing cursor replaced, other params kept.
+        let b = taxii_next(
+            "https://s/api/collections/c/objects/?limit=100&next=old",
+            "new",
+        )
+        .unwrap();
+        assert!(b.contains("limit=100"), "{b}");
+        assert!(b.contains("next=new"), "{b}");
+        assert!(!b.contains("next=old"), "{b}");
     }
 
     #[test]
