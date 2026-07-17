@@ -366,4 +366,71 @@ mod tests {
         let node = Node::new("blob:1", "blob", json!({}));
         assert_eq!(reg.render(&node), vec!["00 01 02".to_string()]);
     }
+
+    #[test]
+    fn indicator_viewer_lists_observables_and_handles_empty() {
+        let node = Node::new(
+            "indicators:1",
+            "indicators",
+            json!({ "domains": ["evil.example.com"], "ips": ["203.0.113.9"], "emails": [] }),
+        );
+        let lines = Registry::new().render(&node);
+        assert!(
+            lines.iter().any(|l| l.contains("Domains (1):")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("evil.example.com")));
+        assert!(lines.iter().any(|l| l.contains("203.0.113.9")));
+        // An empty array (emails) contributes no section.
+        assert!(!lines.iter().any(|l| l.contains("Emails")), "{lines:?}");
+
+        // A node with no observables shows the placeholder.
+        let empty = Node::new("indicators:2", "indicators", json!({}));
+        assert_eq!(Registry::new().render(&empty), vec!["(no indicators)"]);
+    }
+
+    #[test]
+    fn event_viewer_renders_cim_fields() {
+        let node = Node::new(
+            "event:1",
+            "event",
+            json!({ "category": "credential-access", "action": "detected",
+                    "signature": "aws-key", "severity": "critical", "src": "" }),
+        );
+        let lines = Registry::new().render(&node);
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Category:  credential-access")));
+        assert!(lines.iter().any(|l| l.contains("Action:    detected")));
+        // Empty src renders as "-" via opt().
+        assert!(
+            lines.iter().any(|l| l.contains("Source:    -")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn rule_viewer_renders_pattern_and_description() {
+        let node = Node::new(
+            "rule:1",
+            "rule",
+            json!({ "name": "aws-access-key-id", "pattern": "AKIA[0-9A-Z]{16}",
+                    "cwe": "CWE-798", "description": "AWS access key ID", "severity": "" }),
+        );
+        let lines = Registry::new().render(&node);
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Rule:     aws-access-key-id")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Pattern:  AKIA[0-9A-Z]{16}")));
+        assert!(lines.iter().any(|l| l.contains("AWS access key ID")));
+        // Empty severity renders as "-".
+        assert!(lines.iter().any(|l| l.contains("Severity: -")), "{lines:?}");
+    }
+
+    #[test]
+    fn registry_default_matches_new() {
+        assert_eq!(Registry::default().viewer_for("finding"), "finding");
+    }
 }
