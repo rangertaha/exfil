@@ -188,4 +188,40 @@ mod tests {
         }
         assert_eq!(NavAction::from_name("Frobnicate"), None);
     }
+
+    #[test]
+    fn key_string_covers_named_keys() {
+        for (code, name) in [
+            (KeyCode::Enter, "Enter"),
+            (KeyCode::Esc, "Esc"),
+            (KeyCode::Backspace, "Backspace"),
+            (KeyCode::Up, "Up"),
+            (KeyCode::Down, "Down"),
+            (KeyCode::Left, "Left"),
+            (KeyCode::Right, "Right"),
+        ] {
+            assert_eq!(key_string(code).as_deref(), Some(name));
+        }
+        assert_eq!(key_string(KeyCode::Delete), None);
+    }
+
+    #[test]
+    fn from_config_applies_overrides_and_ignores_unknown() {
+        let mut table = toml::value::Table::new();
+        table.insert("x".into(), toml::Value::String("Quit".into()));
+        table.insert("y".into(), toml::Value::String("Bogus".into())); // ignored
+        let km = Keymap::from_config(Some(&table));
+        assert_eq!(km.nav_action(KeyCode::Char('x')), Some(NavAction::Quit));
+        assert_eq!(km.nav_action(KeyCode::Char('y')), None);
+        // Defaults still apply where not overridden.
+        assert_eq!(km.nav_action(KeyCode::Char('j')), Some(NavAction::Down));
+    }
+
+    #[test]
+    fn default_impl_matches_defaults() {
+        assert_eq!(
+            Keymap::default().nav_action(KeyCode::Char('j')),
+            Some(NavAction::Down)
+        );
+    }
 }
