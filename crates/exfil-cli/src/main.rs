@@ -97,8 +97,9 @@ enum Command {
         #[command(subcommand)]
         action: Option<DatasetCmd>,
     },
-    /// Show the rules a scan would apply.
-    Rules,
+    /// Show the rules a scan would apply, optionally filtered by a substring
+    /// of the name, description, CWE, or severity.
+    Rules { filter: Option<String> },
     /// Scan a directory tree for patterns and security issues.
     Scan {
         path: Option<String>,
@@ -279,7 +280,7 @@ async fn main() -> Result<()> {
             let store = exfil_store::Store::open_findings(&store_dir).await?;
             exfil_mcp::serve(store).await?;
         }
-        Command::Rules => cmd_rules()?,
+        Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
         Command::Clean { yes } => cmd_clean(&store_dir, yes)?,
         Command::Tui => {
@@ -861,9 +862,26 @@ fn cmd_completions(shell: Shell) {
     clap_complete::generate(shell, &mut cmd, "exfil", &mut std::io::stdout());
 }
 
-/// Show the rules a scan would apply (currently the built-in set).
-fn cmd_rules() -> Result<()> {
-    for r in exfil_scan::builtin_rules() {
+/// Show the rules a scan would apply (currently the built-in set), optionally
+/// filtered by a case-insensitive substring of the name, description, CWE, or
+/// severity. Prints a trailing count.
+fn cmd_rules(filter: Option<String>) -> Result<()> {
+    let needle = filter.unwrap_or_default().to_lowercase();
+    let matches = |r: &exfil_core::Rule| {
+        if needle.is_empty() {
+            return true;
+        }
+        let sev = r.severity.map(|s| format!("{s:?}").to_lowercase());
+        r.name.to_lowercase().contains(&needle)
+            || r.description.to_lowercase().contains(&needle)
+            || r.cwe
+                .as_deref()
+                .is_some_and(|c| c.to_lowercase().contains(&needle))
+            || sev.as_deref() == Some(needle.as_str())
+    };
+
+    let mut shown = 0;
+    for r in exfil_scan::builtin_rules().iter().filter(|r| matches(r)) {
         let sev = r
             .severity
             .map(|s| format!("{s:?}").to_lowercase())
@@ -875,6 +893,12 @@ fn cmd_rules() -> Result<()> {
             r.cwe.as_deref().unwrap_or("-"),
             r.description
         );
+        shown += 1;
+    }
+    if needle.is_empty() {
+        println!("{shown} rule(s)");
+    } else {
+        println!("{shown} rule(s) matching {needle:?}");
     }
     Ok(())
 }
