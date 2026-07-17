@@ -72,6 +72,13 @@ enum Command {
     },
     /// Scan the local host's running processes (command lines, exe paths).
     Processes,
+    /// Grab and scan TCP service banners from `host:port` targets (authorized
+    /// testing only).
+    ScanTcp {
+        /// One or more `host:port` targets, e.g. `example.com:22`.
+        #[arg(required = true)]
+        targets: Vec<String>,
+    },
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -142,6 +149,9 @@ async fn main() -> Result<()> {
             cmd_scan_remote(&store_dir, cli.config.as_deref(), &target, port, key).await?
         }
         Command::Processes => cmd_processes(&store_dir, cli.config.as_deref()).await?,
+        Command::ScanTcp { targets } => {
+            cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
+        }
         Command::Search { query } => cmd_search(&store_dir, query).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
@@ -259,6 +269,29 @@ async fn cmd_processes(
     let summary = result?;
     println!(
         "scanned {} processes: {} matches, {} unreadable",
+        summary.files, summary.matches, summary.errors
+    );
+    Ok(())
+}
+
+/// Grab TCP service banners from `targets` and scan them with the full
+/// pipeline (version strings, exposed secrets, bad indicators in banners).
+async fn cmd_scan_tcp(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    targets: Vec<String>,
+) -> Result<()> {
+    let pipeline = build_pipeline(config).await?;
+    let store = exfill_store::Store::open_findings(store_dir).await?;
+    let fs = exfill_remote::TcpFs::new(targets);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfill_engine::scan_remote(&fs, "tcp://", &pipeline, &store, Some(tx)).await;
+    let _ = renderer.join();
+    let summary = result?;
+    println!(
+        "grabbed {} banner(s): {} matches, {} unreachable",
         summary.files, summary.matches, summary.errors
     );
     Ok(())

@@ -14,7 +14,9 @@
 //! host's *running processes* as scannable bytes — see [`proc`].
 
 pub mod proc;
+pub mod tcp;
 pub use proc::ProcessFs;
+pub use tcp::TcpFs;
 
 use std::path::PathBuf;
 use std::sync::Arc;
