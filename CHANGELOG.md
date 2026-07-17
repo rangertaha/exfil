@@ -56,6 +56,14 @@ and this project adheres to
   `clean` now confirms before deleting (with `-y` to skip).
 - TUI: findings index color-coded by severity, a `?` help overlay, a titled
   pager, onboarding guidance on an empty index, and `Esc` to clear a limit.
+- `exfil server` — a long-lived, read-only HTTP API over the findings graph
+  (hand-rolled over `tokio::net`, no web framework): REST routes `/health`,
+  `/findings[?q=…]`, `/rules`, `/stats`, plus a GraphQL endpoint at
+  `POST /graphql` with a GraphiQL IDE at `GET /graphql`. Binds `127.0.0.1:8080`
+  by default; shuts down gracefully on Ctrl-C / SIGTERM.
+- Desktop app (`app/`) — a Tauri wrapper that runs `exfil server` and shows a
+  findings dashboard; closing the window keeps the app and server alive in the
+  system tray. A standalone workspace, excluded from the main build/CI.
 
 ### Changed
 
