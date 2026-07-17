@@ -187,6 +187,7 @@ fn help_text() -> Vec<String> {
         "",
         "Pager & help",
         "  j / k             scroll · g/G top/bottom · PgUp/PgDn by a screen",
+        "  h / l             scroll left / right (wide content)",
         "  i / q / Esc       back to the index",
         "",
         "Findings are color-coded by severity; the status bar shows a per-severity tally.",
@@ -387,6 +388,8 @@ struct App {
     pager_title: String,
     /// Height of the main content area from the last draw, for page scrolling.
     page: u16,
+    /// Horizontal scroll offset for the pager (`h`/`l`), for wide content.
+    pager_col: u16,
     /// Where to return when leaving the `?` help overlay (the mode it was
     /// opened from). `None` for an ordinary pager (rules, a record).
     help_return: Option<Mode>,
@@ -420,6 +423,7 @@ impl App {
             pager: Vec::new(),
             pager_title: String::new(),
             page: 1,
+            pager_col: 0,
             help_return: None,
             message: "ready — Tab:type :scan / to limit q to quit".into(),
             prompt: None,
@@ -805,6 +809,7 @@ impl App {
                     })
                     .collect();
                 self.mode = Mode::Pager(0);
+                self.pager_col = 0;
                 self.pager_title = "builtin rules".into();
                 self.message = "builtin rules".into();
             }
@@ -813,6 +818,7 @@ impl App {
                     let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
                     self.pager = pretty.lines().map(String::from).collect();
                     self.mode = Mode::Pager(0);
+                    self.pager_col = 0;
                     self.pager_title = id.clone();
                     self.message = id;
                 }
@@ -968,7 +974,7 @@ impl App {
             Mode::Index => {
                 "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload ?:Help"
             }
-            Mode::Pager(_) => "i/q:Index  j/k:Scroll  g/G:Top/Bottom  PgUp/PgDn:Page",
+            Mode::Pager(_) => "i/q:Index  j/k:Scroll  h/l:◂▸  g/G:Top/Bottom  PgUp/PgDn:Page",
             Mode::Nav => {
                 "q:Index j/k:Move h/l:Pane Enter:Follow </>:Back c:Edit d:DelEdge u/U:Undo/Redo"
             }
@@ -1008,7 +1014,12 @@ impl App {
             Mode::Pager(scroll) => {
                 let text: Vec<Line> = self.pager.iter().map(|l| Line::raw(l.as_str())).collect();
                 let block = Block::bordered().title(format!(" {} ", self.pager_title));
-                frame.render_widget(Paragraph::new(text).scroll((scroll, 0)).block(block), main);
+                frame.render_widget(
+                    Paragraph::new(text)
+                        .scroll((scroll, self.pager_col))
+                        .block(block),
+                    main,
+                );
             }
             Mode::Nav => self.draw_nav(frame, main),
         }
@@ -1030,6 +1041,7 @@ impl App {
         self.help_return = Some(self.mode);
         self.pager = help_text();
         self.pager_title = "help".into();
+        self.pager_col = 0;
         self.mode = Mode::Pager(0);
         self.message = "help — i or q to return".into();
     }
@@ -1075,6 +1087,12 @@ impl App {
                 KeyCode::Char('G') | KeyCode::End => *scroll = max_scroll,
                 KeyCode::PageDown => *scroll = scroll.saturating_add(page).min(max_scroll),
                 KeyCode::PageUp => *scroll = scroll.saturating_sub(page),
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.pager_col = self.pager_col.saturating_add(8)
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.pager_col = self.pager_col.saturating_sub(8)
+                }
                 _ => {}
             },
             Mode::Index => match code {
@@ -1503,6 +1521,11 @@ mod tests {
             );
             app.on_key(&handle, KeyCode::Char('g'));
             assert!(matches!(app.mode, Mode::Pager(0)), "g returns to the top");
+            // Horizontal scroll: l moves right, h back to the left edge.
+            app.on_key(&handle, KeyCode::Char('l'));
+            assert!(app.pager_col > 0, "l scrolls right");
+            app.on_key(&handle, KeyCode::Char('h'));
+            assert_eq!(app.pager_col, 0, "h scrolls back to the left");
             app.on_key(&handle, KeyCode::Char('q')); // back to index
             assert!(matches!(app.mode, Mode::Index));
 
