@@ -17,6 +17,14 @@ use exfil_core::{Match, Severity};
 
 use crate::Scanner;
 
+/// A rule pattern carrying YARA source, as `yara:<rule block>` — how a feed
+/// stores YARA rules in the catalog. Returns the source (the part after the
+/// prefix), or `None` for a non-YARA pattern. The regex scanner skips these,
+/// and the pipeline compiles them into the [`YaraScanner`].
+pub fn is_yara_source(pattern: &str) -> Option<&str> {
+    pattern.strip_prefix("yara:")
+}
+
 /// Matches file contents against a compiled set of YARA rules.
 pub struct YaraScanner {
     rules: Option<yara_x::Rules>,

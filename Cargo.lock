@@ -2073,6 +2073,7 @@ dependencies = [
  "async-trait",
  "exfil-core",
  "exfil-scan",
+ "exfil-task",
  "flate2",
  "reqwest",
  "roxmltree",

@@ -730,11 +730,24 @@ async fn run_web_scan(
 /// Non-compiling external regex patterns are reported and skipped.
 async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfil_task::Pipeline> {
     let mut rules = exfil_scan::builtin_rules();
+    // YARA rules from feeds are stored as `yara:<source>` in the catalog;
+    // split them out and compile them into the YARA scanner.
+    let mut yara_from_feeds = String::new();
     if let Ok(catalog) = open_catalog(config).await {
-        rules.extend(catalog.all_rules().await.unwrap_or_default());
+        for rule in catalog.all_rules().await.unwrap_or_default() {
+            if let Some(src) = exfil_scan::yara::is_yara_source(&rule.pattern) {
+                yara_from_feeds.push_str(src);
+                yara_from_feeds.push('\n');
+            } else {
+                rules.push(rule);
+            }
+        }
     }
     let clamav_signatures = load_plugin_files(config, "clamav", "signatures");
-    let yara_rules = load_plugin_files(config, "yara", "rules");
+    let yara_rules = format!(
+        "{}\n{yara_from_feeds}",
+        load_plugin_files(config, "yara", "rules")
+    );
     let (pipeline, skipped) =
         exfil_scan::pipeline_with_rules(rules, &clamav_signatures, &yara_rules)?;
     if !skipped.is_empty() {

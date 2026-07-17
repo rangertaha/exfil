@@ -186,6 +186,7 @@ impl RegexScanner {
             if ioc::is_hash_ioc(&rule.pattern).is_some()
                 || netioc::is_network_ioc(&rule.pattern).is_some()
                 || leak::is_breach_ioc(&rule.pattern).is_some()
+                || yara::is_yara_source(&rule.pattern).is_some()
             {
                 continue;
             }
@@ -209,6 +210,7 @@ impl RegexScanner {
             if ioc::is_hash_ioc(&rule.pattern).is_some()
                 || netioc::is_network_ioc(&rule.pattern).is_some()
                 || leak::is_breach_ioc(&rule.pattern).is_some()
+                || yara::is_yara_source(&rule.pattern).is_some()
             {
                 continue;
             }

@@ -76,8 +76,9 @@ and this project adheres to
   dynamic sites — content a plain HTTP crawl misses.
 - URL feed catalog (`exfil feeds`): manage a catalog of feed URLs and ingest
   them through a fetch → decompress → detect → parse pipeline into rule
-  datasets. Formats: native JSON, CSV/TSV (header-mapped regex rules), and
-  newline IOC lists (domain/IP/sha256), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
+  datasets. Formats: native JSON, CSV/TSV (header-mapped regex rules), newline
+  IOC lists (domain/IP/sha256), RSS/Atom (IOCs mined from item text), and YARA
+  (`.yar` rules compiled into the YARA scanner), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
 
 ### Changed
 

@@ -9,12 +9,14 @@
 //!   (`feed.csv.gz`) are resolved by peeling the outer extension.
 //! - **Detect** — each member's format is guessed from its filename extension.
 //! - **Parse** — JSON (native dataset), CSV/TSV (a header row maps columns to
-//!   rule fields), and newline-delimited IOCs (one domain/IP/hash per line).
+//!   rule fields), newline-delimited IOCs (one domain/IP/hash per line),
+//!   RSS/Atom (indicators mined from item text), and YARA (`.yar` rule blocks
+//!   compiled into the YARA scanner).
 //!
 //! The parsing is pure (bytes → rules), so every format is unit-testable
 //! without the network; [`fetch_feed`] is the thin download layer on top.
-//! Adding a format (RSS, YARA, gitleaks TOML, …) is a new arm here — the
-//! catalog, storage, and CLI don't change.
+//! Adding a format (gitleaks TOML, STIX, …) is a new arm here — the catalog,
+//! storage, and CLI don't change.
 
 use std::io::Read;
 
@@ -32,6 +34,10 @@ pub enum FeedFormat {
     Tsv,
     /// One indicator per line (domain / IP / sha256); `#` comments skipped.
     Iocs,
+    /// RSS/Atom XML — indicators are mined from item titles, links, and bodies.
+    Rss,
+    /// YARA rules (`.yar`/`.yara`) — one detection rule per `rule { … }` block.
+    Yara,
 }
 
 impl FeedFormat {
@@ -49,6 +55,8 @@ impl FeedFormat {
             "json" => FeedFormat::Json,
             "csv" => FeedFormat::Csv,
             "tsv" | "tab" => FeedFormat::Tsv,
+            "rss" | "atom" | "xml" => FeedFormat::Rss,
+            "yar" | "yara" => FeedFormat::Yara,
             _ => FeedFormat::Iocs,
         }
     }
@@ -96,7 +104,184 @@ pub fn parse(name: &str, format: FeedFormat, bytes: &[u8]) -> Result<Vec<Rule>> 
         FeedFormat::Csv => parse_delimited(&String::from_utf8_lossy(bytes), ',', name),
         FeedFormat::Tsv => parse_delimited(&String::from_utf8_lossy(bytes), '\t', name),
         FeedFormat::Iocs => Ok(parse_iocs(&String::from_utf8_lossy(bytes), name)),
+        FeedFormat::Rss => Ok(parse_rss(bytes, name)),
+        FeedFormat::Yara => Ok(parse_yara(&String::from_utf8_lossy(bytes), name)),
     }
+}
+
+/// Mine indicators out of an RSS/Atom feed's text (item titles, links, bodies)
+/// and emit them as IOC rules. Reuses the pipeline's indicator extractor, so
+/// domains/IPs/URLs/hashes embedded in advisory prose are captured.
+fn parse_rss(bytes: &[u8], feed: &str) -> Vec<Rule> {
+    let text = xml_text(bytes);
+    let indicators = exfil_scan::indicator::extract(text.as_bytes());
+    iocs_from_indicators(&indicators, feed)
+}
+
+/// Join every text node of an XML document (falls back to the raw bytes when it
+/// doesn't parse), so indicators can be extracted from any element.
+fn xml_text(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| roxmltree::Document::parse(s).ok())
+    {
+        Some(doc) => doc
+            .descendants()
+            .filter(roxmltree::Node::is_text)
+            .filter_map(|n| n.text())
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+/// Build IOC rules from extracted observables (domains/IPs/URLs/hashes).
+fn iocs_from_indicators(ind: &exfil_task::Indicators, feed: &str) -> Vec<Rule> {
+    let mut rules = Vec::new();
+    let mut push = |pattern: String| {
+        rules.push(Rule {
+            name: format!("{feed}-ioc"),
+            pattern,
+            description: format!("indicator from feed {feed}"),
+            severity: Some(Severity::High),
+            cwe: Some("CWE-506".into()),
+            cve: None,
+        });
+    };
+    for d in &ind.domains {
+        push(format!("domain:{d}"));
+    }
+    for ip in &ind.ips {
+        push(format!("ip:{ip}"));
+    }
+    for url in &ind.urls {
+        push(format!("url:{url}"));
+    }
+    for hash in &ind.hashes {
+        let scheme = match hash.len() {
+            32 => "md5",
+            40 => "sha1",
+            64 => "sha256",
+            _ => continue,
+        };
+        push(format!("{scheme}:{}", hash.to_ascii_lowercase()));
+    }
+    rules
+}
+
+/// Parse a YARA source file into one rule per `rule <name> { … }` block. Each
+/// becomes a `Rule` whose pattern is `yara:<block source>`; the scan pipeline
+/// collects those and compiles them into the YARA scanner.
+fn parse_yara(source: &str, feed: &str) -> Vec<Rule> {
+    split_yara_rules(source)
+        .into_iter()
+        .map(|(name, block)| Rule {
+            name: format!("yara:{name}"),
+            pattern: format!("yara:{block}"),
+            description: format!("YARA rule from feed {feed}"),
+            severity: Some(Severity::High),
+            cwe: None,
+            cve: None,
+        })
+        .collect()
+}
+
+/// Split YARA source into `(rule_name, block_source)` pairs by matching braces,
+/// skipping braces inside strings and `//` / `/* */` comments. Robust enough
+/// for real rule files without a full YARA parser.
+fn split_yara_rules(source: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        // Find a `rule` keyword at a word boundary.
+        let Some(kw) = find_keyword(&chars, i, "rule") else {
+            break;
+        };
+        // Read the identifier after `rule`.
+        let mut j = kw + 4;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let name_start = j;
+        while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+            j += 1;
+        }
+        let name: String = chars[name_start..j].iter().collect();
+        // Find the opening brace, then its balanced close (string/comment aware).
+        while j < chars.len() && chars[j] != '{' {
+            j += 1;
+        }
+        if j >= chars.len() {
+            break;
+        }
+        let end = match_braces(&chars, j);
+        let block: String = chars[kw..end].iter().collect();
+        if !name.is_empty() {
+            out.push((name, block.trim().to_string()));
+        }
+        i = end;
+    }
+    out
+}
+
+/// Whether `word` starts at index `at` in `chars` on a word boundary.
+fn find_keyword(chars: &[char], from: usize, word: &str) -> Option<usize> {
+    let w: Vec<char> = word.chars().collect();
+    let mut i = from;
+    while i + w.len() <= chars.len() {
+        let before_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        let after = i + w.len();
+        let after_ok =
+            after >= chars.len() || !(chars[after].is_alphanumeric() || chars[after] == '_');
+        if before_ok && after_ok && chars[i..after] == w[..] {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Given the index of `{`, return the index just past its matching `}`, tracking
+/// nesting while ignoring braces in strings and comments.
+fn match_braces(chars: &[char], open: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len()
 }
 
 /// Parse header-driven CSV/TSV rules. The first non-empty line is a header;
@@ -335,6 +520,64 @@ mod tests {
         assert_eq!(ds.name, "secrets");
         assert_eq!(ds.rules.len(), 1);
         assert_eq!(ds.rules[0].name, "r");
+    }
+
+    #[test]
+    fn rss_mines_indicators_from_item_text() {
+        let rss = r#"<?xml version="1.0"?>
+        <rss><channel>
+          <item>
+            <title>New C2 at evil.example.com</title>
+            <description>Beacon seen from 203.0.113.9 (hash
+              e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855)</description>
+          </item>
+        </channel></rss>"#;
+        let rules = parse("threats", FeedFormat::Rss, rss.as_bytes());
+        let rules = rules.unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"domain:evil.example.com"), "{pats:?}");
+        assert!(pats.contains(&"ip:203.0.113.9"), "{pats:?}");
+        assert!(
+            pats.iter().any(|p| p.starts_with("sha256:e3b0c442")),
+            "{pats:?}"
+        );
+        assert!(rules.iter().all(|r| r.name == "threats-ioc"));
+    }
+
+    #[test]
+    fn yara_splits_into_per_rule_blocks() {
+        let yara = r#"
+        // a comment with a brace } inside
+        rule Detect_Evil {
+            strings: $a = "EVIL} not a close"
+            condition: $a
+        }
+        rule Detect_Two {
+            condition: true
+        }
+        "#;
+        let rules = parse("mal", FeedFormat::Yara, yara.as_bytes()).unwrap();
+        assert_eq!(
+            rules.len(),
+            2,
+            "two rules split despite braces in strings/comments"
+        );
+        assert_eq!(rules[0].name, "yara:Detect_Evil");
+        assert!(
+            rules[0].pattern.starts_with("yara:rule Detect_Evil"),
+            "{}",
+            rules[0].pattern
+        );
+        assert!(rules[0].pattern.contains("EVIL} not a close"));
+        assert_eq!(rules[1].name, "yara:Detect_Two");
+    }
+
+    #[test]
+    fn format_detection_rss_and_yara() {
+        assert_eq!(FeedFormat::from_name("feed.rss"), FeedFormat::Rss);
+        assert_eq!(FeedFormat::from_name("f.atom"), FeedFormat::Rss);
+        assert_eq!(FeedFormat::from_name("rules.yar"), FeedFormat::Yara);
+        assert_eq!(FeedFormat::from_name("x.yara"), FeedFormat::Yara);
     }
 
     #[test]
