@@ -210,6 +210,7 @@ fn index_row(n: usize, m: &Match) -> String {
 }
 
 /// Which screen is showing, mutt-style.
+#[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Index,
     /// Full-screen text view (rules, a record); the field is the scroll offset.
@@ -386,6 +387,9 @@ struct App {
     pager_title: String,
     /// Height of the main content area from the last draw, for page scrolling.
     page: u16,
+    /// Where to return when leaving the `?` help overlay (the mode it was
+    /// opened from). `None` for an ordinary pager (rules, a record).
+    help_return: Option<Mode>,
     /// Transient one-line message (last action's outcome), mutt's bottom line.
     message: String,
     /// Active `:` or `/` prompt, if the user is typing one.
@@ -416,6 +420,7 @@ impl App {
             pager: Vec::new(),
             pager_title: String::new(),
             page: 1,
+            help_return: None,
             message: "ready — Tab:type :scan / to limit q to quit".into(),
             prompt: None,
             limit: String::new(),
@@ -1019,6 +1024,16 @@ impl App {
         frame.render_widget(Paragraph::new(bottom), msg);
     }
 
+    /// Open the `?` help overlay, remembering the mode it was opened from so
+    /// leaving the pager returns there (the index or the navigator).
+    fn open_help(&mut self) {
+        self.help_return = Some(self.mode);
+        self.pager = help_text();
+        self.pager_title = "help".into();
+        self.mode = Mode::Pager(0);
+        self.message = "help — i or q to return".into();
+    }
+
     fn on_key(&mut self, handle: &Handle, code: KeyCode) {
         // An open prompt captures all typing first (mutt's bottom line).
         if let Some(prompt) = &mut self.prompt {
@@ -1049,7 +1064,8 @@ impl App {
         match &mut self.mode {
             Mode::Pager(scroll) => match code {
                 KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc => {
-                    self.mode = Mode::Index;
+                    // Return to where help was opened; ordinary pagers → index.
+                    self.mode = self.help_return.take().unwrap_or(Mode::Index);
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     *scroll = scroll.saturating_add(1).min(max_scroll)
@@ -1086,12 +1102,7 @@ impl App {
                 }
                 KeyCode::Char('r') => self.refresh_index(handle),
                 KeyCode::Char('s') => self.execute(handle, Action::Scan(PathBuf::from("."))),
-                KeyCode::Char('?') => {
-                    self.pager = help_text();
-                    self.mode = Mode::Pager(0);
-                    self.pager_title = "help".into();
-                    self.message = "help — i or q to return".into();
-                }
+                KeyCode::Char('?') => self.open_help(),
                 // Findings root the navigator at their file; other types open
                 // the selected node directly.
                 KeyCode::Enter => {
@@ -1111,6 +1122,11 @@ impl App {
     /// plus back/forward through the jumplist.
     fn on_nav_key(&mut self, handle: &Handle, code: KeyCode) {
         use crate::keymap::NavAction;
+        // `?` opens help from the navigator too; leaving it returns here.
+        if code == KeyCode::Char('?') {
+            self.open_help();
+            return;
+        }
         let Some(action) = self.keymap.nav_action(code) else {
             return;
         };
@@ -1455,6 +1471,12 @@ mod tests {
                 app.nav.as_ref().unwrap().current().neighbors.len(),
                 edges_before
             );
+
+            // `?` opens help from the navigator and returns to it (not the index).
+            app.on_key(&handle, KeyCode::Char('?'));
+            assert!(matches!(app.mode, Mode::Pager(_)));
+            app.on_key(&handle, KeyCode::Char('q'));
+            assert!(matches!(app.mode, Mode::Nav), "help returns to the navigator");
 
             app.on_key(&handle, KeyCode::Char('q')); // leave navigator
             assert!(matches!(app.mode, Mode::Index));
