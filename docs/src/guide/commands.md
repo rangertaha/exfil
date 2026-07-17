@@ -34,7 +34,7 @@ exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 
 | Command | What it does |
 |---|---|
-| `exfil search [query]` | Query stored findings (by field like `severity=critical`, or free text) |
+| `exfil search [query] [-n N]` | Query stored findings, worst-first (by field like `severity=critical`, or free text; `-n` caps output) |
 | `exfil get <id>` | Print a stored record by id (e.g. `file:<blake3-hash>`) |
 | `exfil rules [filter]` | Show the rules a scan would apply (filter by name/CWE/severity substring) |
 | `exfil graph` | Emit the findings graph (finding → file / rule) as JSON or DOT |

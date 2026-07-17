@@ -192,6 +192,9 @@ enum Command {
     Search {
         /// `field=value` (rule/cwe/severity/path) or free text; empty lists all.
         query: Option<String>,
+        /// Show at most N findings (the most severe first).
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
     },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
     Graph {
@@ -309,7 +312,7 @@ async fn main() -> Result<()> {
         Command::CheckDns => cmd_check_dns(&store_dir).await?,
         Command::Normalize => cmd_normalize(&store_dir).await?,
         Command::CheckWhois { recent_days } => cmd_check_whois(&store_dir, recent_days).await?,
-        Command::Search { query } => cmd_search(&store_dir, query).await?,
+        Command::Search { query, limit } => cmd_search(&store_dir, query, limit).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
@@ -771,15 +774,27 @@ async fn cmd_datasets(action: Option<DatasetCmd>) -> Result<()> {
 
 /// Query stored findings: no arg lists all, `field=value` filters on
 /// rule/cwe/severity/path, anything else matches against rule names.
-async fn cmd_search(store_dir: &std::path::Path, query: Option<String>) -> Result<()> {
+async fn cmd_search(
+    store_dir: &std::path::Path,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<()> {
     let store = exfil_store::Store::open_findings(store_dir).await?;
+    // Results arrive worst-first; the severity tally covers the full match set,
+    // while `--limit` only caps how many are printed (the most severe ones).
     let findings = store
         .search_findings(query.as_deref().unwrap_or(""))
         .await?;
-    for m in &findings {
+    let total = findings.len();
+    let shown = limit.map_or(total, |n| n.min(total));
+    for m in &findings[..shown] {
         println!("{}", progress::styled_line(m));
     }
-    println!("{} finding(s)", findings.len());
+    if shown < total {
+        println!("showing {shown} of {total} finding(s)");
+    } else {
+        println!("{total} finding(s)");
+    }
     if let Some(summary) = progress::severity_summary(&findings) {
         println!("{summary}");
     }
