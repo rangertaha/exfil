@@ -184,4 +184,25 @@ rule Detect_Two_Strings {
         assert_eq!(YaraScanner::severity_of("LOW"), Some(Severity::Low));
         assert_eq!(YaraScanner::severity_of("bogus"), None);
     }
+
+    #[test]
+    fn name_and_unknown_meta_keys_are_ignored() {
+        assert_eq!(YaraScanner::from_sources("").unwrap().name(), "yara");
+        // author/description meta hit the ignored `_ => {}` arm; severity is read.
+        let rules = r#"
+rule R {
+    meta:
+        author = "me"
+        description = "x"
+        severity = "low"
+    strings:
+        $a = "MARK"
+    condition:
+        $a
+}
+"#;
+        let m = scan(rules, "f", b"MARK here");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].severity, Some(Severity::Low));
+    }
 }
