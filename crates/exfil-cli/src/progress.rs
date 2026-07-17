@@ -164,6 +164,52 @@ pub fn severity_summary(findings: &[Match]) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("  "))
 }
 
+/// Per-severity match counts accumulated during one scan, indexed by rank
+/// (0=Info, 1=Low, 2=Medium, 3=High, 4=Critical). Returned by the renderer so
+/// the caller can print an accurate breakdown of the matches it just streamed.
+pub type SevCounts = [u64; 5];
+
+/// Fold a match's severity into the running counts.
+fn tally(counts: &mut SevCounts, sev: Option<Severity>) {
+    let i = match sev {
+        Some(Severity::Info) => 0,
+        Some(Severity::Low) => 1,
+        Some(Severity::Medium) => 2,
+        Some(Severity::High) => 3,
+        Some(Severity::Critical) => 4,
+        None => return,
+    };
+    counts[i] += 1;
+}
+
+/// Format scan counts as `CRIT 2  HIGH 5`, worst-first and colored on a
+/// terminal. `None` when nothing was rated, so the caller can skip the line.
+pub fn tally_line(counts: &SevCounts) -> Option<String> {
+    let order = [
+        (4, Severity::Critical),
+        (3, Severity::High),
+        (2, Severity::Medium),
+        (1, Severity::Low),
+        (0, Severity::Info),
+    ];
+    let color = use_color();
+    let parts: Vec<String> = order
+        .into_iter()
+        .filter_map(|(i, sev)| {
+            let n = counts[i];
+            if n == 0 {
+                return None;
+            }
+            Some(if color {
+                format!("{}{} {n}\x1b[0m", severity_color(sev), sev.tag())
+            } else {
+                format!("{} {n}", sev.tag())
+            })
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("  "))
+}
+
 /// Running tallies for the progress gauge, updated from [`ScanEvent`]s.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProgressState {
@@ -203,27 +249,32 @@ impl ProgressState {
     }
 }
 
-/// Spawn the progress renderer for a scan. Returns the handle to join once
-/// the scan is finished (the thread ends when the event channel closes).
-pub fn spawn(rx: Receiver<ScanEvent>) -> JoinHandle<()> {
+/// Spawn the progress renderer for a scan. Returns the handle to join once the
+/// scan is finished (the thread ends when the event channel closes); joining
+/// yields the per-severity counts of the matches it streamed.
+pub fn spawn(rx: Receiver<ScanEvent>) -> JoinHandle<SevCounts> {
     if std::io::stdout().is_terminal() {
         std::thread::spawn(move || render_tui(rx))
     } else {
         std::thread::spawn(move || {
             let mut out = std::io::stdout();
-            render_plain(rx, &mut out);
+            render_plain(rx, &mut out)
         })
     }
 }
 
-/// Pipe-friendly rendering: write each match as a line into `w`.
-fn render_plain<W: Write>(rx: Receiver<ScanEvent>, w: &mut W) {
+/// Pipe-friendly rendering: write each match as a line into `w`. Returns the
+/// per-severity counts of the matches seen.
+fn render_plain<W: Write>(rx: Receiver<ScanEvent>, w: &mut W) -> SevCounts {
+    let mut counts = SevCounts::default();
     // A blocking `for` over a Receiver ends when the sender is dropped.
     for event in rx {
         if let ScanEvent::Match(m) = event {
+            tally(&mut counts, m.severity);
             let _ = writeln!(w, "{}", match_line(&m));
         }
     }
+    counts
 }
 
 /// Draw the gauge for `state` into `terminal`. Backend-generic so tests can
@@ -243,8 +294,9 @@ fn draw_gauge<B: Backend>(terminal: &mut Terminal<B>, state: &ProgressState) {
 /// Drive the gauge over `terminal` until the event channel disconnects,
 /// inserting each match line above the inline gauge. Backend-generic so it can
 /// be tested against a `TestBackend`.
-fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) {
+fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) -> SevCounts {
     let mut state = ProgressState::default();
+    let mut counts = SevCounts::default();
     loop {
         // Drain everything queued, then redraw once.
         let mut disconnected = false;
@@ -253,6 +305,7 @@ fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) {
                 let mut pending = Some(ev);
                 while let Some(ev) = pending.take() {
                     if let ScanEvent::Match(m) = &ev {
+                        tally(&mut counts, m.severity);
                         let style = severity_style(m.severity);
                         let line = match_line(m);
                         let _ = terminal.insert_before(1, |buf| {
@@ -272,10 +325,11 @@ fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) {
             break;
         }
     }
+    counts
 }
 
 /// Terminal rendering: match lines scroll above an inline progress gauge.
-fn render_tui(rx: Receiver<ScanEvent>) {
+fn render_tui(rx: Receiver<ScanEvent>) -> SevCounts {
     let backend = CrosstermBackend::new(std::io::stdout());
     let Ok(mut terminal) = Terminal::with_options(
         backend,
@@ -285,12 +339,12 @@ fn render_tui(rx: Receiver<ScanEvent>) {
     ) else {
         // Terminal setup failed; degrade to plain output.
         let mut out = std::io::stdout();
-        render_plain(rx, &mut out);
-        return;
+        return render_plain(rx, &mut out);
     };
-    pump(&mut terminal, rx);
+    let counts = pump(&mut terminal, rx);
     // Leave the completed gauge in place and move to a fresh line below it.
     println!();
+    counts
 }
 
 #[cfg(test)]

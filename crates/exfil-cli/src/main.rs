@@ -355,13 +355,17 @@ async fn cmd_scan(
     let renderer = progress::spawn(rx);
     let result = exfil_engine::scan(&target, &pipeline, &store, Some(store_dir), Some(tx)).await;
     // The engine dropped its sender, so the renderer is finishing; wait for it
-    // before printing the summary under the (now final) progress bar.
-    let _ = renderer.join();
+    // before printing the summary under the (now final) progress bar. Joining
+    // yields the per-severity counts of the matches it just streamed.
+    let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
         "scanned {} files ({} unchanged): {} new matches, {} unreadable",
         summary.files, summary.unchanged, summary.matches, summary.errors
     );
+    if let Some(tally) = progress::tally_line(&counts) {
+        println!("{tally}");
+    }
     if summary.matches > 0 {
         hint("\nNext: `exfil tui` to triage · `exfil analyze` for a report · `exfil search severity=critical` to filter");
     } else if summary.files > 0 {
