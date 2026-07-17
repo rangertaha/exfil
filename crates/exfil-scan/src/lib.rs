@@ -403,4 +403,30 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("expected Bytes"), "{err}");
     }
+
+    #[test]
+    fn regex_scanner_skips_iocs_and_bad_patterns() {
+        // IOC-style rules are handled by other scanners, so the regex scanner
+        // skips them (they don't count toward its compiled rules).
+        let sha = format!("sha256:{}", "a".repeat(64));
+        let rules = vec![
+            rule("secret", "AKIA[0-9A-Z]{16}"),
+            rule("hash-ioc", &sha),
+            rule("breach", "breach-email:a@b.co"),
+        ];
+        let scanner = RegexScanner::new(rules).unwrap();
+        assert_eq!(scanner.rule_count(), 1, "only the real regex compiles in");
+
+        // A genuinely invalid regex fails new() outright.
+        assert!(RegexScanner::new(vec![rule("bad", "(")]).is_err());
+
+        // new_lenient skips the bad pattern (reporting its name) and the IOC.
+        let (lenient, skipped) = RegexScanner::new_lenient(vec![
+            rule("ok", "foo"),
+            rule("bad", "("),
+            rule("hash-ioc", &sha),
+        ]);
+        assert_eq!(lenient.rule_count(), 1);
+        assert_eq!(skipped, vec!["bad".to_string()]);
+    }
 }
