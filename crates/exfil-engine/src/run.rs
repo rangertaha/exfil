@@ -15,7 +15,7 @@
 //! future, which *is* object-safe, so `Box<dyn RunStage>` works.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -148,16 +148,11 @@ pub async fn gather_analysis(store: &Store, query: &str) -> Result<Analysis> {
     })
 }
 
-/// Convenience: render a report for `query` in `format` to `sink`, opening the
-/// findings store at `store_dir`. Used by the `analyze` CLI command.
-pub async fn analyze(
-    store_dir: &Path,
-    query: &str,
-    format: &str,
-    sink: &mut dyn Write,
-) -> Result<()> {
-    let store = Store::open_findings(store_dir).await?;
-    let analysis = gather_analysis(&store, query).await?;
+/// Convenience: render a report for `query` in `format` to `sink` over an
+/// already-open `store`. Used by the `analyze` CLI command (the caller opens
+/// the store so the `[database]` config is honored).
+pub async fn analyze(store: &Store, query: &str, format: &str, sink: &mut dyn Write) -> Result<()> {
+    let analysis = gather_analysis(store, query).await?;
     let reporter =
         reporter_for(format).with_context(|| format!("unknown report format {format:?}"))?;
     reporter.report(sink, &analysis)
@@ -166,6 +161,7 @@ pub async fn analyze(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn fetch_scan_report_runs_in_order_through_the_graph() {
@@ -229,13 +225,13 @@ mod tests {
         // Seed then use the analyze() convenience over a text sink.
         exfil_engine_scan(&tree, &store, &store_dir).await;
         let mut buf: Vec<u8> = Vec::new();
-        analyze(&store_dir, "", "text", &mut buf).await.unwrap();
+        analyze(&store, "", "text", &mut buf).await.unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("finding(s) across"), "{out}");
 
         // Unknown format errors through the convenience path too.
         let mut sink = Vec::new();
-        let err = analyze(&store_dir, "", "xml", &mut sink).await.unwrap_err();
+        let err = analyze(&store, "", "xml", &mut sink).await.unwrap_err();
         assert!(err.to_string().contains("unknown report format"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);

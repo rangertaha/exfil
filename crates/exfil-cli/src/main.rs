@@ -65,6 +65,45 @@ fn print_tally(counts: &progress::SevCounts) {
     }
 }
 
+/// The `[database]` override from config, or `None` for the embedded default.
+/// An empty (or absent) endpoint keeps the built-in per-path embedded stores.
+fn database_override(config: Option<&std::path::Path>) -> Option<exfil_store::DbConfig> {
+    let db = exfil_config::load(config).ok()?.database?;
+    if db.endpoint.trim().is_empty() {
+        return None;
+    }
+    Some(exfil_store::DbConfig {
+        endpoint: db.endpoint,
+        username: db.username,
+        password: db.password,
+    })
+}
+
+/// Open the findings database: the configured `[database]` endpoint, or the
+/// embedded on-disk store at `store_dir`.
+async fn open_findings(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> Result<exfil_store::Store> {
+    match database_override(config) {
+        Some(db) => exfil_store::Store::connect(&db, exfil_store::DB_FINDINGS).await,
+        None => exfil_store::Store::open_findings(store_dir).await,
+    }
+}
+
+/// Open the catalog database (datasets, rules, CWE): the configured
+/// `[database]` endpoint, or the embedded catalog in the config directory.
+async fn open_catalog(config: Option<&std::path::Path>) -> Result<exfil_store::Store> {
+    if let Some(db) = database_override(config) {
+        return exfil_store::Store::connect(&db, exfil_store::DB_CATALOG).await;
+    }
+    let dir = exfil_config::catalog_dir()?;
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    exfil_store::Store::open_catalog(&dir).await
+}
+
 /// Print a discoverability hint to stderr, but only on an interactive terminal
 /// so piped or redirected output stays clean and scriptable.
 fn hint(msg: &str) {
@@ -294,11 +333,12 @@ async fn main() -> Result<()> {
         ColorWhen::Never => progress::ColorChoice::Never,
     });
     let store_dir = PathBuf::from(&cli.store);
+    let cfg = cli.config.as_deref();
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,
         Command::Sources => cmd_sources(),
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
-        Command::Datasets { action } => cmd_datasets(action).await?,
+        Command::Datasets { action } => cmd_datasets(cfg, action).await?,
         Command::Scan { path, fail_on } => {
             cmd_scan(&store_dir, cli.config.as_deref(), path, fail_on).await?
         }
@@ -330,22 +370,24 @@ async fn main() -> Result<()> {
             )
             .await?
         }
-        Command::CheckDns => cmd_check_dns(&store_dir).await?,
-        Command::Normalize => cmd_normalize(&store_dir).await?,
-        Command::CheckWhois { recent_days } => cmd_check_whois(&store_dir, recent_days).await?,
-        Command::Search { query, limit } => cmd_search(&store_dir, query, limit).await?,
-        Command::Analyze { query, format } => cmd_analyze(&store_dir, query, &format).await?,
-        Command::Get { id } => cmd_get(&store_dir, &id).await?,
-        Command::Graph { query, format } => cmd_graph(&store_dir, query, &format).await?,
-        Command::Gc => cmd_gc(&store_dir).await?,
-        Command::Enrich => cmd_enrich(&store_dir, cli.config.as_deref()).await?,
-        Command::Cwe { id } => cmd_cwe(&id).await?,
-        Command::Export { out, format } => cmd_export(&store_dir, out, &format).await?,
+        Command::CheckDns => cmd_check_dns(&store_dir, cfg).await?,
+        Command::Normalize => cmd_normalize(&store_dir, cfg).await?,
+        Command::CheckWhois { recent_days } => {
+            cmd_check_whois(&store_dir, cfg, recent_days).await?
+        }
+        Command::Search { query, limit } => cmd_search(&store_dir, cfg, query, limit).await?,
+        Command::Analyze { query, format } => cmd_analyze(&store_dir, cfg, query, &format).await?,
+        Command::Get { id } => cmd_get(&store_dir, cfg, &id).await?,
+        Command::Graph { query, format } => cmd_graph(&store_dir, cfg, query, &format).await?,
+        Command::Gc => cmd_gc(&store_dir, cfg).await?,
+        Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
+        Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
+        Command::Export { out, format } => cmd_export(&store_dir, cfg, out, &format).await?,
         Command::Mcp => {
-            let store = exfil_store::Store::open_findings(&store_dir).await?;
+            let store = open_findings(&store_dir, cfg).await?;
             exfil_mcp::serve(store).await?;
         }
-        Command::Server { addr } => cmd_server(&store_dir, &addr).await?,
+        Command::Server { addr } => cmd_server(&store_dir, cfg, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
         Command::Clean { yes } => cmd_clean(&store_dir, yes)?,
@@ -393,7 +435,7 @@ async fn cmd_scan(
 ) -> Result<()> {
     let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
     let pipeline = build_pipeline(config).await?;
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
@@ -454,7 +496,7 @@ async fn cmd_scan_remote(
     };
 
     let pipeline = build_pipeline(config).await?;
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
     let fs = exfil_remote::SshFs::connect(&target, &auth)
         .await
         .with_context(|| format!("connect to {}@{}", target.user, target.host))?;
@@ -480,7 +522,7 @@ async fn cmd_processes(
     config: Option<&std::path::Path>,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
     let fs = exfil_remote::ProcessFs::new();
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -504,7 +546,7 @@ async fn cmd_scan_tcp(
     targets: Vec<String>,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
     let fs = exfil_remote::TcpFs::new(targets);
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -522,8 +564,12 @@ async fn cmd_scan_tcp(
 
 /// WHOIS-check every observed domain and flag newly-registered ones (a common
 /// phishing signal). Online: the port-43 lookups run off the async thread.
-async fn cmd_check_whois(store_dir: &std::path::Path, recent_days: i64) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_check_whois(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    recent_days: i64,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let domains = store.indicator_domains().await?;
     let today = exfil_scan::whois::today_epoch_days();
     let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
@@ -554,8 +600,11 @@ async fn cmd_check_whois(store_dir: &std::path::Path, recent_days: i64) -> Resul
 /// Normalize every stored finding into a CIM event (shared category/action
 /// fields) so heterogeneous findings can be correlated. Prints a per-category
 /// summary.
-async fn cmd_normalize(store_dir: &std::path::Path) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_normalize(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let findings = store.findings_with_ids("").await?;
     for (fid, m) in &findings {
         let event = exfil_scan::cim::normalize(m);
@@ -572,8 +621,11 @@ async fn cmd_normalize(store_dir: &std::path::Path) -> Result<()> {
 /// Resolve every domain observed during scans and flag those resolving to a
 /// reserved/private address. Online: runs the blocking resolver off the async
 /// thread, then attaches findings to the file each domain came from.
-async fn cmd_check_dns(store_dir: &std::path::Path) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_check_dns(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let domains = store.indicator_domains().await?;
     let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
     eprintln!("resolving {total} domain(s)…");
@@ -610,7 +662,7 @@ async fn cmd_scan_web(
     driver: Option<&str>,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
 
     // A WebDriver server renders JavaScript (dynamic sites); otherwise a plain
     // HTTP crawl. Both present the pages as a `RemoteFs` to the same scan.
@@ -658,12 +710,8 @@ async fn run_web_scan(
 /// Non-compiling external regex patterns are reported and skipped.
 async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfil_task::Pipeline> {
     let mut rules = exfil_scan::builtin_rules();
-    if let Ok(dir) = exfil_config::catalog_dir() {
-        if dir.exists() {
-            if let Ok(catalog) = exfil_store::Store::open_catalog(&dir).await {
-                rules.extend(catalog.all_rules().await.unwrap_or_default());
-            }
-        }
+    if let Ok(catalog) = open_catalog(config).await {
+        rules.extend(catalog.all_rules().await.unwrap_or_default());
     }
     let clamav_signatures = load_plugin_files(config, "clamav", "signatures");
     let yara_rules = load_plugin_files(config, "yara", "rules");
@@ -730,11 +778,7 @@ fn cmd_sources() {
 /// Download a dataset into the catalog: a specific reference, or every
 /// configured `[[update]]` when none is given.
 async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -> Result<()> {
-    let dir = exfil_config::catalog_dir()?;
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+    let catalog = open_catalog(config).await?;
     let registry = exfil_source::Registry::new();
 
     let refs: Vec<(String, String)> = match reference {
@@ -788,12 +832,8 @@ async fn pull_mitre(catalog: &exfil_store::Store, kind: &str) -> Result<()> {
 }
 
 /// Manage catalog datasets: list (default), show, add, or remove.
-async fn cmd_datasets(action: Option<DatasetCmd>) -> Result<()> {
-    let dir = exfil_config::catalog_dir()?;
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCmd>) -> Result<()> {
+    let catalog = open_catalog(config).await?;
 
     match action.unwrap_or(DatasetCmd::List) {
         DatasetCmd::List => {
@@ -850,10 +890,11 @@ async fn cmd_datasets(action: Option<DatasetCmd>) -> Result<()> {
 /// rule/cwe/severity/path, anything else matches against rule names.
 async fn cmd_search(
     store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
     query: Option<String>,
     limit: Option<usize>,
 ) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
     // Results arrive worst-first; the severity tally covers the full match set,
     // while `--limit` only caps how many are printed (the most severe ones).
     let findings = store
@@ -881,22 +922,23 @@ async fn cmd_search(
 /// Render a report over the stored findings graph in the chosen format.
 async fn cmd_analyze(
     store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
     query: Option<String>,
     format: &str,
 ) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let mut stdout = std::io::stdout().lock();
-    exfil_engine::run::analyze(
-        store_dir,
-        query.as_deref().unwrap_or(""),
-        format,
-        &mut stdout,
-    )
-    .await
+    exfil_engine::run::analyze(&store, query.as_deref().unwrap_or(""), format, &mut stdout).await
 }
 
 /// Emit the findings graph as JSON or Graphviz DOT.
-async fn cmd_graph(store_dir: &std::path::Path, query: Option<String>, format: &str) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_graph(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    query: Option<String>,
+    format: &str,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let graph = store.graph(query.as_deref().unwrap_or("")).await?;
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&graph)?),
@@ -925,7 +967,7 @@ async fn cmd_graph(store_dir: &std::path::Path, query: Option<String>, format: &
 /// `[plugins.script] enrich = "…"` supersedes the built-in rule-based enricher;
 /// a downloaded offline model could too, via the same trait.
 async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path>) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+    let store = open_findings(store_dir, config).await?;
     let enricher: Box<dyn exfil_llm::Enricher> = match enrich_script_path(config) {
         Some(path) => Box::new(exfil_script::ScriptEnricher::from_file(&path)?),
         None => exfil_llm::default_enricher(),
@@ -935,7 +977,7 @@ async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path
 
     // Annotate findings with the authoritative CWE name from the local MITRE
     // catalog, when one has been pulled (`exfil pull mitre://cwe`).
-    match annotate_cwe(&store).await {
+    match annotate_cwe(&store, config).await {
         Ok(0) => {}
         Ok(a) => println!("annotated {a} finding(s) with CWE names from the MITRE catalog"),
         Err(e) => eprintln!("cwe annotation skipped: {e:#}"),
@@ -946,12 +988,11 @@ async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path
 /// Attach the authoritative CWE name (from a pulled MITRE catalog) to every
 /// finding that carries a matching `cwe`. Returns how many were annotated; a
 /// no-op (0) when no catalog has been pulled.
-async fn annotate_cwe(findings: &exfil_store::Store) -> Result<usize> {
-    let dir = exfil_config::catalog_dir()?;
-    if !dir.exists() {
-        return Ok(0);
-    }
-    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+async fn annotate_cwe(
+    findings: &exfil_store::Store,
+    config: Option<&std::path::Path>,
+) -> Result<usize> {
+    let catalog = open_catalog(config).await?;
     let cwe = catalog.cwe_catalog().await?;
     if cwe.is_empty() {
         return Ok(0);
@@ -969,9 +1010,8 @@ async fn annotate_cwe(findings: &exfil_store::Store) -> Result<usize> {
 }
 
 /// Look up one CWE in the local MITRE catalog and print its name/description.
-async fn cmd_cwe(id: &str) -> Result<()> {
-    let dir = exfil_config::catalog_dir()?;
-    let catalog = exfil_store::Store::open_catalog(&dir).await?;
+async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
+    let catalog = open_catalog(config).await?;
     match catalog.cwe_get(id).await? {
         Some(e) => {
             println!("{} — {}", e.id, e.name);
@@ -998,8 +1038,13 @@ fn enrich_script_path(config: Option<&std::path::Path>) -> Option<String> {
 }
 
 /// Export the whole graph as a portable snapshot in CBOR or JSON.
-async fn cmd_export(store_dir: &std::path::Path, out: Option<PathBuf>, format: &str) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_export(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    out: Option<PathBuf>,
+    format: &str,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let snapshot = store.export_snapshot().await?;
     match format {
         "json" => {
@@ -1031,8 +1076,8 @@ async fn cmd_export(store_dir: &std::path::Path, out: Option<PathBuf>, format: &
 }
 
 /// Garbage-collect the findings store: prune superseded scans and records.
-async fn cmd_gc(store_dir: &std::path::Path) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_gc(store_dir: &std::path::Path, config: Option<&std::path::Path>) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let stats = store.gc().await?;
     println!(
         "gc: removed {} old scan(s), {} stale file(s), {} finding(s)",
@@ -1042,8 +1087,12 @@ async fn cmd_gc(store_dir: &std::path::Path) -> Result<()> {
 }
 
 /// Print one stored record (`table:key`) as JSON.
-async fn cmd_get(store_dir: &std::path::Path, id: &str) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_get(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    id: &str,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     match store.get_record(id).await? {
         Some(v) => println!("{}", serde_json::to_string_pretty(&v)?),
         None => println!("no record {id:?}"),
@@ -1054,8 +1103,12 @@ async fn cmd_get(store_dir: &std::path::Path, id: &str) -> Result<()> {
 /// Run the long-lived HTTP API service until interrupted. Binds `addr`, opens
 /// the findings store, and serves read-only JSON endpoints; a graceful
 /// shutdown (Ctrl-C / SIGTERM) stops accepting connections and returns.
-async fn cmd_server(store_dir: &std::path::Path, addr: &str) -> Result<()> {
-    let store = exfil_store::Store::open_findings(store_dir).await?;
+async fn cmd_server(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    addr: &str,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind {addr}"))?;

@@ -42,9 +42,30 @@ pub struct Config {
     /// Optional `[keymap]` tables (e.g. `[keymap.nav]`) that remap TUI keys.
     #[serde(default)]
     pub keymap: Option<toml::Value>,
+    /// Optional `[database]` connection settings (embedded by default).
+    #[serde(default)]
+    pub database: Option<Database>,
     /// Where this config was loaded from (not part of the file).
     #[serde(skip)]
     pub path: PathBuf,
+}
+
+/// `[database]` connection settings. The `endpoint` selects the SurrealDB
+/// engine: embedded on-disk (`surrealkv://<path>`), in-memory (`mem://`), or a
+/// remote server / cluster (`ws://`, `wss://`, `http://`, `https://`). An empty
+/// endpoint keeps the built-in embedded default (findings under `--store`,
+/// catalog in the config dir). `username`/`password` sign in to a remote server.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Database {
+    /// Connection endpoint; empty for the embedded default.
+    #[serde(default)]
+    pub endpoint: String,
+    /// Root username for a remote server (empty = no sign-in).
+    #[serde(default)]
+    pub username: String,
+    /// Root password for a remote server.
+    #[serde(default)]
+    pub password: String,
 }
 
 /// One `[[update]]` entry.

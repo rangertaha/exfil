@@ -7,6 +7,16 @@
 # Location of the local findings store (removed by `exfil clean`).
 store = ".exfil"
 
+# Database connection. By default exfil uses an embedded, on-disk SurrealDB
+# (findings under `store` above, the catalog in this config dir). To use a
+# remote SurrealDB server or a multi-instance cluster instead, set an endpoint
+# and (for a server) sign-in credentials — every command then uses it:
+#
+# [database]
+# endpoint = "ws://db-cluster.internal:8000"   # or wss://, http(s)://, mem://
+# username = "root"
+# password = "change-me"
+
 [plugins.regex]
 # Datasets to apply. Empty = all stored, falling back to the built-in set.
 datasets = []
