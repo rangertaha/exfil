@@ -381,6 +381,8 @@ struct App {
     mode: Mode,
     /// Content of the pager, built when a finding is opened.
     pager: Vec<String>,
+    /// Title shown on the pager's border (what's being viewed).
+    pager_title: String,
     /// Transient one-line message (last action's outcome), mutt's bottom line.
     message: String,
     /// Active `:` or `/` prompt, if the user is typing one.
@@ -409,6 +411,7 @@ impl App {
             list: ListState::default(),
             mode: Mode::Index,
             pager: Vec::new(),
+            pager_title: String::new(),
             message: "ready — Tab:type :scan / to limit q to quit".into(),
             prompt: None,
             limit: String::new(),
@@ -793,6 +796,7 @@ impl App {
                     })
                     .collect();
                 self.mode = Mode::Pager(0);
+                self.pager_title = "builtin rules".into();
                 self.message = "builtin rules".into();
             }
             Action::Get(id) => match handle.block_on(self.store.get_record(&id)) {
@@ -800,6 +804,7 @@ impl App {
                     let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
                     self.pager = pretty.lines().map(String::from).collect();
                     self.mode = Mode::Pager(0);
+                    self.pager_title = id.clone();
                     self.message = id;
                 }
                 Ok(None) => self.message = format!("no record {id:?}"),
@@ -991,7 +996,8 @@ impl App {
             }
             Mode::Pager(scroll) => {
                 let text: Vec<Line> = self.pager.iter().map(|l| Line::raw(l.as_str())).collect();
-                frame.render_widget(Paragraph::new(text).scroll((scroll, 0)), main);
+                let block = Block::bordered().title(format!(" {} ", self.pager_title));
+                frame.render_widget(Paragraph::new(text).scroll((scroll, 0)).block(block), main);
             }
             Mode::Nav => self.draw_nav(frame, main),
         }
@@ -1064,6 +1070,7 @@ impl App {
                 KeyCode::Char('?') => {
                     self.pager = help_text();
                     self.mode = Mode::Pager(0);
+                    self.pager_title = "help".into();
                     self.message = "help — i or q to return".into();
                 }
                 // Findings root the navigator at their file; other types open
