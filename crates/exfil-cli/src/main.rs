@@ -1,8 +1,9 @@
-//! exfil — offline filesystem analysis & SAST engine.
+//! exfil — an offline DevSecOps engine for static analysis.
 //!
-//! Offline, cross-platform, plugin-based filesystem analysis and SAST engine.
-//! This is the CLI entry point; commands are wired to the workspace crates as
-//! they are implemented.
+//! Offline, cross-platform, plugin-based static analysis of source code,
+//! infrastructure code, systems, and container artifacts. This is the CLI
+//! entry point; commands are wired to the workspace crates as they are
+//! implemented.
 //!
 //! # Rust notes
 //!

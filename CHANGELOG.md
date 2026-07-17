@@ -42,6 +42,20 @@ and this project adheres to
   variable assignments into command/code-injection sinks, flagging only flows
   that are actually attacker-controlled. The AST is enriched with call and
   assignment facts so taint reuses the extractor's parse.
+- CLI/TUI usability: `exfil --help` now carries a worked Examples block and a
+  bare `exfil` prints it instead of a usage error; `scan`/`search` print
+  next-step hints (TTY-only) and a severity tally.
+- Severity is shown in finding lines (`CRIT`/`HIGH`/…) across scan, search,
+  and the text report, color-coded on a terminal with `--color
+  auto|always|never` and `NO_COLOR` honored.
+- `exfil scan --fail-on <severity>` gates CI by exiting non-zero when a
+  finding reaches the threshold.
+- `exfil completions <shell>` emits bash/zsh/fish/powershell/elvish
+  completion scripts.
+- `exfil rules [filter]` filters the ruleset by substring and prints a count;
+  `clean` now confirms before deleting (with `-y` to skip).
+- TUI: findings index color-coded by severity, a `?` help overlay, a titled
+  pager, onboarding guidance on an empty index, and `Esc` to clear a limit.
 
 ### Changed
 
