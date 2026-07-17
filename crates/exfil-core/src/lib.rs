@@ -54,6 +54,18 @@ impl Severity {
             Severity::Critical => 10,
         }
     }
+
+    /// Short uppercase tag for compact displays (finding lines, tallies):
+    /// `CRIT`/`HIGH`/`MED`/`LOW`/`INFO`.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Severity::Critical => "CRIT",
+            Severity::High => "HIGH",
+            Severity::Medium => "MED",
+            Severity::Low => "LOW",
+            Severity::Info => "INFO",
+        }
+    }
 }
 
 /// A single named pattern. Security rules also carry a classification.

@@ -33,16 +33,11 @@ use ratatui::text::Line;
 use ratatui::widgets::{Gauge, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
-/// Short, fixed-width-ish severity tag shown in a finding line. `None` when the
-/// rule carries no severity, so those lines keep their original shape.
+/// Short severity tag shown in a finding line, or `None` when the rule carries
+/// no severity so those lines keep their original shape. Delegates to
+/// [`Severity::tag`] for the canonical abbreviation.
 fn severity_tag(sev: Option<Severity>) -> Option<&'static str> {
-    Some(match sev? {
-        Severity::Critical => "CRIT",
-        Severity::High => "HIGH",
-        Severity::Medium => "MED",
-        Severity::Low => "LOW",
-        Severity::Info => "INFO",
-    })
+    Some(sev?.tag())
 }
 
 /// ANSI escape that colors a severity tag on a terminal (bright red for the

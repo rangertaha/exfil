@@ -102,11 +102,23 @@ impl Reporter for TextReporter {
 
     fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
         for m in &a.findings {
-            writeln!(
-                w,
-                "{}:{}:{} [{}] {}",
-                m.path, m.line, m.col, m.rule, m.snippet
-            )?;
+            match m.severity {
+                Some(s) => writeln!(
+                    w,
+                    "{}:{}:{} {} [{}] {}",
+                    m.path,
+                    m.line,
+                    m.col,
+                    s.tag(),
+                    m.rule,
+                    m.snippet
+                )?,
+                None => writeln!(
+                    w,
+                    "{}:{}:{} [{}] {}",
+                    m.path, m.line, m.col, m.rule, m.snippet
+                )?,
+            }
         }
         writeln!(w)?;
         writeln!(
