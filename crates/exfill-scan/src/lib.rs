@@ -29,6 +29,7 @@ pub mod clamav;
 pub mod expand;
 pub mod indicator;
 pub mod ioc;
+pub mod netioc;
 pub mod pii;
 pub mod supply;
 pub mod taint;
@@ -40,6 +41,7 @@ pub use clamav::ClamavScanner;
 pub use expand::ArchiveExpander;
 pub use indicator::IndicatorExtractor;
 pub use ioc::HashIocScanner;
+pub use netioc::NetworkIocScanner;
 pub use pii::PiiScanner;
 pub use supply::SupplyChainScanner;
 pub use taint::TaintScanner;
@@ -130,6 +132,7 @@ pub fn pipeline_with_rules(
     yara_rules: &str,
 ) -> Result<(Pipeline, Vec<String>)> {
     let ioc = HashIocScanner::new(&rules);
+    let netioc = NetworkIocScanner::new(&rules);
     let (clamav, _clamav_skipped) = ClamavScanner::from_signatures(clamav_signatures);
     let yara = YaraScanner::from_sources(yara_rules)?;
     let (regex, skipped) = RegexScanner::new_lenient(rules);
@@ -143,6 +146,7 @@ pub fn pipeline_with_rules(
         Box::new(ScanTask(PiiScanner::new())),
         Box::new(IndicatorExtractor),
         Box::new(DomainTyposquatScanner::default()),
+        Box::new(netioc),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),
         Box::new(TaintScanner),
@@ -168,7 +172,9 @@ impl RegexScanner {
     pub fn new(rules: Vec<Rule>) -> Result<Self> {
         let mut compiled = Vec::with_capacity(rules.len());
         for rule in rules {
-            if ioc::is_hash_ioc(&rule.pattern).is_some() {
+            if ioc::is_hash_ioc(&rule.pattern).is_some()
+                || netioc::is_network_ioc(&rule.pattern).is_some()
+            {
                 continue;
             }
             let re = Regex::new(&rule.pattern)
@@ -186,8 +192,11 @@ impl RegexScanner {
         let mut compiled = Vec::with_capacity(rules.len());
         let mut skipped = Vec::new();
         for rule in rules {
-            // Hash IOCs are handled by the IOC scanner, not as content regexes.
-            if ioc::is_hash_ioc(&rule.pattern).is_some() {
+            // Hash and network IOCs are handled by the IOC scanners, not as
+            // content regexes.
+            if ioc::is_hash_ioc(&rule.pattern).is_some()
+                || netioc::is_network_ioc(&rule.pattern).is_some()
+            {
                 continue;
             }
             match Regex::new(&rule.pattern) {
