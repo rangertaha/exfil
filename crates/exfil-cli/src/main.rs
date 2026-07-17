@@ -54,6 +54,14 @@ fn parse_severity(s: &str) -> std::result::Result<exfil_core::Severity, String> 
     }
 }
 
+/// Print the per-severity tally line after a scan summary, when any match was
+/// rated. Shared by the local and remote scan commands.
+fn print_tally(counts: &progress::SevCounts) {
+    if let Some(tally) = progress::tally_line(counts) {
+        println!("{tally}");
+    }
+}
+
 /// Print a discoverability hint to stderr, but only on an interactive terminal
 /// so piped or redirected output stays clean and scriptable.
 fn hint(msg: &str) {
@@ -363,9 +371,7 @@ async fn cmd_scan(
         "scanned {} files ({} unchanged): {} new matches, {} unreadable",
         summary.files, summary.unchanged, summary.matches, summary.errors
     );
-    if let Some(tally) = progress::tally_line(&counts) {
-        println!("{tally}");
-    }
+    print_tally(&counts);
     if summary.matches > 0 {
         hint("\nNext: `exfil tui` to triage · `exfil analyze` for a report · `exfil search severity=critical` to filter");
     } else if summary.files > 0 {
@@ -420,12 +426,13 @@ async fn cmd_scan_remote(
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
     let result = exfil_engine::scan_remote(&fs, &target.path, &pipeline, &store, Some(tx)).await;
-    let _ = renderer.join();
+    let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
         "scanned {}:{} — {} files: {} matches, {} unreadable",
         target.host, target.path, summary.files, summary.matches, summary.errors
     );
+    print_tally(&counts);
     Ok(())
 }
 
@@ -443,12 +450,13 @@ async fn cmd_processes(
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
     let result = exfil_engine::scan_remote(&fs, "proc://", &pipeline, &store, Some(tx)).await;
-    let _ = renderer.join();
+    let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
         "scanned {} processes: {} matches, {} unreadable",
         summary.files, summary.matches, summary.errors
     );
+    print_tally(&counts);
     Ok(())
 }
 
@@ -466,12 +474,13 @@ async fn cmd_scan_tcp(
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
     let result = exfil_engine::scan_remote(&fs, "tcp://", &pipeline, &store, Some(tx)).await;
-    let _ = renderer.join();
+    let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
         "grabbed {} banner(s): {} matches, {} unreachable",
         summary.files, summary.matches, summary.errors
     );
+    print_tally(&counts);
     Ok(())
 }
 
@@ -573,12 +582,13 @@ async fn cmd_scan_web(
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
     let result = exfil_engine::scan_remote(&fs, "/", &pipeline, &store, Some(tx)).await;
-    let _ = renderer.join();
+    let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
         "crawled {} page(s): {} matches, {} unreadable",
         summary.files, summary.matches, summary.errors
     );
+    print_tally(&counts);
     Ok(())
 }
 
