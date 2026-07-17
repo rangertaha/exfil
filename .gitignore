@@ -4,6 +4,10 @@
 # mdBook docs site output
 /docs/book/
 
+# Tauri desktop app build artifacts (standalone workspace)
+/app/src-tauri/target/
+/app/src-tauri/gen/
+
 # Local findings store
 .exfil/
 
