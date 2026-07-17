@@ -123,3 +123,7 @@ and this project adheres to
   `indicators` graph node linked to each file (`has_indicators`), viewable in
   the TUI. New ArtifactKind::Indicators is the seam for future DNS/whois/IOC/
   leak checker plugins.
+- Added a domain typosquat / brand-impersonation checker, a network-IOC matcher
+  (domains/IPs/URLs from feeds), and a log-event scanner (SSH/PAM auth failures,
+  privilege use) — the first plugins consuming the Indicators seam plus offline
+  log triage.

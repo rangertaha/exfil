@@ -29,6 +29,7 @@ pub mod clamav;
 pub mod expand;
 pub mod indicator;
 pub mod ioc;
+pub mod log;
 pub mod netioc;
 pub mod pii;
 pub mod supply;
@@ -41,6 +42,7 @@ pub use clamav::ClamavScanner;
 pub use expand::ArchiveExpander;
 pub use indicator::IndicatorExtractor;
 pub use ioc::HashIocScanner;
+pub use log::LogScanner;
 pub use netioc::NetworkIocScanner;
 pub use pii::PiiScanner;
 pub use supply::SupplyChainScanner;
@@ -109,6 +111,7 @@ pub fn default_pipeline() -> Result<Pipeline> {
         Box::new(ScanTask(RegexScanner::new(builtin_rules())?)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
+        Box::new(ScanTask(LogScanner::new())),
         // Extract observables (emails, domains, IPs, URLs, hashes) for the graph
         // and for the checker plugins that consume them.
         Box::new(IndicatorExtractor),
@@ -144,6 +147,7 @@ pub fn pipeline_with_rules(
         Box::new(ScanTask(yara)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
+        Box::new(ScanTask(LogScanner::new())),
         Box::new(IndicatorExtractor),
         Box::new(DomainTyposquatScanner::default()),
         Box::new(netioc),
