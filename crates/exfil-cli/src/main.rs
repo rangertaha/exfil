@@ -16,6 +16,7 @@
 //!   prints the error (with its context chain) and exits nonzero — that's the
 //!   whole error-reporting strategy of the binary.
 
+mod graphql;
 mod keymap;
 mod progress;
 mod server;
@@ -946,7 +947,8 @@ async fn cmd_server(store_dir: &std::path::Path, addr: &str) -> Result<()> {
         "[server] serving findings from {} — Ctrl-C to stop",
         store_dir.display()
     );
-    eprintln!("[server]   GET /health  /findings[?q=…]  /rules  /stats");
+    eprintln!("[server]   REST: GET /health /findings[?q=…] /rules /stats");
+    eprintln!("[server]   GraphQL: POST /graphql · IDE at GET /graphql");
     server::serve(listener, store, server::shutdown_signal()).await
 }
 

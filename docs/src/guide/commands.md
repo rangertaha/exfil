@@ -107,6 +107,27 @@ exfil server --addr 0.0.0.0:9000   # serve other hosts
 | `GET /findings?q=<filter>` | Filtered — same grammar as `search` (`severity=high`, `path=…`, text) |
 | `GET /rules` | The built-in ruleset |
 | `GET /stats` | Total findings and a per-severity breakdown |
+| `GET /graphql` | Interactive GraphiQL IDE |
+| `POST /graphql` | Execute a GraphQL query |
 
 It is read-only, so it is safe to expose, but bind it to loopback unless you
 intend to serve other hosts.
+
+### GraphQL
+
+`POST /graphql` runs a query against a read-only schema (`health`, `findings`,
+`rules`, `stats`), so a client can ask for exactly the fields it needs:
+
+```graphql
+{
+  stats { total critical high }
+  findings(query: "severity=critical") { rule path line severity cwe }
+}
+```
+
+```sh
+curl -s localhost:8080/graphql -H 'content-type: application/json' \
+  -d '{"query":"{ stats { total critical } }"}'
+```
+
+Open `http://localhost:8080/graphql` in a browser for the GraphiQL IDE.
