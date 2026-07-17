@@ -29,6 +29,7 @@ pub mod clamav;
 pub mod expand;
 pub mod indicator;
 pub mod ioc;
+pub mod leak;
 pub mod log;
 pub mod netioc;
 pub mod pii;
@@ -42,6 +43,7 @@ pub use clamav::ClamavScanner;
 pub use expand::ArchiveExpander;
 pub use indicator::IndicatorExtractor;
 pub use ioc::HashIocScanner;
+pub use leak::LeakScanner;
 pub use log::LogScanner;
 pub use netioc::NetworkIocScanner;
 pub use pii::PiiScanner;
@@ -136,6 +138,7 @@ pub fn pipeline_with_rules(
 ) -> Result<(Pipeline, Vec<String>)> {
     let ioc = HashIocScanner::new(&rules);
     let netioc = NetworkIocScanner::new(&rules);
+    let leak = LeakScanner::new(&rules);
     let (clamav, _clamav_skipped) = ClamavScanner::from_signatures(clamav_signatures);
     let yara = YaraScanner::from_sources(yara_rules)?;
     let (regex, skipped) = RegexScanner::new_lenient(rules);
@@ -151,6 +154,7 @@ pub fn pipeline_with_rules(
         Box::new(IndicatorExtractor),
         Box::new(DomainTyposquatScanner::default()),
         Box::new(netioc),
+        Box::new(leak),
         Box::new(AstExtractor),
         Box::new(DangerousCallScanner),
         Box::new(TaintScanner),
@@ -178,6 +182,7 @@ impl RegexScanner {
         for rule in rules {
             if ioc::is_hash_ioc(&rule.pattern).is_some()
                 || netioc::is_network_ioc(&rule.pattern).is_some()
+                || leak::is_breach_ioc(&rule.pattern).is_some()
             {
                 continue;
             }
@@ -200,6 +205,7 @@ impl RegexScanner {
             // content regexes.
             if ioc::is_hash_ioc(&rule.pattern).is_some()
                 || netioc::is_network_ioc(&rule.pattern).is_some()
+                || leak::is_breach_ioc(&rule.pattern).is_some()
             {
                 continue;
             }
