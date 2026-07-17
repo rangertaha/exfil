@@ -90,11 +90,12 @@ Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/
 
 | Format | Becomes |
 |---|---|
-| `.json` | Native exfil dataset (name + rules) |
+| `.json` | Native exfil dataset, **STIX 2.x**, or **MISP** — auto-detected by content |
 | `.csv` / `.tsv` | Regex rules — a header row maps `name`,`pattern`,`severity`,`cwe`,`description` |
 | `.rss` / `.atom` / `.xml` | IOC rules — domains/IPs/URLs/hashes mined from item titles, links, and bodies |
 | `.yar` / `.yara` | YARA rules — one per `rule { … }` block, compiled into the YARA scanner |
 | `.toml` | gitleaks config — each `[[rules]]` (`id`/`regex`/`description`) becomes a regex rule |
+| `.stix` / `.misp` | STIX/MISP threat intel — IOCs from indicator patterns / event attributes |
 | other / `.txt` | IOC rules — one domain/IP/sha256 per line (`#` comments skipped) |
 
 Each pulled feed becomes a dataset named after the feed; its rules join the

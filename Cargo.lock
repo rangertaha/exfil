@@ -2075,6 +2075,7 @@ dependencies = [
  "exfil-scan",
  "exfil-task",
  "flate2",
+ "regex",
  "reqwest",
  "roxmltree",
  "serde",

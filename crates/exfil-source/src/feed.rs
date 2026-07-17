@@ -11,12 +11,15 @@
 //! - **Parse** — JSON (native dataset), CSV/TSV (a header row maps columns to
 //!   rule fields), newline-delimited IOCs (one domain/IP/hash per line),
 //!   RSS/Atom (indicators mined from item text), YARA (`.yar` rule blocks
-//!   compiled into the YARA scanner), and gitleaks TOML (`[[rules]]` regexes).
+//!   compiled into the YARA scanner), gitleaks TOML (`[[rules]]` regexes), and
+//!   the JSON threat-intel formats STIX 2.x and MISP (IOCs from indicator
+//!   patterns / event attributes). A `.json` feed is content-sniffed between a
+//!   native dataset, STIX, and MISP.
 //!
 //! The parsing is pure (bytes → rules), so every format is unit-testable
 //! without the network; [`fetch_feed`] is the thin download layer on top.
-//! Adding a format (STIX, MISP, …) is a new arm here — the catalog, storage,
-//! and CLI don't change.
+//! Adding a format is a new arm here — the catalog, storage, and CLI don't
+//! change.
 
 use std::io::Read;
 
@@ -40,6 +43,10 @@ pub enum FeedFormat {
     Yara,
     /// A gitleaks config TOML — its `[[rules]]` become regex rules.
     GitleaksToml,
+    /// STIX 2.x JSON — indicators are read from `indicator` objects' patterns.
+    Stix,
+    /// MISP JSON — indicators are read from event `Attribute` values.
+    Misp,
 }
 
 impl FeedFormat {
@@ -60,6 +67,8 @@ impl FeedFormat {
             "rss" | "atom" | "xml" => FeedFormat::Rss,
             "yar" | "yara" => FeedFormat::Yara,
             "toml" => FeedFormat::GitleaksToml,
+            "stix" => FeedFormat::Stix,
+            "misp" => FeedFormat::Misp,
             _ => FeedFormat::Iocs,
         }
     }
@@ -101,15 +110,171 @@ pub fn ingest(name: &str, filename: &str, bytes: &[u8]) -> Result<Dataset> {
 /// Parse one member's bytes in `format` into rules, tagged under the feed `name`.
 pub fn parse(name: &str, format: FeedFormat, bytes: &[u8]) -> Result<Vec<Rule>> {
     match format {
-        FeedFormat::Json => Ok(serde_json::from_slice::<Dataset>(bytes)
-            .context("parse dataset JSON")?
-            .rules),
+        FeedFormat::Json => parse_json(name, bytes),
         FeedFormat::Csv => parse_delimited(&String::from_utf8_lossy(bytes), ',', name),
         FeedFormat::Tsv => parse_delimited(&String::from_utf8_lossy(bytes), '\t', name),
         FeedFormat::Iocs => Ok(parse_iocs(&String::from_utf8_lossy(bytes), name)),
         FeedFormat::Rss => Ok(parse_rss(bytes, name)),
         FeedFormat::Yara => Ok(parse_yara(&String::from_utf8_lossy(bytes), name)),
         FeedFormat::GitleaksToml => parse_gitleaks(bytes, name),
+        FeedFormat::Stix => Ok(stix_iocs(
+            &serde_json::from_slice(bytes).context("parse STIX JSON")?,
+            name,
+        )),
+        FeedFormat::Misp => {
+            let value = serde_json::from_slice(bytes).context("parse MISP JSON")?;
+            let mut rules = Vec::new();
+            misp_iocs(&value, name, &mut rules);
+            Ok(rules)
+        }
+    }
+}
+
+/// Parse a `.json` feed, sniffing its shape: a native exfil dataset (has
+/// `rules`), a STIX 2.x bundle, a MISP export, or (fallback) a native dataset.
+fn parse_json(feed: &str, bytes: &[u8]) -> Result<Vec<Rule>> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).context("parse JSON feed")?;
+    if value.get("rules").is_some() {
+        return Ok(serde_json::from_value::<Dataset>(value)
+            .context("dataset JSON")?
+            .rules);
+    }
+    if is_stix(&value) {
+        return Ok(stix_iocs(&value, feed));
+    }
+    if is_misp(&value) {
+        let mut rules = Vec::new();
+        misp_iocs(&value, feed, &mut rules);
+        return Ok(rules);
+    }
+    Ok(serde_json::from_value::<Dataset>(value)
+        .map(|d| d.rules)
+        .unwrap_or_default())
+}
+
+/// Whether a JSON value looks like STIX 2.x (a bundle or indicator objects).
+fn is_stix(v: &serde_json::Value) -> bool {
+    v.get("type").and_then(|t| t.as_str()) == Some("bundle")
+        || v.get("spec_version").is_some()
+        || v.get("objects")
+            .and_then(|o| o.as_array())
+            .is_some_and(|a| {
+                a.iter()
+                    .any(|o| o.get("type").and_then(|t| t.as_str()) == Some("indicator"))
+            })
+}
+
+/// Whether a JSON value looks like a MISP export.
+fn is_misp(v: &serde_json::Value) -> bool {
+    v.get("Event").is_some() || v.get("response").is_some() || v.get("Attribute").is_some()
+}
+
+/// IOC rules from a STIX bundle: read each `indicator` object's `pattern`
+/// (STIX patterning) and pull out domains, IPs, URLs, and file hashes.
+fn stix_iocs(v: &serde_json::Value, feed: &str) -> Vec<Rule> {
+    let objects: Vec<&serde_json::Value> = match v.get("objects").and_then(|o| o.as_array()) {
+        Some(arr) => arr.iter().collect(),
+        None => vec![v],
+    };
+    let mut rules = Vec::new();
+    for obj in objects {
+        if obj.get("type").and_then(|t| t.as_str()) != Some("indicator") {
+            continue;
+        }
+        if let Some(pattern) = obj.get("pattern").and_then(|p| p.as_str()) {
+            rules.extend(stix_pattern_iocs(pattern, feed));
+        }
+    }
+    rules
+}
+
+/// Extract IOCs from one STIX pattern string, e.g.
+/// `[domain-name:value = 'evil.com' OR file:hashes.'SHA-256' = 'ab…']`.
+fn stix_pattern_iocs(pattern: &str, feed: &str) -> Vec<Rule> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static NET: OnceLock<Regex> = OnceLock::new();
+    static HASH: OnceLock<Regex> = OnceLock::new();
+    let net = NET.get_or_init(|| {
+        Regex::new(r"(domain-name|ipv4-addr|ipv6-addr|url):value\s*=\s*'([^']+)'").unwrap()
+    });
+    let hash = HASH
+        .get_or_init(|| Regex::new(r"file:hashes\.'?([A-Za-z0-9-]+)'?\s*=\s*'([^']+)'").unwrap());
+
+    let mut rules = Vec::new();
+    for cap in net.captures_iter(pattern) {
+        let scheme = match &cap[1] {
+            "domain-name" => "domain",
+            "ipv4-addr" | "ipv6-addr" => "ip",
+            "url" => "url",
+            _ => continue,
+        };
+        rules.push(ioc_rule(feed, format!("{scheme}:{}", &cap[2])));
+    }
+    for cap in hash.captures_iter(pattern) {
+        let algo = cap[1].to_ascii_lowercase().replace('-', "");
+        let scheme = match algo.as_str() {
+            "sha256" => "sha256",
+            "sha1" => "sha1",
+            "md5" => "md5",
+            _ => continue,
+        };
+        rules.push(ioc_rule(
+            feed,
+            format!("{scheme}:{}", cap[2].to_ascii_lowercase()),
+        ));
+    }
+    rules
+}
+
+/// IOC rules from a MISP export: walk the JSON and, for every attribute object
+/// (`{ "type": …, "value": … }`), map recognized types to IOC rules.
+fn misp_iocs(v: &serde_json::Value, feed: &str, rules: &mut Vec<Rule>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let (Some(ty), Some(value)) = (
+                map.get("type").and_then(|x| x.as_str()),
+                map.get("value").and_then(|x| x.as_str()),
+            ) {
+                if let Some(scheme) = misp_scheme(ty) {
+                    rules.push(ioc_rule(feed, format!("{scheme}:{value}")));
+                }
+            }
+            for child in map.values() {
+                misp_iocs(child, feed, rules);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                misp_iocs(item, feed, rules);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Map a MISP attribute type to an IOC pattern scheme.
+fn misp_scheme(ty: &str) -> Option<&'static str> {
+    match ty {
+        "domain" | "hostname" => Some("domain"),
+        "ip-src" | "ip-dst" | "ip" => Some("ip"),
+        "url" | "uri" | "link" => Some("url"),
+        "md5" => Some("md5"),
+        "sha1" => Some("sha1"),
+        "sha256" => Some("sha256"),
+        _ => None,
+    }
+}
+
+/// Construct a high-severity IOC rule with a scheme-prefixed pattern.
+fn ioc_rule(feed: &str, pattern: String) -> Rule {
+    Rule {
+        name: format!("{feed}-ioc"),
+        pattern,
+        description: format!("indicator from feed {feed}"),
+        severity: Some(Severity::High),
+        cwe: Some("CWE-506".into()),
+        cve: None,
     }
 }
 
@@ -185,16 +350,7 @@ fn xml_text(bytes: &[u8]) -> String {
 /// Build IOC rules from extracted observables (domains/IPs/URLs/hashes).
 fn iocs_from_indicators(ind: &exfil_task::Indicators, feed: &str) -> Vec<Rule> {
     let mut rules = Vec::new();
-    let mut push = |pattern: String| {
-        rules.push(Rule {
-            name: format!("{feed}-ioc"),
-            pattern,
-            description: format!("indicator from feed {feed}"),
-            severity: Some(Severity::High),
-            cwe: Some("CWE-506".into()),
-            cve: None,
-        });
-    };
+    let mut push = |pattern: String| rules.push(ioc_rule(feed, pattern));
     for d in &ind.domains {
         push(format!("domain:{d}"));
     }
@@ -629,6 +785,54 @@ mod tests {
             FeedFormat::from_name("gitleaks.toml"),
             FeedFormat::GitleaksToml
         );
+    }
+
+    #[test]
+    fn parses_stix_bundle_indicators() {
+        let stix = r#"{
+          "type": "bundle", "id": "bundle--1",
+          "objects": [
+            {"type":"indicator","pattern":"[domain-name:value = 'evil.example.com']"},
+            {"type":"indicator","pattern":"[ipv4-addr:value = '203.0.113.9']"},
+            {"type":"indicator","pattern":"[file:hashes.'SHA-256' = 'ABCDEF']"},
+            {"type":"identity","name":"ignore me"}
+          ]
+        }"#;
+        // Sniffed as STIX through the .json path.
+        let rules = parse("intel", FeedFormat::Json, stix.as_bytes()).unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"domain:evil.example.com"), "{pats:?}");
+        assert!(pats.contains(&"ip:203.0.113.9"), "{pats:?}");
+        assert!(pats.contains(&"sha256:abcdef"), "{pats:?}");
+        assert_eq!(rules.len(), 3);
+    }
+
+    #[test]
+    fn parses_misp_event_attributes() {
+        let misp = r#"{
+          "Event": { "info": "campaign",
+            "Attribute": [
+              {"type":"domain","value":"bad.test"},
+              {"type":"ip-dst","value":"198.51.100.7"},
+              {"type":"sha256","value":"DEADBEEF"},
+              {"type":"comment","value":"not an ioc"}
+            ]
+          }
+        }"#;
+        let rules = parse("misp", FeedFormat::Json, misp.as_bytes()).unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"domain:bad.test"), "{pats:?}");
+        assert!(pats.contains(&"ip:198.51.100.7"), "{pats:?}");
+        assert!(pats.contains(&"sha256:DEADBEEF"), "{pats:?}");
+        assert_eq!(rules.len(), 3, "the 'comment' attribute is skipped");
+    }
+
+    #[test]
+    fn native_dataset_json_still_wins_the_sniff() {
+        let json = br#"{"name":"x","rules":[{"name":"r","pattern":"p"}]}"#;
+        let rules = parse("x", FeedFormat::Json, json).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "r");
     }
 
     #[test]

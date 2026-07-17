@@ -78,8 +78,9 @@ and this project adheres to
   them through a fetch → decompress → detect → parse pipeline into rule
   datasets. Formats: native JSON, CSV/TSV (header-mapped regex rules), newline
   IOC lists (domain/IP/sha256), RSS/Atom (IOCs mined from item text), YARA
-  (`.yar` rules compiled into the YARA scanner), and gitleaks TOML (`[[rules]]`
-  regexes), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
+  (`.yar` rules compiled into the YARA scanner), gitleaks TOML (`[[rules]]`
+  regexes), and the threat-intel formats STIX 2.x and MISP (a `.json` feed is
+  content-sniffed between native/STIX/MISP), over `.gz`/`.zip`/`.tar`/`.tar.gz`.
 
 ### Changed
 
