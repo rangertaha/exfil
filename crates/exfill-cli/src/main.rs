@@ -79,6 +79,15 @@ enum Command {
         #[arg(required = true)]
         targets: Vec<String>,
     },
+    /// Sweep an IP/CIDR across ports, grab banners of open ones, and scan them
+    /// (authorized testing only).
+    PortScan {
+        /// Host or IPv4 CIDR, e.g. `10.0.0.0/28`.
+        hosts: String,
+        /// Ports: list/ranges (`22,80,8000-8010`) or `common`.
+        #[arg(short, long, default_value = "common")]
+        ports: String,
+    },
     /// Query stored findings.
     Search { query: Option<String> },
     /// Emit the findings graph (finding → file / rule) as JSON or DOT.
@@ -150,6 +159,11 @@ async fn main() -> Result<()> {
         }
         Command::Processes => cmd_processes(&store_dir, cli.config.as_deref()).await?,
         Command::ScanTcp { targets } => {
+            cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
+        }
+        Command::PortScan { hosts, ports } => {
+            let targets = exfill_remote::netscan::expand_targets(&hosts, &ports)?;
+            eprintln!("sweeping {} host:port targets…", targets.len());
             cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
         }
         Command::Search { query } => cmd_search(&store_dir, query).await?,

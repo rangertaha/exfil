@@ -13,6 +13,7 @@
 //! The same [`RemoteFs`] seam also backs [`ProcessFs`], which exposes the local
 //! host's *running processes* as scannable bytes — see [`proc`].
 
+pub mod netscan;
 pub mod proc;
 pub mod tcp;
 pub use proc::ProcessFs;

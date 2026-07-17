@@ -131,3 +131,7 @@ and this project adheres to
   path, command line) through the full pipeline via a ProcessFs RemoteFs source
   — catches secrets/tokens exposed on command lines, PII, and bad domains/IPs in
   arguments. Linux procfs; other platforms enumerate nothing.
+- Added `exfill scan-tcp <host:port…>` (banner grabbing) and `exfill port-scan
+  <cidr> --ports <spec>` (IP/CIDR × port sweep with banner scanning and
+  service/version fingerprinting), both reusing the pipeline via scan_remote.
+  Authorized-testing use; expansion bounded to 65k targets.
