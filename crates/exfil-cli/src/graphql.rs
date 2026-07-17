@@ -133,3 +133,28 @@ pub fn schema(store: Store) -> ExfilSchema {
         .data(store)
         .finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn schema_resolves_health_and_rules() {
+        let dir = std::env::temp_dir().join(format!("exfil-gql-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open_findings(&dir).await.unwrap();
+        let schema = schema(store);
+
+        let resp = schema
+            .execute("{ health rules { name severity cwe } }")
+            .await;
+        assert!(resp.errors.is_empty(), "{:?}", resp.errors);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""health":"ok""#), "{json}");
+        // The built-in ruleset is exposed with severity/cwe fields.
+        assert!(json.contains("aws-access-key-id"), "{json}");
+        assert!(json.contains("CWE-798"), "{json}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
