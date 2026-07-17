@@ -68,6 +68,12 @@ and this project adheres to
   catalog into a local `cwe` table; `exfil enrich` annotates findings with the
   authoritative CWE name; `exfil cwe <id>` looks a weakness up. Offline after
   the pull; reference data, kept out of the detection rules. (CVE/CPE planned.)
+- Configurable database engine: the store uses SurrealDB's `engine::any`, so a
+  connection endpoint selects embedded (`surrealkv://`/`mem://`) or a remote
+  server / cluster (`ws(s)://`, `http(s)://`) with root sign-in.
+- WebDriver crawling: `exfil scan-web --driver <url>` renders pages in a
+  headless browser (geckodriver/chromedriver) to traverse JavaScript-heavy,
+  dynamic sites — content a plain HTTP crawl misses.
 
 ### Changed
 

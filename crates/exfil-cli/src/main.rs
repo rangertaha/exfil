@@ -171,6 +171,10 @@ enum Command {
         /// Maximum link depth from the seed.
         #[arg(long, default_value_t = 2)]
         max_depth: usize,
+        /// Render pages through a WebDriver server (e.g. `http://localhost:4444`)
+        /// to crawl JavaScript-heavy, dynamic sites.
+        #[arg(long, value_name = "URL")]
+        driver: Option<String>,
     },
     /// Resolve domains observed during scans and flag reserved/private
     /// resolutions (online; authorized use).
@@ -314,6 +318,7 @@ async fn main() -> Result<()> {
             url,
             max_pages,
             max_depth,
+            driver,
         } => {
             cmd_scan_web(
                 &store_dir,
@@ -321,6 +326,7 @@ async fn main() -> Result<()> {
                 &url,
                 max_pages,
                 max_depth,
+                driver.as_deref(),
             )
             .await?
         }
@@ -601,25 +607,50 @@ async fn cmd_scan_web(
     url: &str,
     max_pages: usize,
     max_depth: usize,
+    driver: Option<&str>,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
     let store = exfil_store::Store::open_findings(store_dir).await?;
-    eprintln!("crawling {url}…");
-    let fs = exfil_remote::WebFs::crawl(url, max_pages, max_depth)
-        .await
-        .with_context(|| format!("crawl {url}"))?;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(&fs, "/", &pipeline, &store, Some(tx)).await;
-    let counts = renderer.join().unwrap_or_default();
-    let summary = result?;
+    // A WebDriver server renders JavaScript (dynamic sites); otherwise a plain
+    // HTTP crawl. Both present the pages as a `RemoteFs` to the same scan.
+    let (counts, summary) = match driver {
+        Some(driver) => {
+            eprintln!("rendering {url} via WebDriver {driver}…");
+            let fs = exfil_remote::webdriver::WebDriverFs::crawl(driver, url, max_pages, max_depth)
+                .await
+                .with_context(|| format!("render {url} via WebDriver"))?;
+            run_web_scan(&fs, &pipeline, &store).await
+        }
+        None => {
+            eprintln!("crawling {url}…");
+            let fs = exfil_remote::WebFs::crawl(url, max_pages, max_depth)
+                .await
+                .with_context(|| format!("crawl {url}"))?;
+            run_web_scan(&fs, &pipeline, &store).await
+        }
+    };
+    let summary = summary?;
     println!(
         "crawled {} page(s): {} matches, {} unreadable",
         summary.files, summary.matches, summary.errors
     );
     print_tally(&counts);
     Ok(())
+}
+
+/// Scan an already-crawled/rendered site (a `RemoteFs`) through the pipeline,
+/// draining progress. Returns the severity counts and the scan result.
+async fn run_web_scan(
+    fs: &impl exfil_engine::RemoteFs,
+    pipeline: &exfil_task::Pipeline,
+    store: &exfil_store::Store,
+) -> (progress::SevCounts, Result<exfil_engine::Summary>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfil_engine::scan_remote(fs, "/", pipeline, store, Some(tx)).await;
+    let counts = renderer.join().unwrap_or_default();
+    (counts, result)
 }
 
 /// Build the scan pipeline: built-in rules plus any catalog datasets, plus

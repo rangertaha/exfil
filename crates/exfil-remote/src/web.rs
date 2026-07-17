@@ -102,7 +102,7 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Result<String> {
 }
 
 /// The host portion of a URL (scheme://host/…), lowercased.
-fn host_of(url: &str) -> Option<String> {
+pub(crate) fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let host = rest.split(['/', '?', '#']).next()?;
     let host = host.split('@').next_back()?; // strip userinfo
@@ -112,7 +112,7 @@ fn host_of(url: &str) -> Option<String> {
 
 /// Extract absolute links from an HTML page's `href`/`src` attributes,
 /// resolving root-relative and same-page relative URLs against `base`.
-fn extract_links(base: &str, html: &str) -> Vec<String> {
+pub(crate) fn extract_links(base: &str, html: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r#"(?i)(?:href|src)\s*=\s*["']([^"']+)["']"#).unwrap());
     let mut out = Vec::new();

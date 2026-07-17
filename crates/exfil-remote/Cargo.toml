@@ -14,6 +14,9 @@ russh-sftp = "2"
 gethostname = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 regex = "1"
+fantoccini = { version = "0.22", default-features = false, features = ["rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

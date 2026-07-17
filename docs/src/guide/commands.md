@@ -18,7 +18,7 @@ Run `exfil <command> --help` for a command's own flags.
 | `exfil processes` | Scan the local host's running processes (command lines, exe paths) |
 | `exfil scan-tcp host:port…` | Grab and scan TCP service banners *(authorized testing only)* |
 | `exfil port-scan <ip/cidr>` | Sweep ports, grab banners, and scan them *(authorized testing only)* |
-| `exfil scan-web <url>` | Crawl a website from a seed URL and scan the pages *(authorized testing only)* |
+| `exfil scan-web <url> [--driver URL]` | Crawl a website and scan the pages; `--driver` renders JS-heavy sites via a WebDriver browser *(authorized testing only)* |
 
 ### Gating CI
 
@@ -90,6 +90,21 @@ exfil completions fish > ~/.config/fish/completions/exfil.fish
 > The banner-grabbing and web/port scanners reach out over the network and are
 > intended for **authorized security testing only**. The core filesystem, code,
 > and archive scanning is fully offline.
+
+### Dynamic sites (WebDriver)
+
+Static crawling misses content that JavaScript builds at runtime. Point
+`scan-web` at a running WebDriver server (geckodriver/chromedriver) to render
+each page in a headless browser first:
+
+```sh
+geckodriver --port 4444 &                                  # or chromedriver
+exfil scan-web https://app.example.com --driver http://localhost:4444
+```
+
+exfil connects to the driver you run (it doesn't launch the browser). The
+rendered, post-JavaScript DOM flows through the same scanners, so secrets and
+indicators injected by scripts are caught.
 
 ## HTTP API server
 
