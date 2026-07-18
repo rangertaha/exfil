@@ -89,6 +89,9 @@ and this project adheres to
   overlapping feeds/pages/archive members no longer inflate the pulled count.
 - `exfil feeds show <name>`: print a feed's URL and a breakdown of the rules it
   last pulled by type (domain / ip / url / hash / email / yara / regex).
+- `exfil feeds pull` prints a rollup (`pulled N/M feed(s), R rule(s)[, F failed]`)
+  when pulling more than one feed, and exits non-zero if any feed failed — so a
+  scheduled refresh surfaces a broken feed instead of hiding it in the stream.
 
 ### Changed
 

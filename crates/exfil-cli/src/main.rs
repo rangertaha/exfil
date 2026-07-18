@@ -980,15 +980,34 @@ async fn cmd_feeds(config: Option<&std::path::Path>, action: Option<FeedCmd>) ->
                 println!("nothing to pull (add a feed with `exfil feeds add`)");
                 return Ok(());
             }
+            let total = targets.len();
+            let (mut ok, mut failed, mut rules) = (0usize, 0usize, 0usize);
             for (name, url) in targets {
                 eprintln!("pulling feed {name:?} from {url}…");
                 match exfil_source::feed::fetch_feed(&name, &url).await {
                     Ok(dataset) => {
                         let n = catalog.upsert_dataset(&dataset).await?;
                         println!("pulled feed {name:?}: {n} rule(s) from {url}");
+                        ok += 1;
+                        rules += n;
                     }
-                    Err(e) => eprintln!("failed to pull feed {name:?}: {e:#}"),
+                    Err(e) => {
+                        eprintln!("failed to pull feed {name:?}: {e:#}");
+                        failed += 1;
+                    }
                 }
+            }
+            // Rollup, but only when it adds information (more than one feed).
+            if total > 1 {
+                let failed_note = if failed > 0 {
+                    format!(", {failed} failed")
+                } else {
+                    String::new()
+                };
+                println!("pulled {ok}/{total} feed(s), {rules} rule(s){failed_note}");
+            }
+            if failed > 0 {
+                std::process::exit(1);
             }
         }
     }
