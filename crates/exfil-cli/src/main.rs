@@ -339,6 +339,8 @@ enum FeedCmd {
     Add { name: String, url: String },
     /// Remove a feed from the catalog.
     Rm { name: String },
+    /// Show a feed's URL and a breakdown of the rules it last pulled.
+    Show { name: String },
     /// Fetch feeds into rule datasets: a specific `name`, or all when omitted.
     Pull { name: Option<String> },
 }
@@ -947,6 +949,28 @@ async fn cmd_feeds(config: Option<&std::path::Path>, action: Option<FeedCmd>) ->
                 println!("no feed {name:?}");
             }
         }
+        FeedCmd::Show { name } => {
+            let feeds = catalog.list_feeds().await?;
+            let Some((_, url)) = feeds.iter().find(|(n, _)| *n == name) else {
+                println!("no feed {name:?}");
+                return Ok(());
+            };
+            println!("feed {name:?}\n  url: {url}");
+            match catalog.get_dataset(&name).await? {
+                Some(ds) if !ds.rules.is_empty() => {
+                    // Group the pulled rules by indicator / rule type.
+                    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+                    for r in &ds.rules {
+                        *counts.entry(feed_rule_kind(&r.pattern)).or_default() += 1;
+                    }
+                    println!("  rules: {}", ds.rules.len());
+                    for (kind, n) in &counts {
+                        println!("    {kind:<8} {n}");
+                    }
+                }
+                _ => println!("  rules: none pulled yet — run `exfil feeds pull {name}`"),
+            }
+        }
         FeedCmd::Pull { name } => {
             let mut targets = catalog.list_feeds().await?;
             if let Some(want) = &name {
@@ -969,6 +993,20 @@ async fn cmd_feeds(config: Option<&std::path::Path>, action: Option<FeedCmd>) ->
         }
     }
     Ok(())
+}
+
+/// Classify a rule pattern into a coarse type label for the `feeds show`
+/// breakdown, by its scheme prefix (a plain pattern is a regex rule).
+fn feed_rule_kind(pattern: &str) -> &'static str {
+    match pattern.split_once(':').map(|(s, _)| s) {
+        Some("domain") => "domain",
+        Some("ip") => "ip",
+        Some("url") => "url",
+        Some("md5" | "sha1" | "sha256") => "hash",
+        Some("breach-email") => "email",
+        Some("yara") => "yara",
+        _ => "regex",
+    }
 }
 
 /// Query stored findings: no arg lists all, `field=value` filters on
@@ -1287,4 +1325,23 @@ fn confirm(question: &str) -> bool {
         return false;
     }
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::feed_rule_kind;
+
+    #[test]
+    fn feed_rule_kind_classifies_by_scheme() {
+        assert_eq!(feed_rule_kind("domain:evil.test"), "domain");
+        assert_eq!(feed_rule_kind("ip:203.0.113.9"), "ip");
+        assert_eq!(feed_rule_kind("url:https://evil.test/x"), "url");
+        assert_eq!(feed_rule_kind("sha256:deadbeef"), "hash");
+        assert_eq!(feed_rule_kind("md5:abc"), "hash");
+        assert_eq!(feed_rule_kind("breach-email:a@b.test"), "email");
+        assert_eq!(feed_rule_kind("yara:src"), "yara");
+        // A plain regex (even one containing a colon) is not a scheme.
+        assert_eq!(feed_rule_kind("AKIA[0-9A-Z]{16}"), "regex");
+        assert_eq!(feed_rule_kind("https://not-a-scheme"), "regex");
+    }
 }

@@ -57,7 +57,7 @@ exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 | `exfil sources` | List the available dataset source plugins |
 | `exfil pull [reference]` | Download datasets (a `reference`, or every configured update); `mitre://cwe` fetches the MITRE CWE catalog |
 | `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`) |
-| `exfil feeds` | Manage the URL feed catalog and pull feeds into rule datasets (`list` default; `add`/`rm`/`pull`) |
+| `exfil feeds` | Manage the URL feed catalog and pull feeds into rule datasets (`list` default; `add`/`rm`/`show`/`pull`) |
 
 ## Store, interfaces & maintenance
 
@@ -83,6 +83,7 @@ exfil feeds add secrets https://example.com/rules.csv      # regex rules
 exfil feeds add threats https://example.com/iocs.txt.gz    # IOC list (gzipped)
 exfil feeds list
 exfil feeds pull                                           # fetch all → datasets
+exfil feeds show threats                                   # URL + rule-type breakdown
 ```
 
 Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/

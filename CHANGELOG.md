@@ -87,6 +87,8 @@ and this project adheres to
   from the URL) and its STIX objects normalized into IOC rules.
 - Feed ingestion deduplicates rules by `(name, pattern)` (first-seen order), so
   overlapping feeds/pages/archive members no longer inflate the pulled count.
+- `exfil feeds show <name>`: print a feed's URL and a breakdown of the rules it
+  last pulled by type (domain / ip / url / hash / email / yara / regex).
 
 ### Changed
 
