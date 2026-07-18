@@ -85,12 +85,13 @@ pub fn reporter_for(format: &str) -> Option<Box<dyn Reporter>> {
         "json" => Some(Box::new(JsonReporter)),
         "markdown" | "md" => Some(Box::new(MarkdownReporter)),
         "junit" | "junit-xml" => Some(Box::new(JunitReporter)),
+        "sarif" => Some(Box::new(SarifReporter)),
         _ => None,
     }
 }
 
 /// The format names [`reporter_for`] accepts (canonical spellings).
-pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit"];
+pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit", "sarif"];
 
 /// Human-readable plain-text report.
 pub struct TextReporter;
@@ -284,6 +285,94 @@ impl Reporter for JunitReporter {
     }
 }
 
+/// SARIF 2.1.0 report — the OASIS standard for static-analysis results. GitHub
+/// code scanning ingests it to annotate findings inline on pull requests, and
+/// most SAST dashboards read it too. Each finding becomes a `result`; the
+/// distinct rules that fired are emitted once in the tool driver.
+pub struct SarifReporter;
+
+/// Map a severity to a SARIF result level (`error`/`warning`/`note`). Findings
+/// without a severity default to `warning`.
+fn sarif_level(sev: Option<Severity>) -> &'static str {
+    match sev {
+        Some(Severity::Critical | Severity::High) => "error",
+        Some(Severity::Medium) => "warning",
+        Some(Severity::Low | Severity::Info) => "note",
+        None => "warning",
+    }
+}
+
+impl Reporter for SarifReporter {
+    fn name(&self) -> &str {
+        "sarif"
+    }
+
+    fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
+        // Distinct rules that fired, in first-seen order, emitted once each.
+        let mut rule_index: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut rules = Vec::new();
+        for m in &a.findings {
+            if !rule_index.contains_key(m.rule.as_str()) {
+                rule_index.insert(m.rule.as_str(), rules.len());
+                let mut rule = serde_json::json!({
+                    "id": m.rule,
+                    "name": m.rule,
+                    "shortDescription": { "text": m.rule },
+                });
+                if let Some(cwe) = &m.cwe {
+                    rule["properties"] = serde_json::json!({ "cwe": cwe, "tags": [cwe] });
+                }
+                rules.push(rule);
+            }
+        }
+
+        let results: Vec<serde_json::Value> = a
+            .findings
+            .iter()
+            .map(|m| {
+                // SARIF regions are 1-based; a 0 line means "no specific line",
+                // so attach a region only when we have a real position.
+                let mut physical = serde_json::json!({
+                    "artifactLocation": { "uri": m.path },
+                });
+                if m.line >= 1 {
+                    let mut region = serde_json::json!({ "startLine": m.line });
+                    if m.col >= 1 {
+                        region["startColumn"] = serde_json::json!(m.col);
+                    }
+                    if !m.snippet.is_empty() {
+                        region["snippet"] = serde_json::json!({ "text": m.snippet });
+                    }
+                    physical["region"] = region;
+                }
+                serde_json::json!({
+                    "ruleId": m.rule,
+                    "ruleIndex": rule_index[m.rule.as_str()],
+                    "level": sarif_level(m.severity),
+                    "message": { "text": if m.snippet.is_empty() { m.rule.clone() } else { m.snippet.clone() } },
+                    "locations": [ { "physicalLocation": physical } ],
+                })
+            })
+            .collect();
+
+        let doc = serde_json::json!({
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [ {
+                "tool": { "driver": {
+                    "name": "exfil",
+                    "informationUri": "https://github.com/rangertaha/exfil",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "rules": rules,
+                } },
+                "results": results,
+            } ],
+        });
+        writeln!(w, "{}", serde_json::to_string_pretty(&doc)?)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,7 +476,76 @@ mod tests {
         assert_eq!(JsonReporter.name(), "json");
         assert_eq!(MarkdownReporter.name(), "markdown");
         assert_eq!(JunitReporter.name(), "junit");
-        assert_eq!(FORMATS, ["text", "json", "markdown", "junit"]);
+        assert_eq!(SarifReporter.name(), "sarif");
+        assert_eq!(FORMATS, ["text", "json", "markdown", "junit", "sarif"]);
+    }
+
+    #[test]
+    fn sarif_is_valid_2_1_0_and_maps_findings() {
+        let out = render(&SarifReporter, &sample());
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["version"], "2.1.0");
+        let run = &v["runs"][0];
+        assert_eq!(run["tool"]["driver"]["name"], "exfil");
+        // Three findings, three distinct rules → three results and three rules.
+        assert_eq!(run["results"].as_array().unwrap().len(), 3);
+        assert_eq!(run["tool"]["driver"]["rules"].as_array().unwrap().len(), 3);
+        let r0 = &run["results"][0];
+        assert_eq!(r0["ruleId"], "aws-key");
+        assert_eq!(r0["level"], "error"); // critical → error
+        assert_eq!(r0["ruleIndex"], 0);
+        assert_eq!(
+            r0["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "a.env"
+        );
+        assert_eq!(
+            r0["locations"][0]["physicalLocation"]["region"]["startLine"],
+            1
+        );
+        // Low severity maps to note.
+        assert_eq!(run["results"][1]["level"], "note");
+
+        // Two findings sharing a rule collapse to one driver rule, both results
+        // pointing at its index.
+        let dup = Analysis {
+            findings: vec![
+                finding("aws-key", Severity::Critical),
+                finding("aws-key", Severity::Critical),
+            ],
+            files: 1,
+            scans: 1,
+        };
+        let v2: serde_json::Value = serde_json::from_str(&render(&SarifReporter, &dup)).unwrap();
+        assert_eq!(
+            v2["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(v2["runs"][0]["results"][1]["ruleIndex"], 0);
+    }
+
+    #[test]
+    fn sarif_omits_region_for_unpositioned_findings() {
+        let mut m = finding("threats-ioc", Severity::High);
+        m.line = 0; // an IOC hit with no specific line
+        m.cwe = Some("CWE-506".into());
+        let a = Analysis {
+            findings: vec![m],
+            files: 1,
+            scans: 1,
+        };
+        let out = render(&SarifReporter, &a);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let loc = &v["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
+        assert!(loc.get("region").is_none(), "no region when line is 0");
+        assert_eq!(loc["artifactLocation"]["uri"], "a.env");
+        // The CWE rides along as a rule property/tag.
+        assert_eq!(
+            v["runs"][0]["tool"]["driver"]["rules"][0]["properties"]["cwe"],
+            "CWE-506"
+        );
     }
 
     #[test]

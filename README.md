@@ -84,7 +84,7 @@ scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 | `exfil scan [path]` | Scan a directory tree for secrets and security issues |
 | `exfil scan-remote [user@]host:/path` | Scan a remote host over SSH/SFTP |
 | `exfil search [query]` | Query stored findings (by field or free text) |
-| `exfil analyze` | Render a report of the graph (`--format text\|json\|markdown`) |
+| `exfil analyze` | Render a report of the graph (`--format text\|json\|markdown\|junit\|sarif`) |
 | `exfil tui` | Open the mutt-style TUI to scan and browse live |
 | `exfil pull [ref]` | Download rule/IOC datasets into the catalog |
 | `exfil rules` | Show the rules a scan would apply |

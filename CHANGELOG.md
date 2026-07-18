@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Added
 
+- SARIF 2.1.0 report format (`analyze -f sarif`): findings become SARIF
+  `results` (severity → `error`/`warning`/`note`), the distinct rules that fired
+  are emitted once in the tool driver with their CWE as a property/tag, and
+  positions become 1-based regions. GitHub code scanning and most SAST
+  dashboards ingest it to annotate findings inline on pull requests.
+
 - Cargo workspace with six crates: `exfil-core`, `exfil-config`,
   `exfil-scan`, `exfil-store`, `exfil-engine`, `exfil-cli`.
 - Embedded SurrealDB (SurrealKV) graph store: file/finding/rule/scan tables,

@@ -31,7 +31,7 @@ flowchart LR
 - **Stored as a graph** — files → findings → rules in an embedded, pure-Rust
   database ([SurrealDB](https://surrealdb.com)) — or a remote cluster.
 - **Reported many ways** — query with `search`, browse the live TUI, render
-  `text`/`json`/`markdown`/`junit` reports, gate CI with `--fail-on`, or serve
+  `text`/`json`/`markdown`/`junit`/`sarif` reports, gate CI with `--fail-on`, or serve
   the graph over HTTP + GraphQL and to AI agents over MCP. Enriched offline with
   authoritative MITRE CWE names.
 
