@@ -8,6 +8,29 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The default config is now a fully-documented reference: every option is shown
+  with its default value and commented out (only the shipped `security` dataset
+  is active), so exfil runs on built-in defaults and users uncomment only what
+  they want to change.
+
+- Redesigned `exfil tui` into an app-style workbench: a toggleable top stats
+  bar (`t`), a left section menu, a columnar **data grid** (ratatui `Table`),
+  and a bottom bar that doubles as the `:`/`/` input — all on a cyan-accent
+  theme. On a finding, `Enter` opens it in `$EDITOR` at its line, `v` shows the
+  source in-TUI with findings marked in the gutter, and `n` opens the graph
+  navigator, now rendered as cascading **Miller columns** with a breadcrumb
+  path. `c` edits any row in place — set severity (a bare severity word works),
+  add metadata, or change any field — for findings and browsed records alike.
+- Grouped the CLI into nested subcommands: the scanners live under `scan`
+  (`scan files [path]`, `scan tcp`, `scan port`, `scan web`, `scan processes`;
+  bare `scan` still scans the current directory), remote scanning is a flag
+  (`scan files --remote [user@]host:/path`), the reachability checks under
+  `check` (`check dns`, `check whois`), and store maintenance under `store`
+  (`store export`, `store gc`, `store clean`). The `-r`/`--recursive`
+  cross-system traversal flag is reserved for a future release.
+
 ### Added
 
 - SARIF 2.1.0 report format (`analyze -f sarif`): findings become SARIF

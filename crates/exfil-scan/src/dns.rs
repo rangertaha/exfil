@@ -1,7 +1,7 @@
 //! DNS resolution checks over extracted domains.
 //!
 //! This is an *online* enrichment (it queries the system resolver), kept out of
-//! the default offline pipeline and driven instead by the `check-dns` command
+//! the default offline pipeline and driven instead by the `check dns` command
 //! over domains already stored in the graph. For each domain it resolves the
 //! A/AAAA records and flags a domain that resolves to a **private, loopback, or
 //! otherwise reserved** address — a signal of DNS rebinding, internal-service

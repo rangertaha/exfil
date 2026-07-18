@@ -136,7 +136,7 @@ The safety story is the point:
 
 ## 4. Remote scanning over SSH (`exfil-remote`) {#remote}
 
-`exfil scan-remote user@host:/path` scans another machine. `exfil-remote`
+`exfil scan files --remote user@host:/path` scans another machine. `exfil-remote`
 implements the engine's [`RemoteFs`](./engine.md#10-remote-scans-scan_remote) trait
 over SSH/SFTP using pure-Rust [`russh`](https://docs.rs/russh) — no C `libssh2`.
 

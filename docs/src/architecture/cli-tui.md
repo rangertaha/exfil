@@ -20,10 +20,10 @@ flags apply to all: `-s/--store` (findings store path, default `.exfil`) and
 
 ```mermaid
 flowchart TD
-    EXF["exfil"] --> SCAN["scan / scan-remote — walk & analyze"]
+    EXF["exfil"] --> SCAN["scan files/tcp/port/web — walk & analyze"]
     EXF --> QUERY["search / graph / analyze / get — read results"]
     EXF --> DATA["sources / pull / datasets / rules — manage rules"]
-    EXF --> MAINT["gc / clean / export — maintenance"]
+    EXF --> MAINT["store gc/clean/export — maintenance"]
     EXF --> ENR["enrich — LLM/script triage notes"]
     EXF --> SERVE["mcp — server for AI agents"]
     EXF --> UI["tui — interactive terminal UI"]
@@ -31,8 +31,8 @@ flowchart TD
 
 | Command | Does | Handler |
 |---------|------|---------|
-| `scan [path]` | Walk a tree, scan, persist; live progress | [`main.rs:182`](../../crates/exfil-cli/src/main.rs#L182) |
-| `scan-remote <target>` | Scan a host over SSH (`-p` port, `-k` key; `$EXFIL_SSH_PASSWORD`) | [`main.rs:207`](../../crates/exfil-cli/src/main.rs#L207) |
+| `scan [files] [path]` | Walk a tree, scan, persist; live progress | [`main.rs`](../../crates/exfil-cli/src/main.rs) |
+| `scan files --remote <target>` | Scan a host over SSH (`-p` port, `-k` key; `$EXFIL_SSH_PASSWORD`) | [`main.rs`](../../crates/exfil-cli/src/main.rs) |
 | `search [query]` | Query stored findings (`field=value` or free text) | [`main.rs:410`](../../crates/exfil-cli/src/main.rs#L410) |
 | `analyze [query] -f <fmt>` | Render a report (`text`/`json`/`markdown`/`junit`) | [`main.rs:423`](../../crates/exfil-cli/src/main.rs#L423) |
 | `graph [query] -f <fmt>` | Emit the findings graph as JSON or DOT | [`main.rs:439`](../../crates/exfil-cli/src/main.rs#L439) |
@@ -40,7 +40,7 @@ flowchart TD
 | `datasets [list/show/add/rm]` | Manage the rule catalog | [`main.rs:350`](../../crates/exfil-cli/src/main.rs#L350) |
 | `pull [ref]` / `sources` / `rules` | Fetch datasets / list sources / show built-in rules | [`main.rs:317`](../../crates/exfil-cli/src/main.rs#L317) / `302` / `544` |
 | `enrich` | Run offline LLM/script triage over findings | [`main.rs:468`](../../crates/exfil-cli/src/main.rs#L468) |
-| `gc` / `clean` / `export -o -f` | Prune / delete store / snapshot (CBOR or JSON) | [`main.rs:523`](../../crates/exfil-cli/src/main.rs#L523) / `563` / `490` |
+| `store gc` / `clean` / `export -o -f` | Prune / delete store / snapshot (CBOR or JSON) | [`main.rs`](../../crates/exfil-cli/src/main.rs) |
 | `mcp` | Serve MCP over stdio for AI agents | [`main.rs:149`](../../crates/exfil-cli/src/main.rs#L149) |
 | `tui` | Open the interactive UI | [`main.rs:155`](../../crates/exfil-cli/src/main.rs#L155) |
 

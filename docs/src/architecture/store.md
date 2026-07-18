@@ -42,7 +42,7 @@ freely.
 Two logical stores share the same code, differing only in database name:
 
 - the **findings** store (`DB_FINDINGS`), your scan results — removed by
-  `exfil clean`;
+  `exfil store clean`;
 - the **catalog** store (`DB_CATALOG`), your rule datasets — persistent, located
   via `$EXFIL_CATALOG_DIR`.
 

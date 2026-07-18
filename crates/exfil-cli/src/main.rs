@@ -33,11 +33,12 @@ use clap_complete::Shell;
 const EXAMPLES: &str = "\
 Examples:
   exfil scan                       Scan the current directory
-  exfil scan ~/project             Scan a specific path
+  exfil scan files ~/project       Scan a specific path
+  exfil scan files --remote deploy@web1:/srv   Scan a remote host over SSH
+  exfil scan tcp example.com:22    Grab & scan a service banner
   exfil search severity=critical   Show only the critical findings
   exfil analyze --format markdown  Render a report of the findings graph
   exfil tui                        Open the interactive workbench
-  exfil scan-remote deploy@web1:/srv   Scan a remote host over SSH
 
 Docs: https://rangertaha.github.io/exfil/";
 
@@ -168,72 +169,21 @@ enum Command {
     /// Show the rules a scan would apply, optionally filtered by a substring
     /// of the name, description, CWE, or severity.
     Rules { filter: Option<String> },
-    /// Scan a directory tree for patterns and security issues.
+    /// Scan a target for secrets and security issues. With no subcommand,
+    /// scans the current directory; `scan files <path>` scans a specific tree.
     Scan {
-        path: Option<String>,
-        /// Exit non-zero if any finding is at or above this severity
-        /// (info|low|medium|high|critical). Useful as a CI gate.
-        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
-        fail_on: Option<exfil_core::Severity>,
+        #[command(subcommand)]
+        target: Option<ScanCmd>,
     },
-    /// Scan a remote host over SSH/SFTP (`[user@]host:/path`).
-    ScanRemote {
-        /// Remote target, e.g. `deploy@web1:/srv`.
-        target: String,
-        /// SSH port.
-        #[arg(short, long, default_value_t = 22)]
-        port: u16,
-        /// Private key file (default: password auth via $EXFIL_SSH_PASSWORD).
-        #[arg(short, long)]
-        key: Option<PathBuf>,
+    /// Check observed indicators against live network sources (online;
+    /// authorized use). `check dns` resolves domains; `check whois` ages them.
+    Check {
+        #[command(subcommand)]
+        action: CheckCmd,
     },
-    /// Scan the local host's running processes (command lines, exe paths).
-    Processes,
-    /// Grab and scan TCP service banners from `host:port` targets (authorized
-    /// testing only).
-    ScanTcp {
-        /// One or more `host:port` targets, e.g. `example.com:22`.
-        #[arg(required = true)]
-        targets: Vec<String>,
-    },
-    /// Sweep an IP/CIDR across ports, grab banners of open ones, and scan them
-    /// (authorized testing only).
-    PortScan {
-        /// Host or IPv4 CIDR, e.g. `10.0.0.0/28`.
-        hosts: String,
-        /// Ports: list/ranges (`22,80,8000-8010`) or `common`.
-        #[arg(short, long, default_value = "common")]
-        ports: String,
-    },
-    /// Crawl a website from a seed URL and scan the pages (authorized testing
-    /// only).
-    ScanWeb {
-        /// Seed URL, e.g. `https://example.com`.
-        url: String,
-        /// Maximum pages to fetch.
-        #[arg(long, default_value_t = 64)]
-        max_pages: usize,
-        /// Maximum link depth from the seed.
-        #[arg(long, default_value_t = 2)]
-        max_depth: usize,
-        /// Render pages through a WebDriver server (e.g. `http://localhost:4444`)
-        /// to crawl JavaScript-heavy, dynamic sites.
-        #[arg(long, value_name = "URL")]
-        driver: Option<String>,
-    },
-    /// Resolve domains observed during scans and flag reserved/private
-    /// resolutions (online; authorized use).
-    CheckDns,
     /// Normalize findings into CIM events (shared category/action fields) for
     /// cross-source correlation.
     Normalize,
-    /// WHOIS-check observed domains and flag newly-registered ones (online;
-    /// authorized use).
-    CheckWhois {
-        /// Flag domains registered within this many days.
-        #[arg(long, default_value_t = exfil_scan::whois::DEFAULT_RECENT_DAYS)]
-        recent_days: i64,
-    },
     /// Query stored findings.
     ///
     /// With no query, lists every finding. A `field=value` term filters on one
@@ -273,22 +223,11 @@ enum Command {
     },
     /// Show the resolved config path and contents.
     Config,
-    /// Delete the findings store (keeps downloaded datasets).
-    Clean {
-        /// Skip the confirmation prompt.
-        #[arg(short, long)]
-        yes: bool,
-    },
-    /// Garbage-collect unreachable records.
-    Gc,
-    /// Export the whole graph as a portable snapshot (CBOR or JSON).
-    Export {
-        /// Output file (default: stdout for json, required for cbor).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-        /// Format: cbor (DAG-CBOR-style binary) or json.
-        #[arg(short, long, default_value = "cbor")]
-        format: String,
+    /// Maintain the findings store: export a snapshot, garbage-collect, or
+    /// delete it (`store export`/`gc`/`clean`).
+    Store {
+        #[command(subcommand)]
+        action: StoreCmd,
     },
     /// Run an MCP server on stdio for AI agents.
     Mcp,
@@ -299,7 +238,7 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
     },
-    /// Open the mutt-style TUI: scan, browse, and query the graph live.
+    /// Open the app-style TUI workbench: scan, browse, edit, and query the graph live.
     Tui,
     /// Print a stored record by id.
     ///
@@ -314,6 +253,101 @@ enum Command {
         /// Target shell, e.g. `bash`. Source or install the output; for bash:
         /// `exfil completions bash > /etc/bash_completion.d/exfil`.
         shell: Shell,
+    },
+}
+
+/// Scan targets. `files` scans a local tree (or, with `--remote`, a host over
+/// SSH/SFTP); the others reach out over the network (authorized testing only).
+#[derive(Subcommand)]
+enum ScanCmd {
+    /// Scan a local directory tree — or a remote host with `--remote`.
+    Files {
+        /// Local path to scan (default: current directory). Ignored with `--remote`.
+        path: Option<String>,
+        /// Instead scan a remote host over SSH/SFTP: `[user@]host:/path`.
+        /// (`-r`/`--recursive` cross-system traversal is reserved for a future release.)
+        #[arg(long, value_name = "TARGET")]
+        remote: Option<String>,
+        /// SSH port for `--remote`.
+        #[arg(short, long, default_value_t = 22)]
+        port: u16,
+        /// Private key for `--remote` (default: password auth via $EXFIL_SSH_PASSWORD).
+        #[arg(short, long)]
+        key: Option<PathBuf>,
+        /// Exit non-zero if any finding is at or above this severity
+        /// (info|low|medium|high|critical). Useful as a CI gate.
+        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
+        fail_on: Option<exfil_core::Severity>,
+    },
+    /// Scan the local host's running processes (command lines, exe paths).
+    Processes,
+    /// Grab and scan TCP service banners from `host:port` targets (authorized
+    /// testing only).
+    Tcp {
+        /// One or more `host:port` targets, e.g. `example.com:22`.
+        #[arg(required = true)]
+        targets: Vec<String>,
+    },
+    /// Sweep an IP/CIDR across ports, grab banners of open ones, and scan them
+    /// (authorized testing only).
+    Port {
+        /// Host or IPv4 CIDR, e.g. `10.0.0.0/28`.
+        hosts: String,
+        /// Ports: list/ranges (`22,80,8000-8010`) or `common`.
+        #[arg(short, long, default_value = "common")]
+        ports: String,
+    },
+    /// Crawl a website from a seed URL and scan the pages (authorized testing
+    /// only).
+    Web {
+        /// Seed URL, e.g. `https://example.com`.
+        url: String,
+        /// Maximum pages to fetch.
+        #[arg(long, default_value_t = 64)]
+        max_pages: usize,
+        /// Maximum link depth from the seed.
+        #[arg(long, default_value_t = 2)]
+        max_depth: usize,
+        /// Render pages through a WebDriver server (e.g. `http://localhost:4444`)
+        /// to crawl JavaScript-heavy, dynamic sites.
+        #[arg(long, value_name = "URL")]
+        driver: Option<String>,
+    },
+}
+
+/// Network reachability checks over observed indicators (online).
+#[derive(Subcommand)]
+enum CheckCmd {
+    /// Resolve domains observed during scans and flag reserved/private
+    /// resolutions.
+    Dns,
+    /// WHOIS-check observed domains and flag newly-registered ones.
+    Whois {
+        /// Flag domains registered within this many days.
+        #[arg(long, default_value_t = exfil_scan::whois::DEFAULT_RECENT_DAYS)]
+        recent_days: i64,
+    },
+}
+
+/// Findings-store maintenance actions.
+#[derive(Subcommand)]
+enum StoreCmd {
+    /// Export the whole graph as a portable snapshot (CBOR or JSON).
+    Export {
+        /// Output file (default: stdout for json, required for cbor).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Format: cbor (DAG-CBOR-style binary) or json.
+        #[arg(short, long, default_value = "cbor")]
+        format: String,
+    },
+    /// Garbage-collect unreachable records.
+    Gc,
+    /// Delete the findings store (keeps downloaded datasets).
+    Clean {
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
@@ -361,50 +395,67 @@ async fn main() -> Result<()> {
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(cfg, action).await?,
         Command::Feeds { action } => cmd_feeds(cfg, action).await?,
-        Command::Scan { path, fail_on } => {
-            cmd_scan(&store_dir, cli.config.as_deref(), path, fail_on).await?
+        Command::Scan { target } => {
+            match target.unwrap_or(ScanCmd::Files {
+                path: None,
+                remote: None,
+                port: 22,
+                key: None,
+                fail_on: None,
+            }) {
+                ScanCmd::Files {
+                    path,
+                    remote,
+                    port,
+                    key,
+                    fail_on,
+                } => match remote {
+                    Some(target) => cmd_scan_remote(&store_dir, cfg, &target, port, key).await?,
+                    None => cmd_scan(&store_dir, cfg, path, fail_on).await?,
+                },
+                ScanCmd::Processes => cmd_processes(&store_dir, cfg).await?,
+                ScanCmd::Tcp { targets } => cmd_scan_tcp(&store_dir, cfg, targets).await?,
+                ScanCmd::Port { hosts, ports } => {
+                    let targets = exfil_remote::netscan::expand_targets(&hosts, &ports)?;
+                    eprintln!("sweeping {} host:port targets…", targets.len());
+                    cmd_scan_tcp(&store_dir, cfg, targets).await?
+                }
+                ScanCmd::Web {
+                    url,
+                    max_pages,
+                    max_depth,
+                    driver,
+                } => {
+                    cmd_scan_web(
+                        &store_dir,
+                        cfg,
+                        &url,
+                        max_pages,
+                        max_depth,
+                        driver.as_deref(),
+                    )
+                    .await?
+                }
+            }
         }
-        Command::ScanRemote { target, port, key } => {
-            cmd_scan_remote(&store_dir, cli.config.as_deref(), &target, port, key).await?
-        }
-        Command::Processes => cmd_processes(&store_dir, cli.config.as_deref()).await?,
-        Command::ScanTcp { targets } => {
-            cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
-        }
-        Command::PortScan { hosts, ports } => {
-            let targets = exfil_remote::netscan::expand_targets(&hosts, &ports)?;
-            eprintln!("sweeping {} host:port targets…", targets.len());
-            cmd_scan_tcp(&store_dir, cli.config.as_deref(), targets).await?
-        }
-        Command::ScanWeb {
-            url,
-            max_pages,
-            max_depth,
-            driver,
-        } => {
-            cmd_scan_web(
-                &store_dir,
-                cli.config.as_deref(),
-                &url,
-                max_pages,
-                max_depth,
-                driver.as_deref(),
-            )
-            .await?
-        }
-        Command::CheckDns => cmd_check_dns(&store_dir, cfg).await?,
+        Command::Check { action } => match action {
+            CheckCmd::Dns => cmd_check_dns(&store_dir, cfg).await?,
+            CheckCmd::Whois { recent_days } => {
+                cmd_check_whois(&store_dir, cfg, recent_days).await?
+            }
+        },
         Command::Normalize => cmd_normalize(&store_dir, cfg).await?,
-        Command::CheckWhois { recent_days } => {
-            cmd_check_whois(&store_dir, cfg, recent_days).await?
-        }
         Command::Search { query, limit } => cmd_search(&store_dir, cfg, query, limit).await?,
         Command::Analyze { query, format } => cmd_analyze(&store_dir, cfg, query, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, cfg, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, cfg, query, &format).await?,
-        Command::Gc => cmd_gc(&store_dir, cfg).await?,
+        Command::Store { action } => match action {
+            StoreCmd::Export { out, format } => cmd_export(&store_dir, cfg, out, &format).await?,
+            StoreCmd::Gc => cmd_gc(&store_dir, cfg).await?,
+            StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
+        },
         Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
         Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
-        Command::Export { out, format } => cmd_export(&store_dir, cfg, out, &format).await?,
         Command::Mcp => {
             let store = open_findings(&store_dir, cfg).await?;
             exfil_mcp::serve(store).await?;
@@ -412,7 +463,6 @@ async fn main() -> Result<()> {
         Command::Server { addr } => cmd_server(&store_dir, cfg, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
-        Command::Clean { yes } => cmd_clean(&store_dir, yes)?,
         Command::Tui => {
             // The TUI loop blocks on terminal input, so it runs on a blocking
             // thread with a runtime handle for its database calls.

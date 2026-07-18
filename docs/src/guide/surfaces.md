@@ -13,7 +13,7 @@ same scanners and into the same findings graph.
   manifests, and other config formats scanned for hardcoded secrets and
   insecure directives.
 - **Operating systems** — a local filesystem tree, or a remote host over
-  SSH/SFTP (`exfil scan-remote user@host:/path`), walked and scanned in place;
+  SSH/SFTP (`exfil scan files --remote user@host:/path`), walked and scanned in place;
   the local host's running processes can be scanned too.
 - **Container & package artifacts** — zip/jar/war/tar/tar.gz/gz archives (image
   layers and build outputs included) are unpacked into virtual files that flow

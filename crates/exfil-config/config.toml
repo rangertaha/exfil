@@ -1,62 +1,76 @@
-# exfil default configuration (TOML).
+# exfil configuration (TOML).
 #
-# Each plugin is configured by a [plugins.<name>] table whose fields are
-# specific to that plugin. `update` entries list datasets (and the LLM model)
-# to (re)download when `exfil pull` runs (no argument = pull all entries).
+# This file documents every option with its default value. Everything is
+# commented out, so exfil runs on the built-in defaults shown here — uncomment
+# only what you want to change. Written to your user config dir on first run.
 
-# Location of the local findings store (removed by `exfil clean`).
-store = ".exfil"
+# ── Findings store ───────────────────────────────────────────────────────────
+# Where the local findings database lives (also settable per run with `-s`).
+# Removed by `exfil store clean`.
+# store = ".exfil"
 
-# Database connection. By default exfil uses an embedded, on-disk SurrealDB
-# (findings under `store` above, the catalog in this config dir). To use a
-# remote SurrealDB server or a multi-instance cluster instead, set an endpoint
-# and (for a server) sign-in credentials — every command then uses it:
-#
+# ── Database ─────────────────────────────────────────────────────────────────
+# By default exfil uses an embedded, on-disk SurrealDB (findings under `store`,
+# the catalog in this config dir). To use a remote SurrealDB server or a
+# multi-instance cluster instead, set an endpoint and (for a server) sign-in
+# credentials — every command then uses it.
 # [database]
-# endpoint = "ws://db-cluster.internal:8000"   # or wss://, http(s)://, mem://
-# username = "root"
-# password = "change-me"
+# endpoint = ""        # e.g. ws://db.internal:8000  (also wss://, http(s)://, mem://)
+# username = ""        # root user for a remote server
+# password = ""
 
-[plugins.regex]
-# Datasets to apply. Empty = all stored, falling back to the built-in set.
-datasets = []
+# ── Scanners ─────────────────────────────────────────────────────────────────
+# The built-in secret/regex, AST, taint, supply-chain, and indicator scanners
+# run by default. The blocks below tune or extend them.
 
-[plugins.ast]
-# Languages parsed for structural analysis (auto-detected by extension).
-languages = [
-  "python", "javascript", "typescript", "csharp", "rust", "go", "c", "cpp",
-  "java", "bash", "lua", "powershell", "ruby", "dart", "swift", "kotlin",
-  "groovy",
-]
+# Regex ruleset: which rule datasets to apply. Empty = every stored dataset,
+# falling back to the built-in security set. Manage datasets with `exfil
+# datasets` / `exfil feeds`.
+# [plugins.regex]
+# datasets = []
 
-[plugins.yara]
-# YARA rule files or directories.
-rules = []
+# AST structural analysis. Languages are auto-detected by file extension from
+# the set this build understands; listing them here is informational.
+# [plugins.ast]
+# languages = [
+#   "python", "javascript", "typescript", "csharp", "rust", "go", "c", "cpp",
+#   "java", "bash", "lua", "powershell", "ruby", "dart", "swift", "kotlin",
+#   "groovy",
+# ]
 
-[plugins.clamav]
+# Data-flow taint analysis (source → sink tracking).
+# [plugins.taint]
+# enabled = true
+
+# Extra YARA rule files or directories, compiled into the YARA scanner.
+# [plugins.yara]
+# rules = []          # e.g. ["rules/malware.yar", "rules/"]
+
 # ClamAV-format signature files (.hdb/.hsb hash sigs, .ndb literal body sigs).
-signatures = []
+# [plugins.clamav]
+# signatures = []     # e.g. ["sigs/custom.ndb"]
 
-[plugins.script]
-# A Rhai script that computes a triage note per finding (`exfil enrich`).
-# The script sees `finding` (rule/path/line/severity/cwe/snippet) and returns
-# a string note or () to skip. Empty = use the built-in rule-based enricher.
+# A Rhai script that computes a triage note per finding (`exfil enrich`). The
+# script sees `finding` (rule/path/line/severity/cwe/snippet) and returns a
+# string note or () to skip. Unset = the built-in rule-based enricher.
+# [plugins.script]
 # enrich = "enrich.rhai"
 
-[plugins.taint]
-enabled = true
+# ── Offline LLM enrichment ───────────────────────────────────────────────────
+# No-op until a model is downloaded via `exfil pull`. Off by default.
+# [llm]
+# enabled = false
+# tasks = ["extract", "triage"]
 
-[llm]
-# Offline LLM enrichment. No-op until a model is downloaded via `exfil update`.
-enabled = false
-tasks = ["extract", "triage"]
-
-# Remap the graph navigator's keys (vim defaults otherwise). Each entry is
-# `key = "Action"`; actions: Up, Down, Ascend, Descend, Back, Forward, Edit,
-# DeleteEdge, Undo, Redo, Quit.
+# ── TUI graph-navigator keys ─────────────────────────────────────────────────
+# Remap the navigator's keys (vim defaults otherwise). Actions: Up, Down,
+# Ascend, Descend, Back, Forward, Edit, DeleteEdge, Undo, Redo, Quit.
 # [keymap.nav]
 # x = "Edit"
 
+# ── Datasets to download ─────────────────────────────────────────────────────
+# `exfil pull` with no argument (re)downloads every [[update]] entry. The
+# built-in security ruleset ships enabled; add your own entries below.
 [[update]]
 name = "security"
 ref = "builtin://security"

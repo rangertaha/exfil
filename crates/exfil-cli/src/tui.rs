@@ -1,34 +1,36 @@
-//! `exfil tui` — a mutt-style, full-screen workbench over the findings graph.
+//! `exfil tui` — a full-screen, app-style workbench over the findings graph.
 //!
-//! The layout follows mutt: a one-line **help bar** at the top, the full-width
-//! **index** of findings below it, a reverse-video **status bar**, and a
-//! **message/prompt line** at the very bottom. `Enter` opens the selected
-//! finding in the **graph navigator**, and `q`/`i` returns to the index.
+//! The layout is app-like: an optional **stats bar** across the top (toggle with
+//! `t`), a **left menu** listing the sections (findings, files, rules, …), the
+//! main **data grid** for the active section, and a bottom bar that shows status
+//! and doubles as the `:` command / `/` filter input line. On a finding, `Enter`
+//! opens it in `$EDITOR` at its line, `v` shows the source in-TUI with every
+//! finding marked, and `n` opens the **graph navigator**.
 //!
 //! ## Keys (index)
 //!
-//! - `j`/`k`, arrows — move; `g`/`G` — first/last
-//! - `Enter` — open the finding's file in the graph navigator
-//! - `/` — *limit* the index (mutt-style filter): empty shows all,
+//! - `j`/`k`, arrows — move; `g`/`G` — first/last; `Tab` — switch section
+//! - `Enter` — open the finding in `$EDITOR` at its line
+//! - `v` — view the source in-TUI, findings marked in the gutter
+//! - `n` — open the finding's file in the graph navigator
+//! - `/` — *limit* the grid (mutt-style filter): empty shows all,
 //!   `severity=high`, `cwe=CWE-798`, `path=...`, or free text on rule names
 //! - `:` — command: `scan [path]`, `rules`, `get <id>`, `clean`, `quit`
-//! - `s` — scan the current directory (shortcut for `:scan .`)
-//! - `r` — reload findings from the store
-//! - `q` — quit
+//! - `s` — scan the current directory · `t` — toggle the stats bar · `q` — quit
 //!
 //! ## Keys (graph navigator)
 //!
-//! Two panes — the node's rendered view (via the pluggable viewers) and its
-//! **edges** (neighbors). Vim-style motions follow edges through the graph:
+//! Traversal renders as **cascading Miller columns**: a breadcrumb path on top,
+//! then one panel per visited node (each listing its edges). Descending opens a
+//! new panel on the right; older panels compress and drop off the left edge (kept
+//! on the breadcrumb). The far-right pane previews the focused node's fields.
 //!
-//! - `j`/`k` — scroll the view / move the edge cursor (depending on focus)
-//! - `h`/`l` (or `Tab`, arrows) — switch focus between view and edges
-//! - `Enter`/`l` on an edge — **follow it** to the neighbor node
-//! - `<` / `>` (or `Backspace`) — back / forward through the jumplist
+//! - `j`/`k` — move the cursor in the focused (rightmost) panel
+//! - `l`/`Enter` — **descend** into the selected edge (opens a panel on the right)
+//! - `h`/`<` (or `Backspace`) — pop the rightmost panel; `>` — forward
 //! - `c` — edit a field of the current node (`field=value`)
-//! - `d` (on an edge) — delete that edge
-//! - `u` / `U` — undo / redo the last edit
-//! - `q`/`i`/`Esc` — return to the index (or step back at the root)
+//! - `d` (on an edge) — delete that edge · `u`/`U` — undo / redo
+//! - `q`/`i`/`Esc` — return to the index
 //!
 //! # Rust notes
 //!
@@ -52,15 +54,102 @@ use exfil_core::{Match, Severity};
 use exfil_engine::{ScanEvent, Summary};
 use exfil_store::Store;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
 
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
+
+/// The accent color of the standard theme (titles, active menu item, borders,
+/// the status bar). One knob keeps the palette consistent across the app.
+const ACCENT: Color = Color::Cyan;
+
+/// Capitalize the first character (for menu/header labels).
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Style for the reverse-video selection highlight.
+fn selected_style() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
+/// Style for the accent status/menu bar (dark text on the accent color).
+fn bar_style() -> Style {
+    Style::default().bg(ACCENT).fg(Color::Black)
+}
+
+/// Right-anchored Miller-column widths for `n` panels across `total` columns of
+/// screen. The focused (rightmost) panel gets the full width; each older panel
+/// to its left is narrower, down to a floor; when they no longer fit, the
+/// oldest (leftmost) panels are dropped from view (still on the breadcrumb).
+/// Returns `(hidden, widths)` — `hidden` leftmost panels are off-screen and
+/// `widths` are for the visible panels, left to right.
+fn column_layout(n: usize, total: u16) -> (usize, Vec<u16>) {
+    const FULL: u16 = 34;
+    const STEP: u16 = 6;
+    const MIN: u16 = 16;
+    if n == 0 || total == 0 {
+        return (0, Vec::new());
+    }
+    // Width of a panel `d` columns left of the focused one.
+    let width_at = |d: usize| FULL.saturating_sub(STEP.saturating_mul(d as u16)).max(MIN);
+    let mut rev: Vec<u16> = Vec::new();
+    let mut used = 0u16;
+    for d in 0..n {
+        let w = width_at(d);
+        if !rev.is_empty() && used.saturating_add(w) > total {
+            break; // no room for another panel on the left
+        }
+        let w = w.min(total - used); // clamp the focused panel to the screen
+        rev.push(w);
+        used += w;
+        if used >= total {
+            break;
+        }
+    }
+    let shown = rev.len();
+    rev.reverse();
+    (n - shown, rev)
+}
+
+/// Open `path` in a terminal editor at `line`, inheriting the terminal. Tries
+/// `$EDITOR`/`$VISUAL` first, then falls back to nvim/vim/vi/nano; the `+<line>`
+/// argument (understood by all of them) jumps to the finding. Returns an error
+/// only if no editor could be launched at all.
+fn open_editor(path: &str, line: u32) -> Result<()> {
+    let jump = format!("+{}", line.max(1));
+    let mut candidates: Vec<String> = Vec::new();
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(v) = std::env::var(var) {
+            if !v.trim().is_empty() {
+                candidates.push(v);
+            }
+        }
+    }
+    candidates.extend(["nvim", "vim", "vi", "nano"].map(String::from));
+    for cmd in &candidates {
+        // Split so `EDITOR="code -w"`-style values still work.
+        let mut parts = cmd.split_whitespace();
+        let Some(bin) = parts.next() else { continue };
+        let args: Vec<&str> = parts.collect();
+        let mut command = std::process::Command::new(bin);
+        command.args(&args).arg(&jump).arg(path);
+        match command.status() {
+            Ok(_) => return Ok(()),
+            Err(_) => continue, // not found / not runnable — try the next
+        }
+    }
+    anyhow::bail!("no editor found (set $EDITOR, or install vim/nano)")
+}
 
 /// A command typed into the `:` bar, parsed into an executable action.
 #[derive(Debug, PartialEq)]
@@ -161,25 +250,29 @@ fn help_text() -> Vec<String> {
     [
         "exfil TUI — key reference",
         "",
-        "Index",
+        "Index (data grid — left menu selects the section)",
         "  j / k, ↓ / ↑      move selection",
         "  g / G, Home/End   first / last",
         "  PgUp / PgDn       move by a screen",
-        "  Enter             open in the graph navigator",
-        "  Tab / Shift-Tab   cycle object type (findings, files, …)",
+        "  Enter             open the finding in $EDITOR at its line",
+        "  v                 view the source in-TUI, findings marked in the gutter",
+        "  n                 open the finding's file in the graph navigator",
+        "  c                 edit the selected row: field=value, or a bare severity word",
+        "  Tab / Shift-Tab   switch section (findings, files, rules, …)",
         "  /                 limit: severity=high, cwe=CWE-798, path=…, or text",
         "  Esc               clear the active limit",
         "  :                 command: scan [path], search, rules, get <id>, browse, clean, quit",
         "  s                 scan the current directory",
+        "  t                 show / hide the top stats bar",
         "  r                 reload from the store",
         "  ?                 this help",
         "  q                 quit",
         "",
-        "Graph navigator",
-        "  j / k             scroll view · move edge cursor (by focus)",
-        "  h / l, Tab        switch focus between the view and its edges",
-        "  Enter / l         follow the selected edge",
-        "  < / >             back / forward through the jumplist",
+        "Graph navigator (cascading columns — a breadcrumb path on top)",
+        "  j / k             move the cursor in the focused (rightmost) panel",
+        "  l / Enter         descend — open a new panel to the right",
+        "  h / <             pop the rightmost panel (back)",
+        "  >                 forward through the jumplist",
         "  c                 edit a field of the current node (field=value)",
         "  d                 delete the selected edge",
         "  u / U             undo / redo",
@@ -196,18 +289,6 @@ fn help_text() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect()
-}
-
-/// One mutt-like index row: `  3 C aws-access-key-id   .env:1  export AWS_…`.
-fn index_row(n: usize, m: &Match) -> String {
-    format!(
-        "{n:>4} {} {:<22} {}:{}  {}",
-        severity_flag(m.severity),
-        m.rule,
-        m.path,
-        m.line,
-        m.snippet
-    )
 }
 
 /// Which screen is showing, mutt-style.
@@ -292,15 +373,6 @@ struct IndexItem {
     label: String,
 }
 
-/// Which pane the navigator's keys act on.
-#[derive(PartialEq)]
-enum NavFocus {
-    /// The node's rendered content (scroll with j/k).
-    View,
-    /// The neighbor list (move with j/k, follow with Enter).
-    Neighbors,
-}
-
 /// One node in the navigation stack: its identity plus its rendered view and
 /// the edges leading out of it.
 struct NavNode {
@@ -338,8 +410,9 @@ struct NavState {
     stack: Vec<NavNode>,
     /// Nodes stepped back from, for forward navigation.
     forward: Vec<NavNode>,
-    focus: NavFocus,
+    /// Vertical scroll of the focused node's field preview.
     scroll: u16,
+    /// Cursor into the focused (rightmost) panel's edge list.
     pick: usize,
     /// Inverse ops to replay on undo (newest last).
     undo: Vec<EditOp>,
@@ -378,9 +451,13 @@ struct App {
     findings: Vec<Match>,
     /// Which object type the index is browsing.
     browse: ObjectType,
+    /// Record ids parallel to `findings`, so a finding row can be edited in
+    /// place. Empty when browsing a non-findings section.
+    finding_ids: Vec<String>,
     /// Rows for a non-findings browse type (empty when browsing findings).
     items: Vec<IndexItem>,
-    list: ListState,
+    /// Selection state for the data-grid index (findings or a browsed table).
+    list: TableState,
     mode: Mode,
     /// Content of the pager, built when a finding is opened.
     pager: Vec<String>,
@@ -406,6 +483,14 @@ struct App {
     nav: Option<NavState>,
     /// Configurable navigator key bindings.
     keymap: crate::keymap::Keymap,
+    /// A pending "open in `$EDITOR`" request `(path, line, col)`, serviced by the
+    /// run loop (which can suspend the terminal). `None` when nothing is queued.
+    edit_request: Option<(String, u32, u32)>,
+    /// Whether the top stats bar is shown (toggle with `t`).
+    show_stats: bool,
+    /// The record id being edited from the grid (`c`), set while its
+    /// `field=value` prompt is open. `None` outside an index edit.
+    edit_target: Option<String>,
     quit: bool,
 }
 
@@ -416,9 +501,10 @@ impl App {
             store,
             store_dir,
             findings: Vec::new(),
+            finding_ids: Vec::new(),
             browse: ObjectType::Findings,
             items: Vec::new(),
-            list: ListState::default(),
+            list: TableState::default(),
             mode: Mode::Index,
             pager: Vec::new(),
             pager_title: String::new(),
@@ -432,8 +518,23 @@ impl App {
             viewers: exfil_view::Registry::new(),
             nav: None,
             keymap,
+            edit_request: None,
+            show_stats: true,
+            edit_target: None,
             quit: false,
         }
+    }
+
+    /// Queue the selected finding for opening in `$EDITOR` at its line. The run
+    /// loop performs the terminal hand-off; here we only record the request.
+    fn request_edit(&mut self) {
+        let Some(m) = self.selected() else {
+            self.message = "no finding selected".into();
+            return;
+        };
+        let (path, line, col) = (m.path.clone(), m.line, m.col);
+        self.message = format!("opening {path} in editor…");
+        self.edit_request = Some((path, line, col));
     }
 
     fn selected(&self) -> Option<&Match> {
@@ -505,7 +606,6 @@ impl App {
                 self.nav = Some(NavState {
                     stack: vec![node],
                     forward: Vec::new(),
-                    focus: NavFocus::Neighbors,
                     scroll: 0,
                     pick: 0,
                     undo: Vec::new(),
@@ -519,16 +619,19 @@ impl App {
     }
 
     fn refresh_findings(&mut self, handle: &Handle, query: &str) {
-        match handle.block_on(self.store.search_findings(query)) {
-            Ok(found) => {
+        // Load findings *with* their record ids so a row can be reclassified in
+        // place (`c`). `findings_with_ids` doesn't sort, so order worst-first
+        // here to match the rest of the UI.
+        match handle.block_on(self.store.findings_with_ids(query)) {
+            Ok(mut found) => {
+                found.sort_by_key(|(_, m)| {
+                    std::cmp::Reverse(m.severity.map(|s| s.weight() + 1).unwrap_or(0))
+                });
                 self.message = format!("{} finding(s)", found.len());
                 self.limit = query.to_string();
-                self.findings = found;
-                self.list.select(if self.findings.is_empty() {
-                    None
-                } else {
-                    Some(0)
-                });
+                self.finding_ids = found.iter().map(|(id, _)| id.clone()).collect();
+                self.findings = found.into_iter().map(|(_, m)| m).collect();
+                self.list.select((!self.findings.is_empty()).then_some(0));
             }
             Err(e) => self.message = format!("search failed: {e:#}"),
         }
@@ -562,7 +665,6 @@ impl App {
                 self.nav = Some(NavState {
                     stack: vec![node],
                     forward: Vec::new(),
-                    focus: NavFocus::Neighbors,
                     scroll: 0,
                     pick: 0,
                     undo: Vec::new(),
@@ -572,6 +674,88 @@ impl App {
             }
             Ok(None) => self.message = format!("no file record for {path}"),
             Err(e) => self.message = format!("lookup failed: {e:#}"),
+        }
+    }
+
+    /// Open the selected finding's source file in the pager, with every finding
+    /// in that file marked in the gutter and the view scrolled to the selected
+    /// one. Falls back to the stored snippets when the file can't be read
+    /// (deleted, scanned on a remote host, or a virtual archive member).
+    fn open_source(&mut self, handle: &Handle) {
+        let Some(m) = self.selected() else {
+            self.message = "no finding selected".into();
+            return;
+        };
+        let path = m.path.clone();
+        let sel_line = m.line;
+
+        // Every finding in this file (not just the current filter/selection),
+        // so all of them are marked.
+        let in_file = handle
+            .block_on(self.store.search_findings(&format!("path={path}")))
+            .unwrap_or_default();
+        let tag = |s: Option<Severity>| s.map(|s| s.tag()).unwrap_or("-");
+        let mut marks: std::collections::BTreeMap<u32, (Option<Severity>, String)> =
+            Default::default();
+        for f in &in_file {
+            if f.line >= 1 {
+                marks
+                    .entry(f.line)
+                    .or_insert_with(|| (f.severity, f.rule.clone()));
+            }
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let mut lines: Vec<String> = content
+                    .lines()
+                    .enumerate()
+                    .map(|(i, text)| {
+                        let n = i as u32 + 1;
+                        match marks.get(&n) {
+                            Some((sev, rule)) => {
+                                format!("▶{n:>5} │ {text}    ◀ {} [{rule}]", tag(*sev))
+                            }
+                            None => format!(" {n:>5} │ {text}"),
+                        }
+                    })
+                    .collect();
+                if lines.is_empty() {
+                    lines.push("(empty file)".into());
+                }
+                // Scroll so the selected finding sits a few lines below the top.
+                let scroll = sel_line.saturating_sub(4).min(u16::MAX as u32) as u16;
+                self.pager = lines;
+                self.pager_col = 0;
+                self.pager_title = format!("{path}  ({} finding(s) marked)", marks.len());
+                self.help_return = None;
+                self.mode = Mode::Pager(scroll);
+                self.message = format!("{}: showing source, {} finding(s)", path, in_file.len());
+            }
+            Err(e) => {
+                let mut lines = vec![
+                    format!("cannot read {path}: {e}"),
+                    String::new(),
+                    "The file may be deleted, on a remote host, or a virtual archive".into(),
+                    "member. Showing the stored finding snippets instead:".into(),
+                    String::new(),
+                ];
+                for f in &in_file {
+                    lines.push(format!(
+                        "{}:{}  {} [{}]  {}",
+                        path,
+                        f.line,
+                        tag(f.severity),
+                        f.rule,
+                        f.snippet
+                    ));
+                }
+                self.pager = lines;
+                self.pager_col = 0;
+                self.pager_title = format!("{path} (unreadable)");
+                self.help_return = None;
+                self.mode = Mode::Pager(0);
+            }
         }
     }
 
@@ -611,7 +795,6 @@ impl App {
         if let Some(nav) = &mut self.nav {
             nav.forward.clear();
             nav.stack.push(node);
-            nav.focus = NavFocus::Neighbors;
             nav.scroll = 0;
             nav.pick = 0;
         }
@@ -729,6 +912,37 @@ impl App {
                 value: parse_value(value.trim()),
             },
         );
+    }
+
+    /// Apply a `field=value` edit to the record selected in the grid (the
+    /// `edit_target` set when `c` was pressed): set its severity, add metadata,
+    /// or change any field. Persists to the store and reloads the grid.
+    fn index_edit_from_input(&mut self, handle: &Handle, input: &str) {
+        // `field=value` sets any field; a bare severity word is a shortcut for
+        // `severity=<word>` (the common "classify this" case).
+        let (field, value) = match input.split_once('=') {
+            Some((f, v)) => (f.trim().to_string(), parse_value(v.trim())),
+            None => {
+                let word = input.trim().to_ascii_lowercase();
+                if ["critical", "high", "medium", "low", "info"].contains(&word.as_str()) {
+                    ("severity".to_string(), Value::String(word))
+                } else {
+                    self.message = "expected field=value (or a severity word)".into();
+                    return;
+                }
+            }
+        };
+        let Some(id) = self.edit_target.take() else {
+            self.message = "no record selected to edit".into();
+            return;
+        };
+        match handle.block_on(self.store.set_field(&id, &field, value)) {
+            Ok(_) => {
+                self.message = format!("set {field} on {id}");
+                self.refresh_index(handle);
+            }
+            Err(e) => self.message = format!("edit failed: {e:#}"),
+        }
     }
 
     /// Delete the currently selected edge to a neighbor.
@@ -901,42 +1115,6 @@ impl App {
         }
     }
 
-    /// The reverse-video status bar, mutt's `-*-` line.
-    fn status_line(&self) -> String {
-        let mut parts = vec![format!(
-            "exfil: {} {}",
-            self.index_len(),
-            self.browse.title()
-        )];
-        if self.browse == ObjectType::Findings && !self.limit.is_empty() {
-            parts.push(format!("limit: {}", self.limit));
-        }
-        if self.browse == ObjectType::Findings {
-            let counts = severity_counts(&self.findings)
-                .into_iter()
-                .map(|(s, n)| format!("{}:{n}", severity_flag(Some(s))))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !counts.is_empty() {
-                parts.push(format!("[{counts}]"));
-            }
-        }
-        if let Some(scan) = &self.scan {
-            let pct = (scan.done * 100)
-                .checked_div(scan.total)
-                .unwrap_or(0)
-                .min(100);
-            parts.push(format!(
-                "scanning {}/{} files ({pct}%)",
-                scan.done, scan.total
-            ));
-        }
-        if let Some(i) = self.list.selected() {
-            parts.push(format!("({}/{})", i + 1, self.index_len()));
-        }
-        format!("-*- {} ", parts.join(" --- "))
-    }
-
     /// Guidance shown in the index when it has no rows, tailored to why it is
     /// empty: mid-scan, a filtered-out limit, a never-scanned store, or an
     /// empty browsed table.
@@ -963,83 +1141,238 @@ impl App {
         }
     }
 
+    /// App chrome: an optional top **stats bar**, the **body** (a left menu +
+    /// content, or the full-width graph navigator), and a bottom **status bar**
+    /// that doubles as the `:` command / `/` filter input line.
     fn draw(&mut self, frame: &mut Frame) {
-        let [help, main, status, msg] = Layout::vertical([
-            Constraint::Length(1),
+        let stats_h = if self.show_stats { 1 } else { 0 };
+        let [stats, body, statusbar] = Layout::vertical([
+            Constraint::Length(stats_h),
             Constraint::Min(1),
-            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        // Remember the content height so page-scroll keys can move by a screen.
-        self.page = main.height.max(1);
 
-        let reversed = Style::default().add_modifier(Modifier::REVERSED);
+        if self.show_stats {
+            self.draw_stats(frame, stats);
+        }
 
-        // Help bar (top, like mutt's `help=yes`).
-        let help_text = match self.mode {
-            Mode::Index => {
-                "q:Quit j/k:Move Tab:Type Enter:Open /:Limit ::Cmd s:Scan r:Reload ?:Help"
-            }
-            Mode::Pager(_) => "i/q:Index  j/k:Scroll  h/l:◂▸  g/G:Top/Bottom  PgUp/PgDn:Page",
+        match self.mode {
+            // The graph navigator owns the full width (it has its own
+            // breadcrumb path and cascading columns).
             Mode::Nav => {
-                "q:Index j/k:Move h/l:Pane Enter:Follow </>:Back c:Edit d:DelEdge u/U:Undo/Redo"
+                self.page = body.height.saturating_sub(1).max(1);
+                self.draw_nav(frame, body);
             }
-        };
-        frame.render_widget(Paragraph::new(help_text).style(reversed), help);
+            // List/pager views get the left menu + a header + content.
+            _ => {
+                let [sidebar, right] =
+                    Layout::horizontal([Constraint::Length(20), Constraint::Min(1)]).areas(body);
+                self.draw_sidebar(frame, sidebar);
+                let [header, content] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(right);
+                self.page = content.height.max(1);
+                self.draw_header(frame, header);
+                self.draw_content(frame, content);
+            }
+        }
 
-        // Main area: index, text pager, or graph navigator.
+        self.draw_statusbar(frame, statusbar);
+    }
+
+    /// The top summary bar: total findings and a colored per-severity tally.
+    fn draw_stats(&self, frame: &mut Frame, area: Rect) {
+        let counts = severity_counts(&self.findings);
+        let mut spans = vec![Span::styled(
+            format!(" {} findings ", self.findings.len()),
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        for (sev, n) in counts {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("{} {n}", severity_flag(Some(sev))),
+                severity_style(Some(sev)).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if let Some(scan) = &self.scan {
+            let pct = (scan.done * 100)
+                .checked_div(scan.total)
+                .unwrap_or(0)
+                .min(100);
+            spans.push(Span::styled(
+                format!("   scanning {}/{} ({pct}%)", scan.done, scan.total),
+                Style::default().fg(ACCENT),
+            ));
+        }
+        spans.push(Span::styled(
+            "   (t hides)",
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    /// The left navigation menu: object types, the active one highlighted, with
+    /// a footer of the most useful keys.
+    fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::bordered()
+            .title(" exfil ")
+            .border_style(Style::default().fg(ACCENT))
+            .title_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for t in ObjectType::ALL {
+            let name = cap(t.title());
+            if t == self.browse {
+                lines.push(Line::styled(
+                    format!(" ▸ {name} ({}) ", self.index_len()),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                lines.push(Line::raw(format!("   {name}")));
+            }
+        }
+        lines.push(Line::raw(""));
+        for hint in ["Tab  switch", "/    filter", ":    command", "?    help"] {
+            lines.push(Line::styled(
+                format!(" {hint}"),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// The content header: what's being viewed, item count, and active limit.
+    fn draw_header(&self, frame: &mut Frame, area: Rect) {
+        let mut text = format!(
+            " {} · {} item(s)",
+            cap(self.browse.title()),
+            self.index_len()
+        );
+        if self.browse == ObjectType::Findings && !self.limit.is_empty() {
+            text.push_str(&format!(" · limit: {}", self.limit));
+        }
+        if let Some(i) = self.list.selected() {
+            text.push_str(&format!("   [{}/{}]", i + 1, self.index_len()));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                text,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            area,
+        );
+    }
+
+    /// The main content: the index list, an empty-state cue, or the text pager.
+    fn draw_content(&mut self, frame: &mut Frame, area: Rect) {
         match self.mode {
             Mode::Index if self.index_len() == 0 => {
-                // An empty index would be a blank screen with no cue; show
-                // guidance tailored to why it's empty instead.
                 frame.render_widget(
-                    Paragraph::new(self.empty_index_message())
-                        .alignment(ratatui::layout::Alignment::Center),
-                    main,
+                    Paragraph::new(self.empty_index_message()).alignment(Alignment::Center),
+                    area,
                 );
             }
             Mode::Index => {
-                let rows: Vec<ListItem> = if self.browse == ObjectType::Findings {
-                    self.findings
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| {
-                            ListItem::new(index_row(i + 1, m)).style(severity_style(m.severity))
-                        })
-                        .collect()
-                } else {
-                    self.items
-                        .iter()
-                        .enumerate()
-                        .map(|(i, it)| ListItem::new(format!("{:>4}  {}", i + 1, it.label)))
-                        .collect()
-                };
-                let list = List::new(rows).highlight_style(reversed);
-                frame.render_stateful_widget(list, main, &mut self.list);
+                let header_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let (header, widths, rows): (Row, Vec<Constraint>, Vec<Row>) =
+                    if self.browse == ObjectType::Findings {
+                        let rows = self
+                            .findings
+                            .iter()
+                            .map(|m| {
+                                Row::new(vec![
+                                    Cell::from(severity_flag(m.severity).to_string())
+                                        .style(severity_style(m.severity)),
+                                    Cell::from(m.rule.clone()),
+                                    Cell::from(format!("{}:{}", m.path, m.line)),
+                                    Cell::from(m.snippet.clone()),
+                                ])
+                            })
+                            .collect();
+                        (
+                            Row::new(vec!["S", "RULE", "LOCATION", "MATCH"]).style(header_style),
+                            vec![
+                                Constraint::Length(1),
+                                Constraint::Length(22),
+                                Constraint::Length(30),
+                                Constraint::Min(10),
+                            ],
+                            rows,
+                        )
+                    } else {
+                        let rows = self
+                            .items
+                            .iter()
+                            .enumerate()
+                            .map(|(i, it)| {
+                                Row::new(vec![
+                                    Cell::from(format!("{}", i + 1)),
+                                    Cell::from(it.label.clone()),
+                                ])
+                            })
+                            .collect();
+                        (
+                            Row::new(vec![Cell::from("#"), Cell::from(cap(self.browse.title()))])
+                                .style(header_style),
+                            vec![Constraint::Length(5), Constraint::Min(10)],
+                            rows,
+                        )
+                    };
+                let table = Table::new(rows, widths)
+                    .header(header)
+                    .row_highlight_style(selected_style())
+                    .highlight_symbol("▐ ");
+                frame.render_stateful_widget(table, area, &mut self.list);
             }
             Mode::Pager(scroll) => {
                 let text: Vec<Line> = self.pager.iter().map(|l| Line::raw(l.as_str())).collect();
-                let block = Block::bordered().title(format!(" {} ", self.pager_title));
+                let block = Block::bordered()
+                    .title(format!(" {} ", self.pager_title))
+                    .border_style(Style::default().fg(ACCENT));
                 frame.render_widget(
                     Paragraph::new(text)
                         .scroll((scroll, self.pager_col))
                         .block(block),
-                    main,
+                    area,
                 );
             }
-            Mode::Nav => self.draw_nav(frame, main),
+            Mode::Nav => {}
         }
+    }
 
-        // Status bar (reverse video) + message/prompt line.
-        frame.render_widget(Paragraph::new(self.status_line()).style(reversed), status);
-        let bottom = match &self.prompt {
-            Some(Prompt::Command(s)) => format!(":{s}▏"),
-            Some(Prompt::Limit(s)) => format!("/{s}▏"),
-            Some(Prompt::Edit(s)) => format!("set field=value: {s}▏"),
-            None => self.message.clone(),
+    /// The bottom bar: the `:`/`/` input while a prompt is open, otherwise the
+    /// last message plus the current mode's key hints.
+    fn draw_statusbar(&self, frame: &mut Frame, area: Rect) {
+        let content = match &self.prompt {
+            Some(Prompt::Command(s)) => format!(" :{s}▏"),
+            Some(Prompt::Limit(s)) => format!(" /{s}▏"),
+            Some(Prompt::Edit(s)) => format!(" set field=value: {s}▏"),
+            None => {
+                let hint = self.mode_hint();
+                if self.message.is_empty() {
+                    format!(" {hint}")
+                } else {
+                    format!(" {}   ·   {hint}", self.message)
+                }
+            }
         };
-        frame.render_widget(Paragraph::new(bottom), msg);
+        frame.render_widget(Paragraph::new(content).style(bar_style()), area);
+    }
+
+    /// The key-hint string for the current mode, shown in the status bar.
+    fn mode_hint(&self) -> &'static str {
+        match self.mode {
+            Mode::Index => {
+                "Enter:edit-file v:view n:graph c:edit-row /:filter ::cmd Tab:type s:scan ?:help"
+            }
+            Mode::Pager(_) => "j/k:scroll  g/G:top/bottom  h/l:◂▸  PgUp/PgDn:page  i/q:back",
+            Mode::Nav => "j/k:move  l/Enter:into  h/<:back  c:edit  d:del-edge  u/U:undo  q:index",
+        }
     }
 
     /// Open the `?` help overlay, remembering the mode it was opened from so
@@ -1067,7 +1400,13 @@ impl App {
                 KeyCode::Enter => match self.prompt.take().expect("prompt open") {
                     Prompt::Command(s) => self.execute(handle, parse_command(&s)),
                     Prompt::Limit(s) => self.execute(handle, Action::Search(s)),
-                    Prompt::Edit(s) => self.nav_edit_from_input(handle, &s),
+                    Prompt::Edit(s) => {
+                        if matches!(self.mode, Mode::Nav) {
+                            self.nav_edit_from_input(handle, &s);
+                        } else {
+                            self.index_edit_from_input(handle, &s);
+                        }
+                    }
                 },
                 KeyCode::Char(c) => buf.push(c),
                 _ => {}
@@ -1127,14 +1466,40 @@ impl App {
                 }
                 KeyCode::Char('r') => self.refresh_index(handle),
                 KeyCode::Char('s') => self.execute(handle, Action::Scan(PathBuf::from("."))),
+                KeyCode::Char('t') => self.show_stats = !self.show_stats,
                 KeyCode::Char('?') => self.open_help(),
-                // Findings root the navigator at their file; other types open
-                // the selected node directly.
+                // On a finding: Enter edits it in $EDITOR, `v` shows the source
+                // in-TUI, `n` opens the graph navigator. Other types open the
+                // selected node directly in the navigator.
                 KeyCode::Enter => {
                     if self.browse == ObjectType::Findings {
-                        self.open_nav(handle);
+                        self.request_edit();
                     } else {
                         self.open_selected_item(handle);
+                    }
+                }
+                KeyCode::Char('v') if self.browse == ObjectType::Findings => {
+                    self.open_source(handle)
+                }
+                KeyCode::Char('n') if self.browse == ObjectType::Findings => self.open_nav(handle),
+                // `c` edits the selected record in place — set its severity,
+                // add metadata, or change any field. Works on findings and on
+                // any browsed record (indicators/domains, packages, rules, …).
+                KeyCode::Char('c') => {
+                    let target = self.list.selected().and_then(|i| {
+                        if self.browse == ObjectType::Findings {
+                            self.finding_ids.get(i).cloned()
+                        } else {
+                            self.items.get(i).map(|it| it.id.clone())
+                        }
+                    });
+                    match target {
+                        Some(id) => {
+                            self.edit_target = Some(id);
+                            self.message = "edit: field=value (e.g. severity=high)".into();
+                            self.prompt = Some(Prompt::Edit(String::new()));
+                        }
+                        None => self.message = "nothing selected".into(),
                     }
                 }
                 _ => {}
@@ -1174,88 +1539,114 @@ impl App {
             _ => {}
         }
 
-        // Motions, interpreted relative to the focused pane.
+        // Column motions: j/k move the cursor in the focused (rightmost) panel;
+        // l/Enter descends into the selected edge (opens a new panel on the
+        // right); h/< pops the rightmost panel.
         let Some(nav) = &mut self.nav else { return };
-        match (&nav.focus, action) {
-            (NavFocus::View, NavAction::Down) => nav.scroll = nav.scroll.saturating_add(1),
-            (NavFocus::View, NavAction::Up) => nav.scroll = nav.scroll.saturating_sub(1),
-            (NavFocus::View, NavAction::Descend) => nav.focus = NavFocus::Neighbors,
-            (NavFocus::View, NavAction::Ascend) => self.nav_back(),
-            (NavFocus::Neighbors, NavAction::Down) => {
+        match action {
+            NavAction::Down => {
                 let count = nav.current().neighbors.len();
                 if count > 0 {
                     nav.pick = (nav.pick + 1).min(count - 1);
                 }
             }
-            (NavFocus::Neighbors, NavAction::Up) => nav.pick = nav.pick.saturating_sub(1),
-            (NavFocus::Neighbors, NavAction::Ascend) => nav.focus = NavFocus::View,
-            (NavFocus::Neighbors, NavAction::Descend) => self.nav_follow(handle),
+            NavAction::Up => nav.pick = nav.pick.saturating_sub(1),
+            NavAction::Ascend => self.nav_back(),
+            NavAction::Descend => self.nav_follow(handle),
             _ => {}
         }
     }
 
     /// Render the navigator: breadcrumb, node view, and neighbor list.
-    fn draw_nav(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+    /// Render the graph navigator as **cascading Miller columns**: a breadcrumb
+    /// path on top, then one panel per visited node (each listing that node's
+    /// edges), right-anchored so the focused panel is widest and older panels to
+    /// its left compress — and drop off (onto the breadcrumb) when they no
+    /// longer fit. A preview of the focused node's fields sits on the far right.
+    fn draw_nav(&self, frame: &mut Frame, area: Rect) {
         let nav = self.nav.as_ref().expect("nav present in Nav mode");
-        let reversed = Style::default().add_modifier(Modifier::REVERSED);
-        let [crumb, panes] =
+        let [crumb, body] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
-        // Breadcrumb trail of visited nodes.
-        let trail = nav
-            .stack
+        // Reserve a preview pane on the right when the terminal is wide enough.
+        let preview_w = if body.width > 72 { 34u16 } else { 0 };
+        let [cols_area, preview_area] =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(preview_w)]).areas(body);
+
+        let n = nav.stack.len();
+        let (hidden, widths) = column_layout(n, cols_area.width);
+
+        // Breadcrumb path (leading … when left panels are off-screen).
+        let visible_trail = nav.stack[hidden..]
             .iter()
-            .map(|n| n.label.as_str())
+            .map(|x| x.label.as_str())
             .collect::<Vec<_>>()
             .join(" › ");
-        frame.render_widget(Paragraph::new(format!("◆ {trail}")), crumb);
-
-        let [left, right] =
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .areas(panes);
-
-        // Node view (left).
-        let view_focused = nav.focus == NavFocus::View;
-        let view_title = format!(" {} · {} ", nav.current().kind, nav.current().id);
-        let text: Vec<Line> = nav
-            .current()
-            .lines
-            .iter()
-            .map(|l| Line::raw(l.as_str()))
-            .collect();
+        let crumb_text = if hidden > 0 {
+            format!(" … › {visible_trail}")
+        } else {
+            format!(" {visible_trail}")
+        };
         frame.render_widget(
-            Paragraph::new(text)
-                .scroll((nav.scroll, 0))
-                .block(bordered_focus(&view_title, view_focused)),
-            left,
+            Paragraph::new(Line::styled(
+                crumb_text,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            crumb,
         );
 
-        // Neighbor list (right).
-        let items: Vec<ListItem> = nav
-            .current()
-            .neighbors
-            .iter()
-            .map(|n| {
-                let arrow = if n.outgoing { "→" } else { "←" };
-                ListItem::new(format!("{arrow} {:<12} {}:{}", n.rel, n.kind, n.label))
-            })
-            .collect();
-        let mut list_state = ListState::default();
-        if !nav.current().neighbors.is_empty() {
-            list_state.select(Some(nav.pick.min(nav.current().neighbors.len() - 1)));
+        // One panel per visible node, each a list of that node's edges.
+        if !widths.is_empty() {
+            let constraints: Vec<Constraint> =
+                widths.iter().map(|w| Constraint::Length(*w)).collect();
+            let col_areas = Layout::horizontal(constraints).split(cols_area);
+            for (i, col_area) in col_areas.iter().enumerate() {
+                let idx = hidden + i;
+                let node = &nav.stack[idx];
+                let is_focused = idx == n - 1;
+                let items: Vec<ListItem> = node
+                    .neighbors
+                    .iter()
+                    .map(|nb| {
+                        let arrow = if nb.outgoing { "→" } else { "←" };
+                        ListItem::new(format!("{arrow} {}:{}", nb.kind, nb.label))
+                    })
+                    .collect();
+                let border = if is_focused {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default().add_modifier(Modifier::DIM)
+                };
+                let block = Block::bordered()
+                    .title(format!(" {} ", node.label))
+                    .border_style(border);
+                // The focused (rightmost) panel shows a live selection cursor;
+                // older panels are dimmed context.
+                let mut st = ListState::default();
+                if is_focused && !node.neighbors.is_empty() {
+                    st.select(Some(nav.pick.min(node.neighbors.len() - 1)));
+                }
+                let list = List::new(items)
+                    .block(block)
+                    .highlight_style(selected_style())
+                    .highlight_symbol("▸ ");
+                frame.render_stateful_widget(list, *col_area, &mut st);
+            }
         }
-        let title = format!(" edges ({}) ", nav.current().neighbors.len());
-        let list = List::new(items)
-            .block(bordered_focus(&title, nav.focus == NavFocus::Neighbors))
-            .highlight_style(reversed);
-        frame.render_stateful_widget(list, right, &mut list_state);
-    }
-}
 
-/// A bordered block whose title marks focus.
-fn bordered_focus(title: &str, focused: bool) -> Block<'_> {
-    let mark = if focused { "●" } else { "○" };
-    Block::bordered().title(format!("{mark}{title}"))
+        // Preview of the focused node's rendered fields.
+        if preview_w > 0 {
+            let cur = nav.current();
+            let text: Vec<Line> = cur.lines.iter().map(|l| Line::raw(l.as_str())).collect();
+            let block = Block::bordered()
+                .title(format!(" {} ", cur.kind))
+                .border_style(Style::default().add_modifier(Modifier::DIM));
+            frame.render_widget(
+                Paragraph::new(text).scroll((nav.scroll, 0)).block(block),
+                preview_area,
+            );
+        }
+    }
 }
 
 /// Run the TUI until the user quits. Blocking; call from `spawn_blocking`.
@@ -1274,16 +1665,31 @@ pub fn run(handle: Handle, store_dir: &Path, keymap: crate::keymap::Keymap) -> R
     // Always restore the terminal, even if the loop errors. The key source
     // polls crossterm; the loop body itself lives in `event_loop` so it can be
     // tested against a scripted source and a `TestBackend`.
-    let result = event_loop(&mut app, &handle, &mut terminal, || {
-        if crossterm::event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = crossterm::event::read() {
-                if key.kind == KeyEventKind::Press {
-                    return Some(key.code);
+    let result = event_loop(
+        &mut app,
+        &handle,
+        &mut terminal,
+        || {
+            if crossterm::event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = crossterm::event::read() {
+                    if key.kind == KeyEventKind::Press {
+                        return Some(key.code);
+                    }
                 }
             }
-        }
-        None
-    });
+            None
+        },
+        // Hand the terminal to an external editor, then reclaim it. Restoring
+        // raw mode + the alternate screen returns us to the TUI where we left.
+        |path, line, _col| {
+            let _ = disable_raw_mode();
+            let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+            let outcome = open_editor(path, line);
+            enable_raw_mode().ok();
+            crossterm::execute!(std::io::stdout(), EnterAlternateScreen).ok();
+            outcome
+        },
+    );
 
     crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
@@ -1299,12 +1705,22 @@ fn event_loop<B: ratatui::backend::Backend>(
     handle: &Handle,
     terminal: &mut Terminal<B>,
     mut next_key: impl FnMut() -> Option<KeyCode>,
+    mut edit: impl FnMut(&str, u32, u32) -> Result<()>,
 ) -> Result<()> {
     while !app.quit {
         app.pump_scan(handle);
         terminal.draw(|f| app.draw(f))?;
         if let Some(code) = next_key() {
             app.on_key(handle, code);
+        }
+        // Service a queued editor hand-off, then force a full redraw since the
+        // child process owned the screen while it ran.
+        if let Some((path, line, col)) = app.edit_request.take() {
+            match edit(&path, line, col) {
+                Ok(()) => app.message = format!("closed editor for {path}"),
+                Err(e) => app.message = format!("editor failed: {e:#}"),
+            }
+            terminal.clear()?;
         }
     }
     Ok(())
@@ -1368,10 +1784,22 @@ mod tests {
     }
 
     #[test]
-    fn index_rows_look_muttish() {
-        let row = index_row(3, &m(Some(Severity::Critical)));
-        assert!(row.starts_with("   3 C aws-access-key-id"), "{row}");
-        assert!(row.contains(".env:1"), "{row}");
+    fn column_layout_right_anchors_and_drops() {
+        // Plenty of room: all panels shown, focused (last) is widest.
+        let (hidden, widths) = column_layout(3, 200);
+        assert_eq!(hidden, 0);
+        assert_eq!(widths.len(), 3);
+        assert!(
+            widths[2] >= widths[1] && widths[1] >= widths[0],
+            "focused panel widest: {widths:?}"
+        );
+        // Tight width: the oldest (leftmost) panels drop off-screen.
+        let (hidden, widths) = column_layout(6, 40);
+        assert!(hidden > 0, "some panels hidden when cramped");
+        assert!(!widths.is_empty(), "the focused panel always shows");
+        // A single panel always fits, clamped to the screen.
+        let (hidden, widths) = column_layout(1, 10);
+        assert_eq!((hidden, widths), (0, vec![10]));
     }
 
     #[test]
@@ -1439,6 +1867,25 @@ mod tests {
             let mut app = App::new(store, store_dir.clone(), crate::keymap::Keymap::defaults());
             app.refresh_findings(&handle, "");
             assert!(!app.findings.is_empty(), "seeded findings load");
+            assert_eq!(
+                app.finding_ids.len(),
+                app.findings.len(),
+                "findings carry ids for in-place edits"
+            );
+
+            // Reclassify a finding from the grid: `c` then a bare severity word
+            // (`info`) is the classify shortcut, persisting to its record —
+            // findings are editable too, not just browsed records.
+            app.list.select(Some(0));
+            let fid = app.finding_ids[0].clone();
+            app.on_key(&handle, KeyCode::Char('c'));
+            type_str(&mut app, &handle, "info");
+            app.on_key(&handle, KeyCode::Enter);
+            let stored = handle
+                .block_on(app.store.get_record(&fid))
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored["severity"], "info", "finding reclassified");
 
             // Index navigation and a render.
             app.on_key(&handle, KeyCode::Char('j'));
@@ -1447,11 +1894,14 @@ mod tests {
             app.on_key(&handle, KeyCode::Char('g'));
             app.on_key(&handle, KeyCode::Down);
             app.on_key(&handle, KeyCode::Up);
-            assert!(screen(&mut app).contains("exfil:"), "status bar renders");
+            assert!(
+                screen(&mut app).contains("Findings"),
+                "sidebar/menu renders"
+            );
 
-            // Enter the graph navigator (rooted at the finding's file), follow
-            // an edge to a neighbor, step back, and leave.
-            app.on_key(&handle, KeyCode::Enter);
+            // `n` opens the graph navigator (rooted at the finding's file);
+            // follow an edge to a neighbor, step back, and forward again.
+            app.on_key(&handle, KeyCode::Char('n'));
             assert!(matches!(app.mode, Mode::Nav));
             let nav = app.nav.as_ref().unwrap();
             assert_eq!(nav.current().kind, "file");
@@ -1483,8 +1933,7 @@ mod tests {
             app.on_key(&handle, KeyCode::Char('U')); // redo → edited again
             assert_eq!(host(&app, &handle), "edited-host");
 
-            // Delete an edge from the neighbor pane, then undo it.
-            app.on_key(&handle, KeyCode::Char('l')); // focus neighbors
+            // Delete the selected edge from the focused panel, then undo it.
             let edges_before = app.nav.as_ref().unwrap().current().neighbors.len();
             app.on_key(&handle, KeyCode::Char('d'));
             assert_eq!(
@@ -1646,7 +2095,7 @@ mod tests {
                 "{:?}",
                 app.items.iter().map(|i| &i.label).collect::<Vec<_>>()
             );
-            assert!(screen(&mut app).contains("files"), "status shows type");
+            assert!(screen(&mut app).contains("Files"), "sidebar shows type");
 
             // Opening a file node enters the navigator rooted at it.
             app.on_key(&handle, KeyCode::Enter);
@@ -1658,6 +2107,24 @@ mod tests {
             app.execute(&handle, Action::Browse(ObjectType::Indicators));
             assert_eq!(app.browse, ObjectType::Indicators);
             assert!(!app.items.is_empty(), "indicators listed");
+
+            // Classify the selected record from the grid: `c` then `severity=high`
+            // persists the field, so the store record carries the classification.
+            app.list.select(Some(0));
+            let rec_id = app.items[0].id.clone();
+            app.on_key(&handle, KeyCode::Char('c'));
+            assert!(
+                matches!(app.prompt, Some(Prompt::Edit(_))),
+                "edit prompt opens"
+            );
+            type_str(&mut app, &handle, "severity=high");
+            app.on_key(&handle, KeyCode::Enter);
+            let stored = handle
+                .block_on(app.store.get_record(&rec_id))
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored["severity"], "high", "classification persisted");
+
             app.on_key(&handle, KeyCode::Enter);
             assert_eq!(app.nav.as_ref().unwrap().current().kind, "indicators");
             // The indicators viewer shows the extracted observables.
@@ -1707,7 +2174,14 @@ mod tests {
             ]
             .into_iter();
             let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-            event_loop(&mut app, &handle, &mut terminal, || keys.next()).unwrap();
+            event_loop(
+                &mut app,
+                &handle,
+                &mut terminal,
+                || keys.next(),
+                |_p, _l, _c| Ok(()),
+            )
+            .unwrap();
             assert!(app.quit, "loop exits when quit is set");
 
             let _ = std::fs::remove_dir_all(&dir);

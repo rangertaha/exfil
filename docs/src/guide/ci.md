@@ -11,11 +11,11 @@ any runner without network access.
 
 ## Gate a build with `--fail-on`
 
-`exfil scan --fail-on <severity>` exits non-zero when any stored finding is at
+`exfil scan files --fail-on <severity>` exits non-zero when any stored finding is at
 or above the given level (`info|low|medium|high|critical`):
 
 ```sh
-exfil scan --fail-on high        # exit 1 if any high/critical finding exists
+exfil scan files --fail-on high  # exit 1 if any high/critical finding exists
 ```
 
 That single line is enough to break a build on real problems. The check runs
@@ -45,7 +45,7 @@ jobs:
         run: cargo install --git https://github.com/rangertaha/exfil exfil-cli
 
       - name: Scan
-        run: exfil scan .
+        run: exfil scan files .
 
       - name: Render SARIF
         run: exfil analyze --format sarif > exfil.sarif
@@ -65,7 +65,7 @@ SARIF upload run regardless:
 
 ```yaml
       - name: Scan
-        run: exfil scan . --fail-on high
+        run: exfil scan files . --fail-on high
 
       - name: Render SARIF
         if: always()            # upload findings even when the gate failed
@@ -78,7 +78,7 @@ Systems that ingest JUnit XML (Jenkins, GitLab CI, GitHub Actions test
 reporters) can read a JUnit report, where each finding is a failing test case:
 
 ```sh
-exfil scan .
+exfil scan files .
 exfil analyze --format junit > exfil-junit.xml
 ```
 

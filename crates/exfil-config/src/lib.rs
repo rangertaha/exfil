@@ -92,7 +92,7 @@ pub fn default_path() -> Result<PathBuf> {
 
 /// The datasets/rules catalog directory. `$EXFIL_CATALOG_DIR` overrides the
 /// default location in the user config dir (e.g. `~/.config/exfil/catalog`).
-/// Survives `exfil clean`, which only removes the local findings store.
+/// Survives `exfil store clean`, which only removes the local findings store.
 pub fn catalog_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("EXFIL_CATALOG_DIR") {
         return Ok(PathBuf::from(dir));
@@ -169,9 +169,14 @@ mod tests {
     #[test]
     fn embedded_default_parses() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).expect("embedded default is valid TOML");
+        // Every option is documented but commented out, so the defaults apply:
+        // `store` falls back to its default and no plugin blocks are active.
         assert_eq!(cfg.store, ".exfil");
-        assert!(cfg.plugins.contains_key("regex"));
-        assert!(cfg.plugins.contains_key("ast"));
+        assert!(
+            cfg.plugins.is_empty(),
+            "options are documented but commented out"
+        );
+        // The shipped security dataset is the one active entry.
         assert_eq!(cfg.update.len(), 1);
         assert_eq!(cfg.update[0].name, "security");
         assert_eq!(cfg.update[0].reference, "builtin://security");
@@ -210,7 +215,11 @@ mod tests {
 
     #[test]
     fn plugin_decoding() {
-        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let cfg: Config = toml::from_str(
+            "[plugins.ast]\nlanguages = [\"rust\", \"go\"]\n\
+             [plugins.regex]\ndatasets = [\"a\"]\n",
+        )
+        .unwrap();
         // Present block decodes into the plugin's own struct.
         let ast: AstCfg = cfg.plugin("ast").unwrap().expect("ast block present");
         assert!(ast.languages.contains(&"rust".to_string()));

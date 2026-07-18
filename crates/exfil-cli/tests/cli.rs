@@ -59,7 +59,7 @@ fn scan_search_get_clean_roundtrip() {
     let sb = Sandbox::new("roundtrip");
 
     // scan: finds the secret, streams it, and prints a summary.
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "scan failed: {}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("aws-access-key-id"), "{text}");
@@ -69,7 +69,7 @@ fn scan_search_get_clean_roundtrip() {
     );
 
     // Rescan: unchanged files take the stat fast-path, findings don't duplicate.
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "rescan failed: {}", stderr(&out));
     let text = stdout(&out);
     assert!(
@@ -136,16 +136,16 @@ fn scan_search_get_clean_roundtrip() {
         .any(|n| n["kind"] == "finding"));
     let out = exfil(&sb.store, &["graph", "--format", "dot"]);
     assert!(stdout(&out).contains("digraph exfil"));
-    let out = exfil(&sb.store, &["gc"]);
+    let out = exfil(&sb.store, &["store", "gc"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("gc: removed"), "{}", stdout(&out));
 
     // clean removes the store; a second clean is a no-op.
-    let out = exfil(&sb.store, &["clean"]);
+    let out = exfil(&sb.store, &["store", "clean"]);
     assert!(out.status.success());
     assert!(stdout(&out).contains("removed store"));
     assert!(!sb.store.exists());
-    let out = exfil(&sb.store, &["clean"]);
+    let out = exfil(&sb.store, &["store", "clean"]);
     assert!(stdout(&out).contains("no store"));
 }
 
@@ -189,7 +189,7 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn enrich_and_export_commands() {
     let sb = Sandbox::new("enrich");
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     // enrich writes a triage note to the finding.
@@ -202,7 +202,7 @@ fn enrich_and_export_commands() {
     );
 
     // export --format json includes the enriched triage field.
-    let out = exfil(&sb.store, &["export", "--format", "json"]);
+    let out = exfil(&sb.store, &["store", "export", "--format", "json"]);
     assert!(out.status.success());
     let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json snapshot");
     let triage = snap["tables"]["finding"][0]["triage"]
@@ -217,7 +217,7 @@ fn mcp_server_answers_over_stdio() {
     use std::process::Stdio;
 
     let sb = Sandbox::new("mcp");
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_exfil"))
@@ -308,7 +308,11 @@ fn sources_pull_datasets_flow() {
 
     // A scan now applies the custom rule from the catalog.
     std::fs::write(sb.tree.join("token.txt"), "key = ACME-123456\n").unwrap();
-    let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["scan", "files", sb.tree.to_str().unwrap()],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("acme-token"), "{}", stdout(&out));
 }
@@ -341,7 +345,11 @@ fn ioc_hash_and_content_scanning() {
     let out = exfil_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
-    let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["scan", "files", sb.tree.to_str().unwrap()],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("bad-file"), "hash IOC missing:\n{text}");
@@ -388,7 +396,7 @@ fn clamav_signatures_from_config() {
         .arg(&sb.store)
         .arg("--config")
         .arg(&cfg)
-        .args(["scan", sb.tree.to_str().unwrap()])
+        .args(["scan", "files", sb.tree.to_str().unwrap()])
         .output()
         .expect("run exfil");
     assert!(out.status.success(), "{}", stderr(&out));
@@ -403,7 +411,7 @@ fn clamav_signatures_from_config() {
 #[test]
 fn script_enricher_from_config() {
     let sb = Sandbox::new("script");
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     let script = sb.base.join("enrich.rhai");
@@ -428,7 +436,7 @@ fn script_enricher_from_config() {
     assert!(stdout(&out).contains("enrich.rhai"), "{}", stdout(&out));
 
     // The scripted triage note landed on the finding.
-    let out = exfil(&sb.store, &["export", "--format", "json"]);
+    let out = exfil(&sb.store, &["store", "export", "--format", "json"]);
     let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     let triage = snap["tables"]["finding"][0]["triage"]
         .as_str()
@@ -476,7 +484,7 @@ fn yara_rules_from_config() {
         .arg(&sb.store)
         .arg("--config")
         .arg(&cfg)
-        .args(["scan", sb.tree.to_str().unwrap()])
+        .args(["scan", "files", sb.tree.to_str().unwrap()])
         .output()
         .expect("run exfil");
     assert!(out.status.success(), "{}", stderr(&out));

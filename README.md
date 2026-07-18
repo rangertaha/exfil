@@ -66,7 +66,7 @@ exfil tui
 # look at one record, list rules, clean up
 exfil get file:<blake3-hash>
 exfil rules
-exfil clean
+exfil store clean
 ```
 
 Example scan output (severity is color-coded on a terminal):
@@ -81,14 +81,13 @@ scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 
 | Command | What it does |
 |---|---|
-| `exfil scan [path]` | Scan a directory tree for secrets and security issues |
-| `exfil scan-remote [user@]host:/path` | Scan a remote host over SSH/SFTP |
+| `exfil scan [files] [path]` | Scan a directory tree for secrets and security issues (`--remote [user@]host:/path` for a host over SSH/SFTP) |
 | `exfil search [query]` | Query stored findings (by field or free text) |
 | `exfil analyze` | Render a report of the graph (`--format text\|json\|markdown\|junit\|sarif`) |
 | `exfil tui` | Open the mutt-style TUI to scan and browse live |
 | `exfil pull [ref]` | Download rule/IOC datasets into the catalog |
 | `exfil rules` | Show the rules a scan would apply |
-| `exfil clean` | Delete the findings store (keeps downloaded datasets) |
+| `exfil store clean` | Delete the findings store (keeps downloaded datasets) |
 
 The [full command reference](https://rangertaha.github.io/exfil/guide/commands.html)
 covers remote, process, network, correlation, and MCP commands. Run
@@ -111,7 +110,7 @@ languages = ["go", "python", "javascript", "rust"]
 ```
 
 The findings store (default `.exfil/`, override with `--store`) is local to the
-scanned project and removed by `exfil clean`; downloaded datasets live in the
+scanned project and removed by `exfil store clean`; downloaded datasets live in the
 config directory and survive cleaning. See the
 [Configuration guide](https://rangertaha.github.io/exfil/guide/configuration.html)
 for details.

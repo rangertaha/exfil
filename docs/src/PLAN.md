@@ -128,7 +128,7 @@ edges. The graph is naturally queryable and traversable — no hand-built index.
 - analyze: `SELECT severity, count() FROM finding GROUP BY severity`
 
 **Stores / locations**
-- Findings DB: local, at `--store` (default `.exfil/`), removed by `exfil clean`.
+- Findings DB: local, at `--store` (default `.exfil/`), removed by `exfil store clean`.
 - Datasets + rules DB: user config dir (`~/.config/exfil/…`), survives `clean`.
   (Two SurrealDB namespaces/databases, or two embedded instances.)
 

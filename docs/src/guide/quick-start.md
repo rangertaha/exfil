@@ -9,13 +9,13 @@ exfil search                      # everything
 exfil search severity=critical    # by field: rule/cwe/severity/path
 exfil search aws                  # free text against rule names
 
-# open the live TUI (mutt-style index + pager)
+# open the live TUI (app-style workbench)
 exfil tui
 
 # look at one record, list rules, clean up
 exfil get file:<blake3-hash>
 exfil rules
-exfil clean
+exfil store clean
 ```
 
 ## Example scan output

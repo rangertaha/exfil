@@ -11,14 +11,16 @@ Run `exfil <command> --help` for a command's own flags.
 
 ## Scanning
 
+All the scanners are grouped under `exfil scan`:
+
 | Command | What it does |
 |---|---|
-| `exfil scan [path]` | Scan a directory tree for secrets and security issues (`--fail-on <severity>` to gate CI) |
-| `exfil scan-remote [user@]host:/path` | Scan a remote host over SSH/SFTP |
-| `exfil processes` | Scan the local host's running processes (command lines, exe paths) |
-| `exfil scan-tcp host:port…` | Grab and scan TCP service banners *(authorized testing only)* |
-| `exfil port-scan <ip/cidr>` | Sweep ports, grab banners, and scan them *(authorized testing only)* |
-| `exfil scan-web <url> [--driver URL]` | Crawl a website and scan the pages; `--driver` renders JS-heavy sites via a WebDriver browser *(authorized testing only)* |
+| `exfil scan` | Scan the current directory (shorthand for `scan files`) |
+| `exfil scan files [path]` | Scan a directory tree for secrets and security issues (`--fail-on <severity>` to gate CI; `--remote [user@]host:/path` scans a host over SSH/SFTP instead) |
+| `exfil scan processes` | Scan the local host's running processes (command lines, exe paths) |
+| `exfil scan tcp host:port…` | Grab and scan TCP service banners *(authorized testing only)* |
+| `exfil scan port <ip/cidr>` | Sweep ports, grab banners, and scan them *(authorized testing only)* |
+| `exfil scan web <url> [--driver URL]` | Crawl a website and scan the pages; `--driver` renders JS-heavy sites via a WebDriver browser *(authorized testing only)* |
 
 ### Gating CI
 
@@ -27,7 +29,7 @@ or above the given level (`info|low|medium|high|critical`), so a pipeline step
 fails the build on real problems:
 
 ```sh
-exfil scan --fail-on high        # exit 1 if any high/critical finding exists
+exfil scan files --fail-on high  # exit 1 if any high/critical finding exists
 ```
 
 See [Continuous Integration](./ci.md) for a full GitHub Actions example that
@@ -50,8 +52,8 @@ also uploads a SARIF report to code scanning.
 | `exfil normalize` | Normalize findings into Splunk-CIM events for cross-source correlation |
 | `exfil enrich` | Enrich findings with triage notes and (if pulled) authoritative MITRE CWE names |
 | `exfil cwe <id>` | Look up a weakness in the local MITRE CWE catalog (e.g. `exfil cwe 798`) |
-| `exfil check-dns` | Resolve observed domains and flag reserved/private resolutions *(online)* |
-| `exfil check-whois` | WHOIS-check observed domains and flag newly-registered ones *(online)* |
+| `exfil check dns` | Resolve observed domains and flag reserved/private resolutions *(online)* |
+| `exfil check whois` | WHOIS-check observed domains and flag newly-registered ones *(online)* |
 
 ## Datasets & IOC feeds
 
@@ -66,13 +68,13 @@ also uploads a SARIF report to code scanning.
 
 | Command | What it does |
 |---|---|
-| `exfil tui` | Open the mutt-style TUI: scan, browse, and query the graph live |
+| `exfil tui` | Open the app-style TUI workbench: scan, browse, edit, and query the graph live |
 | `exfil mcp` | Run an MCP server on stdio for AI agents |
 | `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
-| `exfil export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
-| `exfil gc` | Garbage-collect unreachable records |
-| `exfil clean [-y]` | Delete the findings store (asks first on a terminal; `-y` skips) |
+| `exfil store export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
+| `exfil store gc` | Garbage-collect unreachable records |
+| `exfil store clean [-y]` | Delete the findings store (asks first on a terminal; `-y` skips) |
 | `exfil completions <shell>` | Print a shell completion script (bash, zsh, fish, powershell, elvish) |
 
 ## Feed catalog
@@ -143,12 +145,12 @@ exfil completions fish > ~/.config/fish/completions/exfil.fish
 ### Dynamic sites (WebDriver)
 
 Static crawling misses content that JavaScript builds at runtime. Point
-`scan-web` at a running WebDriver server (geckodriver/chromedriver) to render
+`scan web` at a running WebDriver server (geckodriver/chromedriver) to render
 each page in a headless browser first:
 
 ```sh
 geckodriver --port 4444 &                                  # or chromedriver
-exfil scan-web https://app.example.com --driver http://localhost:4444
+exfil scan web https://app.example.com --driver http://localhost:4444
 ```
 
 exfil connects to the driver you run (it doesn't launch the browser). The

@@ -23,7 +23,7 @@ exfil config
 ## The findings store
 
 The findings store (default `.exfil/`, override with `--store`) is local to the
-scanned project and removed by `exfil clean`. Downloaded datasets live in the
+scanned project and removed by `exfil store clean`. Downloaded datasets live in the
 config directory instead, so they survive cleaning.
 
 ## Database (`[database]`)
