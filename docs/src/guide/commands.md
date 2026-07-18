@@ -30,6 +30,9 @@ fails the build on real problems:
 exfil scan --fail-on high        # exit 1 if any high/critical finding exists
 ```
 
+See [Continuous Integration](./ci.md) for a full GitHub Actions example that
+also uploads a SARIF report to code scanning.
+
 ## Querying findings
 
 | Command | What it does |
