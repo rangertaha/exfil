@@ -85,6 +85,8 @@ and this project adheres to
 - TAXII 2.x feeds: a `taxii2+…` feed URL is polled over the TAXII transport (a
   collection's `objects/` endpoint, with `more`/`next` pagination and basic-auth
   from the URL) and its STIX objects normalized into IOC rules.
+- Feed ingestion deduplicates rules by `(name, pattern)` (first-seen order), so
+  overlapping feeds/pages/archive members no longer inflate the pulled count.
 
 ### Changed
 

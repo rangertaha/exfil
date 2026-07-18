@@ -145,6 +145,7 @@ async fn fetch_taxii(name: &str, endpoint: &str) -> Result<Dataset> {
             _ => break,
         }
     }
+    dedup_rules(&mut rules);
     Ok(Dataset {
         name: name.to_string(),
         rules,
@@ -177,10 +178,21 @@ pub fn ingest(name: &str, filename: &str, bytes: &[u8]) -> Result<Dataset> {
             Err(e) => eprintln!("[feed] {name}: skip {member:?}: {e:#}"),
         }
     }
+    dedup_rules(&mut rules);
     Ok(Dataset {
         name: name.to_string(),
         rules,
     })
+}
+
+/// Drop duplicate rules in place, keeping first-seen order. Threat-intel feeds
+/// overlap heavily (the same domain/IP appears across members, pages, and
+/// sources), so this keeps the stored count and the "pulled N rules" report
+/// honest. The key is `(name, pattern)` — the same pair the store content-
+/// addresses a rule by, so two identical rules would collapse there anyway.
+fn dedup_rules(rules: &mut Vec<Rule>) {
+    let mut seen = std::collections::HashSet::new();
+    rules.retain(|r| seen.insert((r.name.clone(), r.pattern.clone())));
 }
 
 /// Parse one member's bytes in `format` into rules, tagged under the feed `name`.
@@ -871,6 +883,16 @@ mod tests {
         assert!(pats.iter().any(|p| p.starts_with("sha256:e3b0c442")));
         assert_eq!(rules.len(), 4, "comment and free text are skipped");
         assert!(rules.iter().all(|r| r.name == "threats-ioc"));
+    }
+
+    #[test]
+    fn ingest_dedups_overlapping_iocs() {
+        // The same indicator repeated across a feed collapses to one rule,
+        // keeping first-seen order.
+        let text = "evil.example.com\n203.0.113.9\nevil.example.com\n";
+        let ds = ingest("threats", "list.txt", text.as_bytes()).unwrap();
+        let pats: Vec<&str> = ds.rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert_eq!(pats, vec!["domain:evil.example.com", "ip:203.0.113.9"]);
     }
 
     #[test]
