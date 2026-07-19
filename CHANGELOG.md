@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Security
+
+- Upgraded `yara-x` (0.13 → 1.19), which moves its bundled `wasmtime` from
+  29.0.1 to 43.0.2 and clears 16 RustSec advisories — including two critical
+  (CVSS 9.0) WebAssembly sandbox escapes reachable via YARA rules pulled from
+  remote feeds. Bumped `ratatui` (0.29 → 0.30) alongside it (required to resolve
+  the shared `unicode-width` pin), which also drops the unsound `lru` 0.12 from
+  the TUI's dependency path.
+
 ### Changed
 
 - The default config is now a fully-documented reference: every option is shown

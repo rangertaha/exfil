@@ -1706,7 +1706,10 @@ fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     mut next_key: impl FnMut() -> Option<KeyCode>,
     mut edit: impl FnMut(&str, u32, u32) -> Result<()>,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     while !app.quit {
         app.pump_scan(handle);
         terminal.draw(|f| app.draw(f))?;

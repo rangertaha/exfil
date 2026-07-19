@@ -28,7 +28,7 @@ tokio = { workspace = true, features = ["net", "io-util", "signal", "sync", "tim
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 async-graphql = "7"
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 ciborium = "0.2"
 
