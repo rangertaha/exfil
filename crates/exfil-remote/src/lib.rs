@@ -85,13 +85,12 @@ pub enum SshAuth {
 /// follow-up; for now remote scans trust the endpoint the user named.
 struct AcceptAll;
 
-#[async_trait::async_trait]
 impl client::Handler for AcceptAll {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _key: &russh::keys::key::PublicKey,
+        _key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -119,13 +118,24 @@ impl SshFs {
             SshAuth::Key(path, passphrase) => {
                 let key = russh::keys::load_secret_key(path, passphrase.as_deref())
                     .with_context(|| format!("load private key {}", path.display()))?;
+                // Let the server pick the RSA signature hash (rsa-sha2-256/512);
+                // ignored for non-RSA keys. Preserves compatibility with modern
+                // OpenSSH, which rejects the legacy ssh-rsa/SHA-1 signature.
+                let hash_alg = handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .context("negotiate RSA signature hash")?
+                    .flatten();
                 handle
-                    .authenticate_publickey(target.user.clone(), Arc::new(key))
+                    .authenticate_publickey(
+                        target.user.clone(),
+                        russh::keys::PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+                    )
                     .await
                     .context("publickey auth")?
             }
         };
-        if !authed {
+        if !authed.success() {
             bail!("authentication failed for {}@{}", target.user, target.host);
         }
 

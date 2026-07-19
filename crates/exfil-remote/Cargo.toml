@@ -9,7 +9,7 @@ exfil-engine = { workspace = true }
 anyhow = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }
-russh = "0.45"
+russh = "0.62"
 russh-sftp = "2"
 gethostname = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

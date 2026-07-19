@@ -17,6 +17,12 @@ and this project adheres to
   the shared `unicode-width` pin), which also drops the unsound `lru` 0.12 from
   the TUI's dependency path.
 
+- Upgraded `russh` (0.45 → 0.62), clearing two high-severity (CVSS 7.5)
+  unbounded-allocation advisories (RUSTSEC-2025-0090/0091) in the SSH client
+  behind `scan files --remote`. Public-key auth now negotiates the server's
+  preferred RSA signature hash (rsa-sha2-256/512) instead of the legacy
+  ssh-rsa/SHA-1 signature modern OpenSSH rejects.
+
 ### Changed
 
 - The default config is now a fully-documented reference: every option is shown
