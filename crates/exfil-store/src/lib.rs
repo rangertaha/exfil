@@ -65,6 +65,7 @@ DEFINE TABLE IF NOT EXISTS feed SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS plugin_setting SCHEMALESS;
 
 -- graph edges connecting the records
 DEFINE TABLE IF NOT EXISTS has_ast TYPE RELATION FROM file TO ast;
@@ -851,6 +852,66 @@ impl Store {
             .check()
             .context("feed delete failed")?;
         Ok(existed)
+    }
+
+    /// Set a plugin setting override, keyed by the `[plugin, key]` pair as a
+    /// composite record id (not a `"{plugin}.{key}"` string: a plugin or key
+    /// name containing a `.` could otherwise collide with a different
+    /// plugin/key pair that happens to concatenate to the same string).
+    /// Takes precedence over the plugin's `[plugins.<plugin>]` config-file
+    /// value at read time (see `exfil_config::PluginSchema`); survives
+    /// `store clean` since it lives in the catalog, not the findings store.
+    ///
+    /// (The stored field is `setting_value`, not `value` — SurrealQL parses a
+    /// bare `value` after `SELECT` as its special `SELECT VALUE <field>`
+    /// shorthand, not an ordinary field name.)
+    pub async fn set_plugin_setting(&self, plugin: &str, key: &str, value: &str) -> Result<()> {
+        self.db
+            .query(
+                "UPSERT type::thing('plugin_setting', [$p, $k]) CONTENT { plugin: $p, key: $k, setting_value: $v }",
+            )
+            .bind(("p", plugin.to_string()))
+            .bind(("k", key.to_string()))
+            .bind(("v", value.to_string()))
+            .await
+            .context("upsert plugin setting")?
+            .check()
+            .context("plugin setting upsert failed")?;
+        Ok(())
+    }
+
+    /// Get a plugin setting override, or `None` if it hasn't been set.
+    pub async fn get_plugin_setting(&self, plugin: &str, key: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Row {
+            setting_value: String,
+        }
+        let mut res = self
+            .db
+            .query("SELECT setting_value FROM type::thing('plugin_setting', [$p, $k])")
+            .bind(("p", plugin.to_string()))
+            .bind(("k", key.to_string()))
+            .await
+            .context("get plugin setting")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().next().map(|r| r.setting_value))
+    }
+
+    /// List every setting override for a plugin as `(key, value)`.
+    pub async fn list_plugin_settings(&self, plugin: &str) -> Result<Vec<(String, String)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            key: String,
+            setting_value: String,
+        }
+        let mut res = self
+            .db
+            .query("SELECT key, setting_value FROM plugin_setting WHERE plugin = $p")
+            .bind(("p", plugin.to_string()))
+            .await
+            .context("list plugin settings")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().map(|r| (r.key, r.setting_value)).collect())
     }
 
     /// Remove a dataset and its rule edges. Orphaned rule records are left for
@@ -1678,6 +1739,71 @@ mod tests {
         assert!(store.remove_feed("threats").await.unwrap());
         assert!(!store.remove_feed("nope").await.unwrap());
         assert_eq!(store.list_feeds().await.unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn plugin_setting_crud() {
+        let dir = std::env::temp_dir().join(format!("exfil-store-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_CATALOG).await.unwrap();
+
+        assert_eq!(store.get_plugin_setting("scan", "top-ports").await.unwrap(), None);
+
+        store.set_plugin_setting("scan", "top-ports", "1000").await.unwrap();
+        assert_eq!(
+            store.get_plugin_setting("scan", "top-ports").await.unwrap(),
+            Some("1000".to_string())
+        );
+
+        // Same plugin, different key: independent entries.
+        store.set_plugin_setting("scan", "max-pages", "128").await.unwrap();
+        let mut settings = store.list_plugin_settings("scan").await.unwrap();
+        settings.sort();
+        assert_eq!(
+            settings,
+            vec![
+                ("max-pages".to_string(), "128".to_string()),
+                ("top-ports".to_string(), "1000".to_string()),
+            ]
+        );
+
+        // A different plugin's settings don't show up in this list.
+        store.set_plugin_setting("taint", "enabled", "false").await.unwrap();
+        assert_eq!(store.list_plugin_settings("scan").await.unwrap().len(), 2);
+
+        // set again overwrites, not duplicates.
+        store.set_plugin_setting("scan", "top-ports", "500").await.unwrap();
+        assert_eq!(
+            store.get_plugin_setting("scan", "top-ports").await.unwrap(),
+            Some("500".to_string())
+        );
+        assert_eq!(store.list_plugin_settings("scan").await.unwrap().len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn plugin_setting_key_uses_a_composite_id_not_string_concat() {
+        // A dotted plugin/key name must not collide with a different pair
+        // that would concatenate to the same string (e.g. "a.b"+"c" vs
+        // "a"+"b.c" both naively stringify to "a.b.c").
+        let dir = std::env::temp_dir().join(format!("exfil-store-plugin-dots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir, DB_CATALOG).await.unwrap();
+
+        store.set_plugin_setting("a.b", "c", "first").await.unwrap();
+        store.set_plugin_setting("a", "b.c", "second").await.unwrap();
+
+        assert_eq!(
+            store.get_plugin_setting("a.b", "c").await.unwrap(),
+            Some("first".to_string())
+        );
+        assert_eq!(
+            store.get_plugin_setting("a", "b.c").await.unwrap(),
+            Some("second".to_string())
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

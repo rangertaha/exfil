@@ -52,7 +52,8 @@ exfil/
     exfil-config/   ✅ TOML config with embedded default + per-plugin decode
     exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
     exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
-  crates/exfil-cli/ (bin "exfil")  ✅ clap commands + progress + mutt-style TUI
+  crates/exfil-cli/ (bin "exfil")  ✅ clap commands + progress gauge (the
+    mutt-style `exfil tui` workbench was built here too, then later removed)
 ```
 
 ## Plugin orchestration (implemented)
@@ -91,7 +92,7 @@ Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 | AST | `tree-sitter` + grammars | Go, Python, JS/TS, Rust, C/C++, Java, … |
 | YARA | `yara-x` | official Rust YARA engine |
 | HTTP | `reqwest` (rustls) | dataset + model downloads, no OpenSSL |
-| Progress/TUI | `ratatui` (+`crossterm`) | inline scan gauge; mutt-style `exfil tui` |
+| Progress | `ratatui` | inline scan progress gauge |
 | Config | `toml` | pure-Rust, mature, per-plugin tables |
 | LLM | `candle-core`, `candle-transformers`, `tokenizers` | pure-Rust GGUF inference (CPU) |
 | Serde | `serde`, `serde_json` | reports, MCP |
@@ -195,7 +196,6 @@ exfil graph  [query]     # findings graph (dot/json) via traversal
 exfil analyze [query]    # whole-graph report (text/json/markdown)
 exfil enrich             # offline LLM pass (structure extraction + triage)
 exfil config | clean | gc | mcp | get <id>
-exfil tui                # mutt-style live workbench (scan/browse/query)
 ```
 
 `update` downloads dataset refs *and* the LLM GGUF into their plugin config dirs
@@ -238,10 +238,11 @@ ref = "https://…/model.gguf"
 - **M1 Graph + scan** — mostly done: schema + edges (✅ `exfil-store`), regex
   scanner + builtin ruleset (✅ `exfil-scan`), parallel walk → hash → scan →
   upsert engine with live `ScanEvent` streaming (✅ `exfil-engine`),
-  `scan`/`search`/`get`/`rules` wired with a ratatui progress gauge (✅), and
-  a mutt-style `exfil tui` workbench (✅ index/pager, `/` limit, `:` commands,
-  live scans). Still to do: incremental rescan (stat fast-path; today a rescan
-  re-reads and re-creates findings — dedup/replace prior scan's findings),
+  `scan`/`search`/`get`/`rules` wired with a ratatui progress gauge (✅). (A
+  mutt-style `exfil tui` workbench — index/pager, `/` limit, `:` commands,
+  live scans — was also built here but has since been removed; may return in
+  a future release.) Still to do: incremental rescan (stat fast-path; today a
+  rescan re-reads and re-creates findings — dedup/replace prior scan's findings),
   tree-sitter AST scanner + `has_ast` edges, `flagged_by`/rule provenance
   edges (needs stored rules, ties into M2 datasets).
 - **M2 SAST breadth** — taint (tree-sitter), yara-x, sources (builtin/file/http),
@@ -263,20 +264,18 @@ ref = "https://…/model.gguf"
 - **Store size on huge trees** — a record per file; incremental + `gc` bound it.
 
 
-## Graph-vim workbench (in progress)
+## Graph-vim workbench (removed)
 
-A layered "neovim for graph traversal/editing" over the findings graph:
-- ✅ M3 pluggable viewers (`exfil-view`): preview-per-node-kind registry.
-- ✅ M1 navigation core: two-pane edge-following navigator (Store::neighbors),
-  jumplist (</>), breadcrumbs, node view via viewers.
-- ✅ M2 CRUD: field edit (`c`), edge delete (`d`), undo/redo (`u`/`U`) via
-  reversible EditOps (Store::set_field/create_edge/delete_edge).
-- ✅ M4 keymaps: vim defaults, remappable via `[keymap.nav]` in config.
-- ✅ M5 scripting: Rhai script enricher (`exfil-script`, `[plugins.script] enrich`).
+A layered "neovim for graph traversal/editing" over the findings graph was
+built out (pluggable viewers in `exfil-view`, a two-pane edge-following
+navigator, field/edge CRUD with undo/redo, remappable vim keymaps, and a Rhai
+scripting enricher) and shipped as the `exfil tui` command. It has since been
+removed (along with the `exfil-view` crate); it may return in a future
+release.
 
 ## Backlog (user-requested)
 
-**Done:** dataset sources + catalog + pull/CRUD, IOC feeds (hash + content), ClamAV-style signatures, SSH remote scanning, plugin orchestration.
+**Done:** dataset sources + catalog + pull/CRUD, IOC feeds (hash + content), ClamAV-style signatures, plugin orchestration. (SSH remote-host scanning was also built here but has since been removed.)
 
 
 - **ClamAV malware scanning** — a `clamav` scanner plugin: match files against
@@ -288,8 +287,8 @@ A layered "neovim for graph traversal/editing" over the findings graph:
   pipeline, then scan for them: file-hash IOCs check the already-computed
   blake3/sha256, content IOCs become regex/aho-corasick rules.
 - **Dataset management (CRUD)** — create, update, list, and view datasets per
-  plugin: `exfil datasets` grows `add/edit/show/rm` (and TUI views), backed by
-  the catalog store, so users can maintain their own rule/IOC collections.
+  plugin: `exfil datasets` grows `add/edit/show/rm`, backed by the catalog
+  store, so users can maintain their own rule/IOC collections.
 - **Supply-chain detection, dataset-driven** — v1 ships (offline heuristics in
   `exfil-scan::supply`: known-malware list, typosquats, install hooks,
   insecure sources); next step is feeding it OSV/malicious-package datasets via

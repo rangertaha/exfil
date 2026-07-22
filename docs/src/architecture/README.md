@@ -24,8 +24,8 @@ every page links into it when it uses an idiom for the first time.
 | 4 | [Taint analysis](./taint.md) | Following untrusted input into dangerous sinks |
 | 5 | [The other scanners](./scanners.md) | regex secrets, archive expand, IOC, supply-chain, ClamAV, YARA |
 | 6 | [The graph store](./store.md) | SurrealDB, content-addressed records, graph edges, garbage collection |
-| 7 | [CLI, TUI & navigator](./cli-tui.md) | Commands, the mutt-style TUI, the vim-style graph navigator |
-| 8 | [Integrations](./integrations.md) | MCP server, LLM enrichment, Rhai scripting, remote SSH, reporting |
+| 7 | [The CLI](./cli.md) | The command surface, and the interactive progress gauge |
+| 8 | [Integrations](./integrations.md) | MCP server, LLM enrichment, Rhai scripting, process/TCP/web scan sources, reporting |
 | 9 | [Rust primer](./rust-primer.md) | Every Rust concept the codebase uses, explained from scratch |
 
 ## The one-paragraph version
@@ -36,7 +36,7 @@ that each declare "I turn *this* kind of data into *that* kind of data." The
 pipeline sorts itself so every plugin runs after its inputs exist, with no plugin
 ever calling another directly. Results become **findings**, which the engine
 writes into a [graph store](./store.md). You then read them back through the
-[CLI, TUI](./cli-tui.md), an [MCP server](./integrations.md) for AI agents, or a
+[CLI](./cli.md), an [MCP server](./integrations.md) for AI agents, or a
 [report](./integrations.md).
 
 ## The mental model in one diagram
@@ -76,7 +76,7 @@ flowchart TD
         EDGES[(graph edges)]
     end
     subgraph Out["Read paths"]
-        CLI[CLI + TUI]
+        CLI[CLI]
         SERVER[server<br/>HTTP + GraphQL]
         MCP[MCP for AI]
         REP[reports]

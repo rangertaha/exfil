@@ -9,9 +9,6 @@ exfil search                      # everything
 exfil search severity=critical    # by field: rule/cwe/severity/path
 exfil search aws                  # free text against rule names
 
-# open the live TUI (app-style workbench)
-exfil tui
-
 # look at one record, list rules, clean up
 exfil get file:<blake3-hash>
 exfil rules
@@ -32,5 +29,4 @@ color, or use `--color always|never|auto` to override detection (e.g.
 scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 ```
 
-Next: the full [Commands](commands.md) reference, or open the
-[TUI](tui.md) for an interactive workbench.
+Next: the full [Commands](commands.md) reference.

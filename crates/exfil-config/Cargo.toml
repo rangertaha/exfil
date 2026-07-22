@@ -9,6 +9,7 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 toml = "0.8"
 dirs = "5"
+is-root = "0.1"
 
 [lints]
 workspace = true

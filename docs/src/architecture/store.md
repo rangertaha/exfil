@@ -1,6 +1,6 @@
 # 6 · The Graph Store (`exfil-store`)
 
-← [The other scanners](./scanners.md) · Next: [CLI, TUI & navigator →](./cli-tui.md)
+← [The other scanners](./scanners.md) · Next: [The CLI →](./cli.md)
 
 Everything a scan produces — files, findings, ASTs, datasets, scan records — lands
 in one place: an **embedded graph database**. This page explains what that means,
@@ -29,7 +29,7 @@ offline tool.
 flowchart LR
     subgraph APP["exfil process"]
         ENG[engine] -->|writes| ST[Store handle]
-        CLI[cli/tui/mcp] -->|reads| ST
+        CLI[cli/mcp] -->|reads| ST
     end
     ST <--> KV[("SurrealKV<br/>.exfil/ on disk")]
 ```
@@ -86,8 +86,8 @@ flowchart LR
 That is the whole shape of exfil's world. When the [engine](./engine.md#8-persistence-replace-dont-append)
 writes a finding, it creates a `finding` node and an `in_file` edge to the file;
 when it stores an AST it adds a `has_ast` edge; when it expands an archive it adds
-a `contained_in` edge. The [TUI navigator](./cli-tui.md#navigator) later *walks*
-these edges.
+a `contained_in` edge. Graph traversal later *walks* these edges (see
+`neighbors` below).
 
 ---
 
@@ -144,9 +144,9 @@ Two idioms recur, and both are documented workarounds for SurrealDB specifics:
 
 ---
 
-## 5. Traversal: `neighbors`, the navigator's engine
+## 5. Traversal: `neighbors`
 
-The one method the [graph navigator](./cli-tui.md#navigator) is built on is
+The core method for walking the graph is
 `neighbors` ([`lib.rs:629`](../../crates/exfil-store/src/lib.rs#L629)): given a
 node id, return every directly connected node, tagged with the relationship and
 direction.
@@ -234,8 +234,8 @@ Grouped by what they do (all `async`, all on `Store`):
 `search_findings` ([`lib.rs:236`](../../crates/exfil-store/src/lib.rs#L236)) is the
 one you'll use most: empty string returns all findings; `field=value` filters on a
 whitelisted field (`rule`/`cwe`/`severity`/`path`); anything else matches against
-rule names. It's the same filter syntax the [CLI `search`](./cli-tui.md), the TUI,
-and the [MCP `search` tool](./integrations.md) all share.
+rule names. It's the same filter syntax the [CLI `search`](./cli.md) and the
+[MCP `search` tool](./integrations.md) share.
 
 > **Rust idiom — generics steer the database.** SurrealDB's API is generic over the
 > return type; you pick it with a type annotation and serde deserializes the rows:
@@ -245,6 +245,5 @@ and the [MCP `search` tool](./integrations.md) all share.
 
 ---
 
-**Next:** the [CLI, TUI, and graph navigator](./cli-tui.md) are how a human drives
-all of this — running scans, searching findings, and walking the graph with
-vim-style keys.
+**Next:** the [CLI](./cli.md) is how a human drives all of this — running scans,
+searching findings, and walking the graph.

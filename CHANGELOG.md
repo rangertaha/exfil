@@ -8,6 +8,29 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `exfil scan --ports <spec>` with no target silently fell through to a plain
+  passive scan of the current directory instead of erroring — `ports` now
+  `requires` a target at the clap level.
+- A plugin setting resolved from `[plugins.<name>]` (or, defensively, a
+  catalog override) was used as-is even when it failed the field's own
+  schema validation (e.g. `top-ports = 0` or `top-ports = 99999` in config);
+  `resolve_plugin_setting` now validates at each layer and falls through
+  (with a warning) instead of using an out-of-range value.
+- `Config::plugin_field` treated a TOML float the same as an absent field
+  (silently falling back to the schema default); it now stringifies floats
+  too, so an invalid-for-its-schema value is rejected explicitly instead of
+  vanishing as if unconfigured.
+- `exfil scan <host/cidr> --ports common` with a resolved `top-ports` of 0
+  silently swept zero ports and reported success; `expand_ports` now bails
+  instead, consistent with an explicitly empty port spec.
+- `plugin_setting` records were keyed by `"{plugin}.{key}"` string
+  concatenation, so a plugin/key pair containing a `.` (e.g. plugin `a.b` key
+  `c`) could collide with a different pair with the same concatenation
+  (plugin `a` key `b.c`); now keyed by a genuine `[plugin, key]` composite
+  record id.
+
 ### Security
 
 - Upgraded `yara-x` (0.13 → 1.19), which moves its bundled `wasmtime` from
@@ -15,13 +38,20 @@ and this project adheres to
   (CVSS 9.0) WebAssembly sandbox escapes reachable via YARA rules pulled from
   remote feeds. Bumped `ratatui` (0.29 → 0.30) alongside it (required to resolve
   the shared `unicode-width` pin), which also drops the unsound `lru` 0.12 from
-  the TUI's dependency path.
+  its dependency path.
 
-- Upgraded `russh` (0.45 → 0.62), clearing two high-severity (CVSS 7.5)
-  unbounded-allocation advisories (RUSTSEC-2025-0090/0091) in the SSH client
-  behind `scan files --remote`. Public-key auth now negotiates the server's
-  preferred RSA signature hash (rsa-sha2-256/512) instead of the legacy
-  ssh-rsa/SHA-1 signature modern OpenSSH rejects.
+### Removed
+
+- The `exfil tui` workbench (mutt-style index/pager, the vim-style graph
+  navigator, configurable keymaps) has been removed, along with the
+  `exfil-view` crate that backed its preview panes. May return in a future
+  release.
+- SSH/SFTP remote-host scanning (`scan files --remote`, the `russh`/
+  `russh-sftp` dependencies) has been removed. Local process scanning, TCP
+  banner grabbing, port sweeps, and web crawling are all still available
+  under the unified `scan` command (see Changed below) — only logging into a
+  remote host over SSH to walk its filesystem is gone. This also obsoletes
+  the `russh` RUSTSEC-2025-0090/0091 advisories previously tracked here.
 
 ### Changed
 
@@ -30,23 +60,35 @@ and this project adheres to
   is active), so exfil runs on built-in defaults and users uncomment only what
   they want to change.
 
-- Redesigned `exfil tui` into an app-style workbench: a toggleable top stats
-  bar (`t`), a left section menu, a columnar **data grid** (ratatui `Table`),
-  and a bottom bar that doubles as the `:`/`/` input — all on a cyan-accent
-  theme. On a finding, `Enter` opens it in `$EDITOR` at its line, `v` shows the
-  source in-TUI with findings marked in the gutter, and `n` opens the graph
-  navigator, now rendered as cascading **Miller columns** with a breadcrumb
-  path. `c` edits any row in place — set severity (a bare severity word works),
-  add metadata, or change any field — for findings and browsed records alike.
-- Grouped the CLI into nested subcommands: the scanners live under `scan`
-  (`scan files [path]`, `scan tcp`, `scan port`, `scan web`, `scan processes`;
-  bare `scan` still scans the current directory), remote scanning is a flag
-  (`scan files --remote [user@]host:/path`), the reachability checks under
-  `check` (`check dns`, `check whois`), and store maintenance under `store`
-  (`store export`, `store gc`, `store clean`). The `-r`/`--recursive`
-  cross-system traversal flag is reserved for a future release.
+- Grouped the CLI into nested subcommands: the reachability checks live under
+  `check` (`check dns`, `check whois`) and store maintenance under `store`
+  (`store export`, `store gc`, `store clean`).
+
+- Unified all scan targets onto a single `exfil scan [target]` command
+  (previously `scan files`/`tcp`/`port`/`web`/`processes` subcommands): the
+  shape of `target` picks the scanner — a local path or nothing (current
+  directory), the literal `processes`, comma-separated `host:port` banner
+  targets, a host/CIDR swept with `--ports`, or an `http(s)://` URL (`--driver`
+  for a WebDriver-rendered crawl). `-a`/`-p` label a scan active (it reached a
+  remote system) or passive (local only) in its summary, inferred from the
+  target's shape when neither is given.
 
 ### Added
+
+- Per-plugin config schemas and overrides: a plugin can publish a typed,
+  validated `PluginSchema` (`exfil_config::PluginSchema`/`FieldSchema`) beyond
+  its `[plugins.<name>]` config-file table. `exfil plugin config <plugin>`
+  interactively walks every setting on a plugin — a select menu for fixed
+  choices, a validated text prompt for numbers — pre-filled with each
+  setting's current effective value. Overrides are stored in the
+  catalog database (a new `plugin_setting` table), so they persist
+  independently of the config file and survive `store clean`; a setting
+  resolves in order: catalog override → config file → schema default. First
+  concrete setting: the `scan` plugin's `top-ports` (1-2000, default 100) —
+  how many ports `--ports common` sweeps, taken from a new ranked list of
+  common TCP ports by real-world frequency (`crates/exfil-remote/top-ports.txt`,
+  derived from nmap's `nmap-services`; note that file carries the Nmap Public
+  Source License, not this project's MIT license — see its header).
 
 - SARIF 2.1.0 report format (`analyze -f sarif`): findings become SARIF
   `results` (severity → `error`/`warning`/`note`), the distinct rules that fired

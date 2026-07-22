@@ -399,7 +399,7 @@ together and lets `gc` later keep "the latest scan and everything it reaches."
 The engine **never prints**. It reports through an optional channel of
 `ScanEvent`s ([`lib.rs:92`](../../crates/exfil-engine/src/lib.rs#L92)) and lets
 the caller decide how to render — a plain line printer, a
-[ratatui gauge](./cli-tui.md#progress), or nothing at all:
+[ratatui gauge](./cli.md#2-the-progress-gauge-progressrs), or nothing at all:
 
 ```mermaid
 flowchart LR
@@ -410,7 +410,7 @@ flowchart LR
     end
     ENGINE -->|mpsc| RENDER
     subgraph RENDER["caller (consumer)"]
-        BAR["progress gauge · match lines · TUI · /dev/null"]
+        BAR["progress gauge · match lines · /dev/null"]
     end
 ```
 
@@ -423,8 +423,9 @@ and test paths run silently.
 
 ## 10. Remote scans: `scan_remote`
 
-Scanning another host over SSH reuses *everything* above except the walk. The
-engine defines a `RemoteFs` trait ([`lib.rs:264`](../../crates/exfil-engine/src/lib.rs#L264)):
+Scanning a non-local source (processes, TCP banners, a crawled site) reuses
+*everything* above except the walk. The engine defines a `RemoteFs` trait
+([`lib.rs:273`](../../crates/exfil-engine/src/lib.rs#L273)):
 
 ```rust
 #[async_trait]
@@ -435,20 +436,20 @@ pub trait RemoteFs: Send + Sync {
 }
 ```
 
-`scan_remote` ([`lib.rs:280`](../../crates/exfil-engine/src/lib.rs#L280)) lists
+`scan_remote` ([`lib.rs:288`](../../crates/exfil-engine/src/lib.rs#L288)) lists
 files, reads each one's bytes, and runs the **exact same** `run_pipeline` +
-`expand_into` + persistence. The scanners never know the bytes came over a
-network:
+`expand_into` + persistence. The scanners never know the bytes came from
+somewhere other than a local disk:
 
 ```mermaid
 flowchart TD
     RF["dyn RemoteFs"] -->|list root| PATHS["remote file paths"]
     PATHS --> LOOP["for each path"]
     LOOP -->|"read → bytes"| PIPE["run_pipeline (same DAG)"]
-    PIPE --> PERSIST["persist, tagged host = prod-web-1"]
+    PIPE --> PERSIST["persist, tagged host = the source"]
 
     subgraph IMPLS["RemoteFs implementations"]
-        SSH["SshFs — russh/russh-sftp (real)"]
+        REAL["ProcessFs | TcpFs | WebFs | WebDriverFs (real, exfil-remote)"]
         MEM["MemoryFs — in-memory (tests)"]
     end
     IMPLS -.implements.-> RF
@@ -456,16 +457,17 @@ flowchart TD
 
 Differences from a local scan, by design:
 
-- **Serial, not parallel** — one host, read over one SSH session.
-- **No incremental fast-path** — every remote file is read (no local stat cache
-  to trust).
-- **Files are tagged with the remote host** (`abs = "{host}:{path}"`), so findings
-  say where they came from.
+- **Serial, not parallel** — one source, read sequentially.
+- **No incremental fast-path** — every item is read (no local stat cache to
+  trust).
+- **Files are tagged with the source's host** (`abs = "{host}:{path}"`), so
+  findings say where they came from.
 
-The real implementation is [`SshFs`](./integrations.md#remote) in `exfil-remote`
-(pure-Rust `russh`, no C libssh). Tests use an in-memory `MemoryFs`
-([`lib.rs:648`](../../crates/exfil-engine/src/lib.rs#L648)) so remote logic is
-verified without a network — the trait is the seam that makes that possible.
+The real implementations are [`ProcessFs`/`TcpFs`/`WebFs`/`WebDriverFs`](./integrations.md#remote)
+in `exfil-remote`. Tests use an in-memory `MemoryFs`
+([`lib.rs:667`](../../crates/exfil-engine/src/lib.rs#L667)) so this logic is
+verified without touching a network — the trait is the seam that makes that
+possible.
 
 ---
 
@@ -518,4 +520,4 @@ flowchart TD
   and the other component you asked about in depth.
 - The `upsert_file / edges / commit_scan` writes are the
   [graph store](./store.md).
-- The progress channel feeds the [CLI/TUI progress bar](./cli-tui.md#progress).
+- The progress channel feeds the [CLI progress bar](./cli.md#2-the-progress-gauge-progressrs).

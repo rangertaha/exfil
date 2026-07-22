@@ -385,7 +385,8 @@ sequenceDiagram
 The engine's `ast_scanner_flags_dangerous_calls_and_stores_ast` test
 ([`engine/src/lib.rs:799`](../../crates/exfil-engine/src/lib.rs#L799)) drives
 exactly this and additionally asserts the AST was persisted and linked to the file
-with a `has_ast` edge you can then navigate in the [TUI](./cli-tui.md).
+with a `has_ast` edge you can then traverse via the store's
+[`neighbors`](./store.md#5-traversal-neighbors) method.
 
 ---
 

@@ -17,7 +17,6 @@ exfil-source = { workspace = true }
 exfil-remote = { workspace = true }
 exfil-task = { workspace = true }
 exfil-engine = { workspace = true }
-exfil-view = { workspace = true }
 exfil-mcp = { workspace = true }
 exfil-llm = { workspace = true }
 exfil-script = { workspace = true }
@@ -29,8 +28,8 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 async-graphql = "7"
 ratatui = "0.30"
-crossterm = "0.28"
 ciborium = "0.2"
+inquire = "0.7"
 
 [dev-dependencies]
 blake3 = "1"

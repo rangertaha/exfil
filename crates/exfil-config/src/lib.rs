@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+mod schema;
+pub use schema::{FieldKind, FieldSchema, PluginSchema};
+
 /// The embedded default configuration, written on first run.
 pub const DEFAULT_CONFIG: &str = include_str!("../config.toml");
 
@@ -39,9 +42,6 @@ pub struct Config {
     /// Datasets/model to (re)download on `exfil update`.
     #[serde(default)]
     pub update: Vec<Update>,
-    /// Optional `[keymap]` tables (e.g. `[keymap.nav]`) that remap TUI keys.
-    #[serde(default)]
-    pub keymap: Option<toml::Value>,
     /// Optional `[database]` connection settings (embedded by default).
     #[serde(default)]
     pub database: Option<Database>,
@@ -54,7 +54,7 @@ pub struct Config {
 /// engine: embedded on-disk (`surrealkv://<path>`), in-memory (`mem://`), or a
 /// remote server / cluster (`ws://`, `wss://`, `http://`, `https://`). An empty
 /// endpoint keeps the built-in embedded default (findings under `--store`,
-/// catalog in the config dir). `username`/`password` sign in to a remote server.
+/// catalog in the data dir). `username`/`password` sign in to a remote server.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Database {
     /// Connection endpoint; empty for the embedded default.
@@ -83,22 +83,78 @@ fn default_store() -> String {
     ".exfil".to_string()
 }
 
-/// The default config path in the user config directory
-/// (e.g. `~/.config/exfil/config.toml`).
+/// True when exfil should use system-wide paths instead of the per-user
+/// dirs: root (uid 0) on Linux, or an elevated/Administrator process on
+/// Windows. Any other platform (e.g. macOS) always keeps per-user dirs, even
+/// as root, since it has no equivalent system convention for this.
+fn use_system_dirs() -> bool {
+    cfg!(any(target_os = "linux", windows)) && is_root::is_root()
+}
+
+/// The system-wide config directory: `/etc` on Linux, `%ProgramData%` on
+/// Windows (falling back to `C:\ProgramData` if the env var is unset).
+fn system_config_dir() -> PathBuf {
+    if cfg!(windows) {
+        std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+    } else {
+        PathBuf::from("/etc")
+    }
+}
+
+/// The system-wide data directory: `/var/lib` on Linux, or the same
+/// `%ProgramData%` used for config on Windows (which has no config/data
+/// split analogous to Linux's `/etc` vs `/var/lib`).
+fn system_data_dir() -> PathBuf {
+    if cfg!(windows) {
+        system_config_dir()
+    } else {
+        PathBuf::from("/var/lib")
+    }
+}
+
+/// The default config path: the user config directory (e.g.
+/// `~/.config/exfil/config.toml`), or `/etc/exfil/config.toml`
+/// (`%ProgramData%\exfil\config.toml` on Windows) when running with
+/// elevated privileges.
 pub fn default_path() -> Result<PathBuf> {
+    if use_system_dirs() {
+        return Ok(system_config_dir().join("exfil").join("config.toml"));
+    }
     let dir = dirs::config_dir().context("could not determine user config directory")?;
     Ok(dir.join("exfil").join("config.toml"))
 }
 
-/// The datasets/rules catalog directory. `$EXFIL_CATALOG_DIR` overrides the
-/// default location in the user config dir (e.g. `~/.config/exfil/catalog`).
-/// Survives `exfil store clean`, which only removes the local findings store.
+/// The datasets/rules catalog directory: the downloaded rules, sitting
+/// alongside their SurrealDB catalog files. `$EXFIL_CATALOG_DIR` overrides
+/// the default location in the user data dir (e.g. `~/.local/share/exfil/
+/// catalog` on Linux; same as the config dir on macOS/Windows, which don't
+/// distinguish the two), or `/var/lib/exfil/catalog`
+/// (`%ProgramData%\exfil\catalog` on Windows) when running with elevated
+/// privileges. Survives `exfil store clean`, which only removes the local
+/// findings store.
 pub fn catalog_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("EXFIL_CATALOG_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let dir = dirs::config_dir().context("could not determine user config directory")?;
+    if use_system_dirs() {
+        return Ok(system_data_dir().join("exfil").join("catalog"));
+    }
+    let dir = dirs::data_dir().context("could not determine user data directory")?;
     Ok(dir.join("exfil").join("catalog"))
+}
+
+/// The default findings-store directory used when `--store` is not given:
+/// the current directory's `.exfil`, or `/var/lib/exfil/store`
+/// (`%ProgramData%\exfil\store` on Windows) when running with elevated
+/// privileges.
+pub fn default_store_dir() -> PathBuf {
+    if use_system_dirs() {
+        system_data_dir().join("exfil").join("store")
+    } else {
+        PathBuf::from(default_store())
+    }
 }
 
 /// Load the config. With no explicit path, use the user config directory,
@@ -145,6 +201,31 @@ impl Config {
             }
             None => Ok(None),
         }
+    }
+
+    /// Read one field of a `[plugins.<name>]` table as a plain string
+    /// (stringifying a TOML string/integer/float/bool), for schema-driven
+    /// settings (see `FieldSchema`) that don't warrant their own struct.
+    /// `None` only when the plugin or field is genuinely absent — a
+    /// present-but-wrong-shape value (e.g. an array or table) still returns
+    /// `None`, since there's no sensible string for it, but a float is
+    /// stringified rather than treated as absent, so a caller validating the
+    /// result (e.g. against `FieldKind::Number`, which is integers only) sees
+    /// a clear "not a whole number" rejection instead of silently falling
+    /// back to the schema default as if nothing were configured.
+    pub fn plugin_field(&self, plugin: &str, key: &str) -> Option<String> {
+        let table = self.plugins.get(plugin)?;
+        let value = table.get(key)?;
+        if let Some(s) = value.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(i) = value.as_integer() {
+            return Some(i.to_string());
+        }
+        if let Some(f) = value.as_float() {
+            return Some(f.to_string());
+        }
+        value.as_bool().map(|b| b.to_string())
     }
 }
 
@@ -263,5 +344,26 @@ mod tests {
         assert_eq!(cfg.store, ".exfil");
         assert_eq!(cfg.path, path);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn plugin_field_stringifies_every_scalar_kind() {
+        let cfg: Config = toml::from_str(
+            "[plugins.scan]\n\
+             top-ports = 500\n\
+             ratio = 1.5\n\
+             label = \"x\"\n\
+             enabled = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.plugin_field("scan", "top-ports"), Some("500".into()));
+        // A float is stringified, not silently treated as absent — a caller
+        // validating against an integer-only field sees a clear rejection
+        // instead of the value vanishing as if unconfigured.
+        assert_eq!(cfg.plugin_field("scan", "ratio"), Some("1.5".into()));
+        assert_eq!(cfg.plugin_field("scan", "label"), Some("x".into()));
+        assert_eq!(cfg.plugin_field("scan", "enabled"), Some("true".into()));
+        assert_eq!(cfg.plugin_field("scan", "no-such-key"), None);
+        assert_eq!(cfg.plugin_field("no-such-plugin", "top-ports"), None);
     }
 }

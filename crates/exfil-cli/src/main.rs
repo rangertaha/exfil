@@ -17,10 +17,8 @@
 //!   whole error-reporting strategy of the binary.
 
 mod graphql;
-mod keymap;
 mod progress;
 mod server;
-mod tui;
 
 use std::path::PathBuf;
 
@@ -32,13 +30,12 @@ use clap_complete::Shell;
 /// can see the common paths (scan → search → triage) at a glance.
 const EXAMPLES: &str = "\
 Examples:
-  exfil scan                       Scan the current directory
-  exfil scan files ~/project       Scan a specific path
-  exfil scan files --remote deploy@web1:/srv   Scan a remote host over SSH
-  exfil scan tcp example.com:22    Grab & scan a service banner
+  exfil scan                       Scan the current directory (passive)
+  exfil scan ~/project             Scan a specific path
+  exfil scan processes             Scan local running processes (passive)
+  exfil scan example.com:22        Grab & scan a service banner (active)
   exfil search severity=critical   Show only the critical findings
   exfil analyze --format markdown  Render a report of the findings graph
-  exfil tui                        Open the interactive workbench
 
 Docs: https://rangertaha.github.io/exfil/";
 
@@ -124,9 +121,10 @@ fn hint(msg: &str) {
     arg_required_else_help = true,
 )]
 struct Cli {
-    /// Path to the local findings store.
-    #[arg(short, long, default_value = ".exfil", global = true)]
-    store: String,
+    /// Path to the local findings store (default: `.exfil`, or the system
+    /// data dir when running with elevated privileges — see `exfil config`).
+    #[arg(short, long, global = true)]
+    store: Option<String>,
 
     /// Path to a TOML config (default: user config dir, auto-created).
     #[arg(short, long, global = true)]
@@ -169,11 +167,47 @@ enum Command {
     /// Show the rules a scan would apply, optionally filtered by a substring
     /// of the name, description, CWE, or severity.
     Rules { filter: Option<String> },
-    /// Scan a target for secrets and security issues. With no subcommand,
-    /// scans the current directory; `scan files <path>` scans a specific tree.
+    /// Scan a target for secrets and security issues. With no target, scans
+    /// the current directory. Passive targets stay on the local system: a
+    /// path (default), or the literal `processes`. Active targets reach out
+    /// over the network (authorized testing only): one or more
+    /// comma-separated `host:port` banner targets, a host/CIDR swept across
+    /// `--ports`, or an `http(s)://` URL to crawl.
     Scan {
-        #[command(subcommand)]
-        target: Option<ScanCmd>,
+        /// Target to scan: a local path, `processes`, `host:port`
+        /// (comma-separated for several), a host/CIDR (with `--ports`), or
+        /// an `http(s)://` URL. Default: the current directory.
+        target: Option<String>,
+        /// Sweep `target` (a host or IPv4 CIDR, e.g. `10.0.0.0/28`) across
+        /// these ports instead of treating it as a path: list/ranges
+        /// (`22,80,8000-8010`) or `common`.
+        #[arg(long, value_name = "PORTS", requires = "target")]
+        ports: Option<String>,
+        /// Maximum pages to fetch when `target` is a URL.
+        #[arg(long, default_value_t = 64)]
+        max_pages: usize,
+        /// Maximum link depth from the seed when `target` is a URL.
+        #[arg(long, default_value_t = 2)]
+        max_depth: usize,
+        /// Render pages through a WebDriver server (e.g.
+        /// `http://localhost:4444`) when `target` is a URL, to crawl
+        /// JavaScript-heavy, dynamic sites.
+        #[arg(long, value_name = "URL")]
+        driver: Option<String>,
+        /// Tag this as an active scan (it reached a remote system) in the
+        /// summary. Inferred from the target when neither this nor
+        /// `--passive` is given.
+        #[arg(short = 'a', long, conflicts_with = "passive")]
+        active: bool,
+        /// Tag this as a passive scan (local system only) in the summary.
+        /// Inferred from the target when neither this nor `--active` is
+        /// given.
+        #[arg(short = 'p', long, conflicts_with = "active")]
+        passive: bool,
+        /// Exit non-zero if any finding is at or above this severity
+        /// (info|low|medium|high|critical). Useful as a CI gate.
+        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
+        fail_on: Option<exfil_core::Severity>,
     },
     /// Check observed indicators against live network sources (online;
     /// authorized use). `check dns` resolves domains; `check whois` ages them.
@@ -238,8 +272,6 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
     },
-    /// Open the app-style TUI workbench: scan, browse, edit, and query the graph live.
-    Tui,
     /// Print a stored record by id.
     ///
     /// The id is `table:key`, e.g. `file:<blake3-hash>` or `finding:<id>`, as
@@ -254,64 +286,23 @@ enum Command {
         /// `exfil completions bash > /etc/bash_completion.d/exfil`.
         shell: Shell,
     },
+    /// Manage per-plugin settings (overrides live in the catalog, taking
+    /// precedence over `[plugins.<name>]` in the config file).
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
+    },
 }
 
-/// Scan targets. `files` scans a local tree (or, with `--remote`, a host over
-/// SSH/SFTP); the others reach out over the network (authorized testing only).
+/// Plugin setting actions.
 #[derive(Subcommand)]
-enum ScanCmd {
-    /// Scan a local directory tree — or a remote host with `--remote`.
-    Files {
-        /// Local path to scan (default: current directory). Ignored with `--remote`.
-        path: Option<String>,
-        /// Instead scan a remote host over SSH/SFTP: `[user@]host:/path`.
-        /// (`-r`/`--recursive` cross-system traversal is reserved for a future release.)
-        #[arg(long, value_name = "TARGET")]
-        remote: Option<String>,
-        /// SSH port for `--remote`.
-        #[arg(short, long, default_value_t = 22)]
-        port: u16,
-        /// Private key for `--remote` (default: password auth via $EXFIL_SSH_PASSWORD).
-        #[arg(short, long)]
-        key: Option<PathBuf>,
-        /// Exit non-zero if any finding is at or above this severity
-        /// (info|low|medium|high|critical). Useful as a CI gate.
-        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
-        fail_on: Option<exfil_core::Severity>,
-    },
-    /// Scan the local host's running processes (command lines, exe paths).
-    Processes,
-    /// Grab and scan TCP service banners from `host:port` targets (authorized
-    /// testing only).
-    Tcp {
-        /// One or more `host:port` targets, e.g. `example.com:22`.
-        #[arg(required = true)]
-        targets: Vec<String>,
-    },
-    /// Sweep an IP/CIDR across ports, grab banners of open ones, and scan them
-    /// (authorized testing only).
-    Port {
-        /// Host or IPv4 CIDR, e.g. `10.0.0.0/28`.
-        hosts: String,
-        /// Ports: list/ranges (`22,80,8000-8010`) or `common`.
-        #[arg(short, long, default_value = "common")]
-        ports: String,
-    },
-    /// Crawl a website from a seed URL and scan the pages (authorized testing
-    /// only).
-    Web {
-        /// Seed URL, e.g. `https://example.com`.
-        url: String,
-        /// Maximum pages to fetch.
-        #[arg(long, default_value_t = 64)]
-        max_pages: usize,
-        /// Maximum link depth from the seed.
-        #[arg(long, default_value_t = 2)]
-        max_depth: usize,
-        /// Render pages through a WebDriver server (e.g. `http://localhost:4444`)
-        /// to crawl JavaScript-heavy, dynamic sites.
-        #[arg(long, value_name = "URL")]
-        driver: Option<String>,
+enum PluginCmd {
+    /// Interactively walk every setting on a plugin — a select menu for
+    /// fixed choices, a validated prompt for free-form input — pre-filled
+    /// with each setting's current effective value.
+    Config {
+        /// Plugin name, e.g. `scan`.
+        plugin: String,
     },
 }
 
@@ -387,7 +378,10 @@ async fn main() -> Result<()> {
         ColorWhen::Always => progress::ColorChoice::Always,
         ColorWhen::Never => progress::ColorChoice::Never,
     });
-    let store_dir = PathBuf::from(&cli.store);
+    let store_dir = match &cli.store {
+        Some(s) => PathBuf::from(s),
+        None => exfil_config::default_store_dir(),
+    };
     let cfg = cli.config.as_deref();
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,
@@ -395,48 +389,28 @@ async fn main() -> Result<()> {
         Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(cfg, action).await?,
         Command::Feeds { action } => cmd_feeds(cfg, action).await?,
-        Command::Scan { target } => {
-            match target.unwrap_or(ScanCmd::Files {
-                path: None,
-                remote: None,
-                port: 22,
-                key: None,
-                fail_on: None,
-            }) {
-                ScanCmd::Files {
-                    path,
-                    remote,
-                    port,
-                    key,
-                    fail_on,
-                } => match remote {
-                    Some(target) => cmd_scan_remote(&store_dir, cfg, &target, port, key).await?,
-                    None => cmd_scan(&store_dir, cfg, path, fail_on).await?,
-                },
-                ScanCmd::Processes => cmd_processes(&store_dir, cfg).await?,
-                ScanCmd::Tcp { targets } => cmd_scan_tcp(&store_dir, cfg, targets).await?,
-                ScanCmd::Port { hosts, ports } => {
-                    let targets = exfil_remote::netscan::expand_targets(&hosts, &ports)?;
-                    eprintln!("sweeping {} host:port targets…", targets.len());
-                    cmd_scan_tcp(&store_dir, cfg, targets).await?
-                }
-                ScanCmd::Web {
-                    url,
-                    max_pages,
-                    max_depth,
-                    driver,
-                } => {
-                    cmd_scan_web(
-                        &store_dir,
-                        cfg,
-                        &url,
-                        max_pages,
-                        max_depth,
-                        driver.as_deref(),
-                    )
-                    .await?
-                }
-            }
+        Command::Scan {
+            target,
+            ports,
+            max_pages,
+            max_depth,
+            driver,
+            active,
+            passive,
+            fail_on,
+        } => {
+            cmd_scan(
+                &store_dir,
+                cfg,
+                target,
+                ports,
+                max_pages,
+                max_depth,
+                driver.as_deref(),
+                explicit_scan_mode(active, passive),
+                fail_on,
+            )
+            .await?
         }
         Command::Check { action } => match action {
             CheckCmd::Dns => cmd_check_dns(&store_dir, cfg).await?,
@@ -463,13 +437,9 @@ async fn main() -> Result<()> {
         Command::Server { addr } => cmd_server(&store_dir, cfg, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
-        Command::Tui => {
-            // The TUI loop blocks on terminal input, so it runs on a blocking
-            // thread with a runtime handle for its database calls.
-            let keymap = load_keymap(cli.config.as_deref());
-            let handle = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || tui::run(handle, &store_dir, keymap)).await??;
-        }
+        Command::Plugin { action } => match action {
+            PluginCmd::Config { plugin } => cmd_plugin_config(cfg, &plugin).await?,
+        },
     }
     Ok(())
 }
@@ -496,44 +466,223 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
-/// Walk the target tree, scan it with the registered scanners, and persist
-/// files + findings into the local store. Progress renders live: a ratatui
-/// gauge on a terminal, plain match lines when piped.
+/// Whether a scan reached out to a remote system (active) or stayed on the
+/// local one (passive). Shown with the scan summary; `-a`/`-p` override the
+/// default inferred from the target's shape.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    Active,
+    Passive,
+}
+
+impl std::fmt::Display for ScanMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ScanMode::Active => "active",
+            ScanMode::Passive => "passive",
+        })
+    }
+}
+
+/// Resolve the `-a`/`-p` flags (mutually exclusive per clap) to an explicit
+/// mode override, or `None` to infer one from the target.
+fn explicit_scan_mode(active: bool, passive: bool) -> Option<ScanMode> {
+    if active {
+        Some(ScanMode::Active)
+    } else if passive {
+        Some(ScanMode::Passive)
+    } else {
+        None
+    }
+}
+
+/// Parse `spec` as one or more comma-separated `host:port` banner-grab
+/// targets. `None` if any piece lacks a trailing `:<port>`, so callers fall
+/// back to treating `spec` as a local path.
+fn parse_tcp_targets(spec: &str) -> Option<Vec<String>> {
+    let pieces: Vec<&str> = spec.split(',').collect();
+    let all_host_port = pieces.iter().all(|p| {
+        p.rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+    });
+    all_host_port.then(|| pieces.into_iter().map(String::from).collect())
+}
+
+/// Every plugin's published config schema (see `exfil_config::PluginSchema`),
+/// gathered from the plugin crates that each define their own — the same
+/// "define it, register it" seam as `Source`/`Reporter`/`RemoteFs`.
+const PLUGIN_SCHEMAS: &[exfil_config::PluginSchema] = &[exfil_remote::netscan::PLUGIN_SCHEMA];
+
+/// Find a plugin's schema and one of its fields by name.
+fn find_plugin_field(
+    plugin: &str,
+    key: &str,
+) -> Option<(
+    &'static exfil_config::PluginSchema,
+    &'static exfil_config::FieldSchema,
+)> {
+    let schema = PLUGIN_SCHEMAS.iter().find(|p| p.name == plugin)?;
+    let field = schema.fields.iter().find(|f| f.key == key)?;
+    Some((schema, field))
+}
+
+/// Resolve a setting's effective value: a catalog override, else the config
+/// file's `[plugins.<plugin>]` table, else the field's own schema default.
+/// Best-effort — a store/config read failure, or a value that fails the
+/// field's own validation (e.g. a hand-edited config out of range), just
+/// falls through to the next layer rather than erroring, with a warning so
+/// an ignored value isn't silently mistaken for one that took effect.
+async fn resolve_plugin_setting(
+    config: Option<&std::path::Path>,
+    plugin: &str,
+    field: &exfil_config::FieldSchema,
+) -> String {
+    if let Ok(catalog) = open_catalog(config).await {
+        if let Ok(Some(v)) = catalog.get_plugin_setting(plugin, field.key).await {
+            match field.validate(&v) {
+                Ok(normalized) => return normalized,
+                Err(e) => eprintln!(
+                    "warning: stored {plugin}.{} override {v:?} is invalid ({e}); ignoring",
+                    field.key
+                ),
+            }
+        }
+    }
+    if let Ok(cfg) = exfil_config::load(config) {
+        if let Some(v) = cfg.plugin_field(plugin, field.key) {
+            match field.validate(&v) {
+                Ok(normalized) => return normalized,
+                Err(e) => eprintln!(
+                    "warning: config [plugins.{plugin}] {}={v:?} is invalid ({e}); ignoring",
+                    field.key
+                ),
+            }
+        }
+    }
+    field.default.to_string()
+}
+
+/// Interactively walk every setting on a plugin: a select menu for fixed
+/// choices (`Select`/`Bool`), a validated text prompt for a number — each
+/// pre-filled with the setting's current effective value — saving each
+/// answer as a catalog override as soon as it's confirmed.
+async fn cmd_plugin_config(config: Option<&std::path::Path>, plugin: &str) -> Result<()> {
+    let schema = PLUGIN_SCHEMAS
+        .iter()
+        .find(|p| p.name == plugin)
+        .with_context(|| format!("no such plugin {plugin:?}"))?;
+    let catalog = open_catalog(config).await?;
+    println!("Configuring {plugin:?} ({} setting(s)):\n", schema.fields.len());
+    for field in schema.fields {
+        let current = resolve_plugin_setting(config, plugin, field).await;
+        let answer = prompt_field(field, &current)?;
+        let normalized = field.validate(&answer).map_err(|e| anyhow::anyhow!(e))?;
+        catalog.set_plugin_setting(plugin, field.key, &normalized).await?;
+        println!("{plugin}.{} = {normalized}\n", field.key);
+    }
+    Ok(())
+}
+
+/// Prompt for one field's new value: a select menu for `Select`/`Bool`
+/// (cursor starting on the current value), or a validated text input for
+/// `Number`, defaulting to the current value.
+fn prompt_field(field: &'static exfil_config::FieldSchema, current: &str) -> Result<String> {
+    use inquire::validator::Validation;
+    use inquire::{Select, Text};
+
+    let message = format!("{} — {}", field.key, field.description);
+    match field.kind {
+        exfil_config::FieldKind::Select(options) => {
+            let idx = options.iter().position(|o| *o == current).unwrap_or(0);
+            let choice = Select::new(&message, options.to_vec())
+                .with_starting_cursor(idx)
+                .prompt()?;
+            Ok(choice.to_string())
+        }
+        exfil_config::FieldKind::Bool => {
+            let options = vec!["true", "false"];
+            let idx = usize::from(current != "true");
+            let choice = Select::new(&message, options)
+                .with_starting_cursor(idx)
+                .prompt()?;
+            Ok(choice.to_string())
+        }
+        exfil_config::FieldKind::Number { .. } => Text::new(&message)
+            .with_default(current)
+            .with_validator(move |input: &str| match field.validate(input) {
+                Ok(_) => Ok(Validation::Valid),
+                Err(e) => Ok(Validation::Invalid(e.into())),
+            })
+            .prompt()
+            .map_err(Into::into),
+    }
+}
+
+/// Dispatch a scan by the shape of `target`: an `http(s)://` URL crawls a
+/// site; the literal `processes` scans local running processes; `--ports`
+/// sweeps `target` as a host/CIDR; comma-separated `host:port` grabs banners;
+/// anything else (or no target) scans a local directory tree.
+#[allow(clippy::too_many_arguments)]
 async fn cmd_scan(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
-    path: Option<String>,
+    target: Option<String>,
+    ports: Option<String>,
+    max_pages: usize,
+    max_depth: usize,
+    driver: Option<&str>,
+    mode: Option<ScanMode>,
     fail_on: Option<exfil_core::Severity>,
 ) -> Result<()> {
-    let target = PathBuf::from(path.unwrap_or_else(|| ".".to_string()));
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan(&target, &pipeline, &store, Some(store_dir), Some(tx)).await;
-    // The engine dropped its sender, so the renderer is finishing; wait for it
-    // before printing the summary under the (now final) progress bar. Joining
-    // yields the per-severity counts of the matches it just streamed.
-    let counts = renderer.join().unwrap_or_default();
-    let summary = result?;
-    println!(
-        "scanned {} files ({} unchanged): {} new matches, {} unreadable",
-        summary.files, summary.unchanged, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    if summary.matches > 0 {
-        hint("\nNext: `exfil tui` to triage · `exfil analyze` for a report · `exfil search severity=critical` to filter");
-    } else if summary.files > 0 {
-        hint(
-            "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
-        );
+    if let Some(spec) = &target {
+        if let Some(ports) = &ports {
+            let top_n = match find_plugin_field("scan", "top-ports") {
+                Some((_, field)) => resolve_plugin_setting(config, "scan", field)
+                    .await
+                    .parse()
+                    .unwrap_or(100),
+                None => 100,
+            };
+            let targets = exfil_remote::netscan::expand_targets(spec, ports, top_n)?;
+            eprintln!("sweeping {} host:port targets…", targets.len());
+            cmd_scan_tcp(store_dir, config, targets, mode.unwrap_or(ScanMode::Active)).await?
+        } else if let Some(url) = spec
+            .strip_prefix("https://")
+            .map(|_| spec.as_str())
+            .or_else(|| spec.strip_prefix("http://").map(|_| spec.as_str()))
+        {
+            cmd_scan_web(
+                store_dir,
+                config,
+                url,
+                max_pages,
+                max_depth,
+                driver,
+                mode.unwrap_or(ScanMode::Active),
+            )
+            .await?
+        } else if spec == "processes" {
+            cmd_processes(store_dir, config, mode.unwrap_or(ScanMode::Passive)).await?
+        } else if let Some(targets) = parse_tcp_targets(spec) {
+            cmd_scan_tcp(store_dir, config, targets, mode.unwrap_or(ScanMode::Active)).await?
+        } else {
+            cmd_scan_files(
+                store_dir,
+                config,
+                Some(spec.clone()),
+                mode.unwrap_or(ScanMode::Passive),
+            )
+            .await?
+        }
+    } else {
+        cmd_scan_files(store_dir, config, None, mode.unwrap_or(ScanMode::Passive)).await?
     }
 
     // CI gate: exit non-zero when the store holds a finding at or above the
     // threshold. Checked against the whole store, so a fresh scan gates on its
     // own results and an incremental scan gates on the cumulative state.
     if let Some(threshold) = fail_on {
+        let store = open_findings(store_dir, config).await?;
         let findings = store.search_findings("").await?;
         let breaching = findings
             .iter()
@@ -549,49 +698,53 @@ async fn cmd_scan(
     Ok(())
 }
 
-/// Scan a remote host over SSH/SFTP: connect, walk its files, and run the same
-/// pipeline as a local scan, tagging findings with the remote host.
-async fn cmd_scan_remote(
+/// Walk a local directory tree, scan it with the registered scanners, and
+/// persist files + findings into the local store. Progress renders live: a
+/// ratatui gauge on a terminal, plain match lines when piped.
+async fn cmd_scan_files(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
-    target: &str,
-    port: u16,
-    key: Option<PathBuf>,
+    path: Option<String>,
+    mode: ScanMode,
 ) -> Result<()> {
-    let target = exfil_remote::RemoteTarget::parse(target, port)?;
-    let auth = match key {
-        Some(path) => exfil_remote::SshAuth::Key(path, None),
-        None => exfil_remote::SshAuth::Password(
-            std::env::var("EXFIL_SSH_PASSWORD")
-                .context("no --key given and $EXFIL_SSH_PASSWORD is not set for password auth")?,
-        ),
-    };
-
+    let target = PathBuf::from(match path {
+        Some(p) if !p.is_empty() => p,
+        _ => ".".to_string(),
+    });
     let pipeline = build_pipeline(config).await?;
     let store = open_findings(store_dir, config).await?;
-    let fs = exfil_remote::SshFs::connect(&target, &auth)
-        .await
-        .with_context(|| format!("connect to {}@{}", target.user, target.host))?;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(&fs, &target.path, &pipeline, &store, Some(tx)).await;
+    let result = exfil_engine::scan(&target, &pipeline, &store, Some(store_dir), Some(tx)).await;
+    // The engine dropped its sender, so the renderer is finishing; wait for it
+    // before printing the summary under the (now final) progress bar. Joining
+    // yields the per-severity counts of the matches it just streamed.
     let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
-        "scanned {}:{} — {} files: {} matches, {} unreadable",
-        target.host, target.path, summary.files, summary.matches, summary.errors
+        "scanned {} files ({} unchanged): {} new matches, {} unreadable ({mode})",
+        summary.files, summary.unchanged, summary.matches, summary.errors
     );
     print_tally(&counts);
+    if summary.matches > 0 {
+        hint("\nNext: `exfil analyze` for a report · `exfil search severity=critical` to filter");
+    } else if summary.files > 0 {
+        hint(
+            "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
+        );
+    }
     Ok(())
 }
 
-/// Scan the local host's running processes: each process's name, exe path, and
-/// command line is scanned by the full pipeline (secrets on a command line, PII,
-/// bad domains/IPs in arguments). Reuses `scan_remote` with a process source.
+/// Scan the local host's running processes: each process's name, exe path,
+/// and command line is scanned by the full pipeline (secrets on a command
+/// line, PII, bad domains/IPs in arguments). Reuses `scan_remote` with a
+/// process source.
 async fn cmd_processes(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
+    mode: ScanMode,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
     let store = open_findings(store_dir, config).await?;
@@ -603,7 +756,7 @@ async fn cmd_processes(
     let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
-        "scanned {} processes: {} matches, {} unreadable",
+        "scanned {} processes: {} matches, {} unreadable ({mode})",
         summary.files, summary.matches, summary.errors
     );
     print_tally(&counts);
@@ -616,6 +769,7 @@ async fn cmd_scan_tcp(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
     targets: Vec<String>,
+    mode: ScanMode,
 ) -> Result<()> {
     let pipeline = build_pipeline(config).await?;
     let store = open_findings(store_dir, config).await?;
@@ -627,11 +781,67 @@ async fn cmd_scan_tcp(
     let counts = renderer.join().unwrap_or_default();
     let summary = result?;
     println!(
-        "grabbed {} banner(s): {} matches, {} unreachable",
+        "grabbed {} banner(s): {} matches, {} unreachable ({mode})",
         summary.files, summary.matches, summary.errors
     );
     print_tally(&counts);
     Ok(())
+}
+
+/// Crawl a website and scan the fetched pages with the full pipeline (leaked
+/// secrets/keys in HTML/JS, PII, bad indicators).
+#[allow(clippy::too_many_arguments)]
+async fn cmd_scan_web(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    url: &str,
+    max_pages: usize,
+    max_depth: usize,
+    driver: Option<&str>,
+    mode: ScanMode,
+) -> Result<()> {
+    let pipeline = build_pipeline(config).await?;
+    let store = open_findings(store_dir, config).await?;
+
+    // A WebDriver server renders JavaScript (dynamic sites); otherwise a plain
+    // HTTP crawl. Both present the pages as a `RemoteFs` to the same scan.
+    let (counts, summary) = match driver {
+        Some(driver) => {
+            eprintln!("rendering {url} via WebDriver {driver}…");
+            let fs = exfil_remote::webdriver::WebDriverFs::crawl(driver, url, max_pages, max_depth)
+                .await
+                .with_context(|| format!("render {url} via WebDriver"))?;
+            run_web_scan(&fs, &pipeline, &store).await
+        }
+        None => {
+            eprintln!("crawling {url}…");
+            let fs = exfil_remote::WebFs::crawl(url, max_pages, max_depth)
+                .await
+                .with_context(|| format!("crawl {url}"))?;
+            run_web_scan(&fs, &pipeline, &store).await
+        }
+    };
+    let summary = summary?;
+    println!(
+        "crawled {} page(s): {} matches, {} unreadable ({mode})",
+        summary.files, summary.matches, summary.errors
+    );
+    print_tally(&counts);
+    Ok(())
+}
+
+/// Scan an already-crawled/rendered site (a `RemoteFs`) through the pipeline,
+/// draining progress. Returns the severity counts and the scan result.
+async fn run_web_scan(
+    fs: &impl exfil_engine::RemoteFs,
+    pipeline: &exfil_task::Pipeline,
+    store: &exfil_store::Store,
+) -> (progress::SevCounts, Result<exfil_engine::Summary>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = exfil_engine::scan_remote(fs, "/", pipeline, store, Some(tx)).await;
+    let counts = renderer.join().unwrap_or_default();
+    (counts, result)
 }
 
 /// WHOIS-check every observed domain and flag newly-registered ones (a common
@@ -723,60 +933,6 @@ async fn cmd_check_dns(
     Ok(())
 }
 
-/// Crawl a website and scan the fetched pages with the full pipeline (leaked
-/// secrets/keys in HTML/JS, PII, bad indicators).
-async fn cmd_scan_web(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    url: &str,
-    max_pages: usize,
-    max_depth: usize,
-    driver: Option<&str>,
-) -> Result<()> {
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
-
-    // A WebDriver server renders JavaScript (dynamic sites); otherwise a plain
-    // HTTP crawl. Both present the pages as a `RemoteFs` to the same scan.
-    let (counts, summary) = match driver {
-        Some(driver) => {
-            eprintln!("rendering {url} via WebDriver {driver}…");
-            let fs = exfil_remote::webdriver::WebDriverFs::crawl(driver, url, max_pages, max_depth)
-                .await
-                .with_context(|| format!("render {url} via WebDriver"))?;
-            run_web_scan(&fs, &pipeline, &store).await
-        }
-        None => {
-            eprintln!("crawling {url}…");
-            let fs = exfil_remote::WebFs::crawl(url, max_pages, max_depth)
-                .await
-                .with_context(|| format!("crawl {url}"))?;
-            run_web_scan(&fs, &pipeline, &store).await
-        }
-    };
-    let summary = summary?;
-    println!(
-        "crawled {} page(s): {} matches, {} unreadable",
-        summary.files, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    Ok(())
-}
-
-/// Scan an already-crawled/rendered site (a `RemoteFs`) through the pipeline,
-/// draining progress. Returns the severity counts and the scan result.
-async fn run_web_scan(
-    fs: &impl exfil_engine::RemoteFs,
-    pipeline: &exfil_task::Pipeline,
-    store: &exfil_store::Store,
-) -> (progress::SevCounts, Result<exfil_engine::Summary>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(fs, "/", pipeline, store, Some(tx)).await;
-    let counts = renderer.join().unwrap_or_default();
-    (counts, result)
-}
-
 /// Build the scan pipeline: built-in rules plus any catalog datasets, plus
 /// ClamAV signatures from files listed under `[plugins.clamav]` in config.
 /// Non-compiling external regex patterns are reported and skipped.
@@ -809,17 +965,6 @@ async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfil_task::
         );
     }
     Ok(pipeline)
-}
-
-/// Build the navigator keymap from config: vim defaults overlaid with any
-/// `[keymap.nav]` remappings. A missing/unreadable config yields the defaults.
-fn load_keymap(config: Option<&std::path::Path>) -> keymap::Keymap {
-    let nav = exfil_config::load(config)
-        .ok()
-        .and_then(|c| c.keymap)
-        .and_then(|k| k.get("nav").cloned())
-        .and_then(|v| v.as_table().cloned());
-    keymap::Keymap::from_config(nav.as_ref())
 }
 
 /// Read and concatenate the files listed in a plugin's string-array field
@@ -1398,7 +1543,7 @@ fn confirm(question: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::feed_rule_kind;
+    use super::{feed_rule_kind, find_plugin_field, parse_tcp_targets, resolve_plugin_setting};
 
     #[test]
     fn feed_rule_kind_classifies_by_scheme() {
@@ -1412,5 +1557,45 @@ mod tests {
         // A plain regex (even one containing a colon) is not a scheme.
         assert_eq!(feed_rule_kind("AKIA[0-9A-Z]{16}"), "regex");
         assert_eq!(feed_rule_kind("https://not-a-scheme"), "regex");
+    }
+
+    #[test]
+    fn parse_tcp_targets_rejects_paths_and_windows_drive_letters() {
+        assert_eq!(
+            parse_tcp_targets("example.com:22"),
+            Some(vec!["example.com:22".to_string()])
+        );
+        assert_eq!(
+            parse_tcp_targets("a.test:22,b.test:80"),
+            Some(vec!["a.test:22".to_string(), "b.test:80".to_string()])
+        );
+        // A local path (even an absolute one) has no trailing `:<port>`.
+        assert_eq!(parse_tcp_targets("/etc/passwd"), None);
+        // A Windows drive letter looks like `host:port` but the "port" half
+        // isn't numeric, so it must not be misread as a scan target.
+        assert_eq!(parse_tcp_targets(r"C:\Users\x"), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_plugin_setting_falls_back_when_config_value_is_out_of_range() {
+        let dir = std::env::temp_dir().join(format!(
+            "exfil-cli-resolve-setting-{}",
+            std::process::id()
+        ));
+        let path = dir.join("config.toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        // mem:// isolates this from the developer's real catalog; top-ports
+        // is out of the schema's 1..=2000 range, so it must not be used as-is.
+        std::fs::write(
+            &path,
+            "[database]\nendpoint = \"mem://\"\n[plugins.scan]\ntop-ports = 99999\n",
+        )
+        .unwrap();
+
+        let (_, field) = find_plugin_field("scan", "top-ports").expect("scan.top-ports exists");
+        let resolved = resolve_plugin_setting(Some(&path), "scan", field).await;
+        assert_eq!(resolved, field.default, "out-of-range config value must fall back to default");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

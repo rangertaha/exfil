@@ -27,7 +27,6 @@ exfil-task = { path = "crates/exfil-task" }
 exfil-source = { path = "crates/exfil-source" }
 exfil-remote = { path = "crates/exfil-remote" }
 exfil-report = { path = "crates/exfil-report" }
-exfil-view = { path = "crates/exfil-view" }
 exfil-mcp = { path = "crates/exfil-mcp" }
 exfil-llm = { path = "crates/exfil-llm" }
 exfil-script = { path = "crates/exfil-script" }

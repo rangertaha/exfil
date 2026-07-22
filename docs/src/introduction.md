@@ -11,7 +11,7 @@ flowchart LR
     T["Targets<br/>code · config · deps<br/>hosts · web"] --> S["Scan<br/>walk · parse · render"]
     S --> M["Match<br/>secrets · taint · IOCs<br/>YARA · PII · supply-chain"]
     M --> G[("Findings graph<br/>SurrealDB")]
-    G --> R["Report<br/>search · TUI · reports<br/>HTTP · GraphQL · MCP"]
+    G --> R["Report<br/>search · reports<br/>HTTP · GraphQL · MCP"]
 ```
 
 ### What it scans
@@ -20,7 +20,7 @@ flowchart LR
 - **Infrastructure & config** — Terraform/HCL, Dockerfiles, Kubernetes/YAML
 - **Dependencies** — `package.json`, `requirements*.txt`, `Cargo.toml`
 - **Archives & container layers** — zip/jar/war/tar/tar.gz/gz, unpacked and scanned in place
-- **Hosts** — the local filesystem, remote hosts over SSH, and running processes
+- **Hosts** — the local filesystem and running processes
 - **Web & network** — crawled sites (incl. JavaScript-rendered pages via WebDriver) and TCP service banners
 
 ### What it finds and reports
@@ -30,7 +30,7 @@ flowchart LR
   IOCs (bad domains/IPs/hashes), and PII.
 - **Stored as a graph** — files → findings → rules in an embedded, pure-Rust
   database ([SurrealDB](https://surrealdb.com)) — or a remote cluster.
-- **Reported many ways** — query with `search`, browse the live TUI, render
+- **Reported many ways** — query with `search`, render
   `text`/`json`/`markdown`/`junit`/`sarif` reports, gate CI with `--fail-on`, or serve
   the graph over HTTP + GraphQL and to AI agents over MCP. Enriched offline with
   authoritative MITRE CWE names.
@@ -39,8 +39,8 @@ flowchart LR
 
 - **New here?** Start with [Installation](guide/installation.md) and the
   [Quick Start](guide/quick-start.md).
-- **Day-to-day use** — the [Commands](guide/commands.md) reference, the
-  [TUI](guide/tui.md), and [Configuration](guide/configuration.md).
+- **Day-to-day use** — the [Commands](guide/commands.md) reference and
+  [Configuration](guide/configuration.md).
 - **What it covers** — [What exfil Analyzes](guide/surfaces.md) and the full
   [Features](guide/features.md) list.
 - **How it's built** — the [Architecture Guide](architecture/README.md), a

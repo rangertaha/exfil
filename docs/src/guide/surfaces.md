@@ -12,9 +12,13 @@ same scanners and into the same findings graph.
 - **Infrastructure code** — Terraform/HCL, Dockerfiles, Kubernetes/YAML
   manifests, and other config formats scanned for hardcoded secrets and
   insecure directives.
-- **Operating systems** — a local filesystem tree, or a remote host over
-  SSH/SFTP (`exfil scan files --remote user@host:/path`), walked and scanned in place;
-  the local host's running processes can be scanned too.
+- **Operating systems** — a local filesystem tree walked and scanned in place;
+  the local host's running processes can be scanned too (`exfil scan
+  processes`).
+- **Network services & web pages** — TCP service banners (`exfil scan
+  host:port`), a host/CIDR port sweep (`--ports`), and crawled web pages
+  (`exfil scan https://...`, with `--driver` for JavaScript-rendered sites) all
+  flow through the same scanners as a local file.
 - **Container & package artifacts** — zip/jar/war/tar/tar.gz/gz archives (image
   layers and build outputs included) are unpacked into virtual files that flow
   through the same scanners, depth- and size-capped against bombs.

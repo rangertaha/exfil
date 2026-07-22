@@ -11,25 +11,30 @@ Run `exfil <command> --help` for a command's own flags.
 
 ## Scanning
 
-All the scanners are grouped under `exfil scan`:
+Every scanner is one command, `exfil scan [TARGET] [OPTIONS]` — the **shape of
+`TARGET`** decides what gets scanned:
 
-| Command | What it does |
+| Target shape | What it does |
 |---|---|
-| `exfil scan` | Scan the current directory (shorthand for `scan files`) |
-| `exfil scan files [path]` | Scan a directory tree for secrets and security issues (`--fail-on <severity>` to gate CI; `--remote [user@]host:/path` scans a host over SSH/SFTP instead) |
-| `exfil scan processes` | Scan the local host's running processes (command lines, exe paths) |
-| `exfil scan tcp host:port…` | Grab and scan TCP service banners *(authorized testing only)* |
-| `exfil scan port <ip/cidr>` | Sweep ports, grab banners, and scan them *(authorized testing only)* |
-| `exfil scan web <url> [--driver URL]` | Crawl a website and scan the pages; `--driver` renders JS-heavy sites via a WebDriver browser *(authorized testing only)* |
+| *(none)*, or a local path | Scan that directory tree (passive) |
+| `processes` | Scan the local host's running processes (command lines, exe paths) — passive |
+| `host:port`, or `host1:port1,host2:port2,…` | Grab and scan TCP service banners — active *(authorized testing only)* |
+| a host or IPv4 CIDR + `--ports <list\|ranges\|common>` | Sweep those ports across the host/CIDR, grab banners, and scan them — active *(authorized testing only)*. `common` sweeps the top N ports by real-world frequency (default 100 — see [Plugin settings](#plugin-settings)) |
+| an `http://` or `https://` URL | Crawl the site and scan the pages; `--max-pages`/`--max-depth` bound the crawl, `--driver <webdriver-url>` renders JS-heavy sites — active *(authorized testing only)* |
+
+`-a`/`--active` and `-p`/`--passive` label the scan's summary line explicitly
+(otherwise it's inferred from the target shape above); they're cosmetic only
+and don't change what gets scanned.
 
 ### Gating CI
 
 `--fail-on <severity>` makes `scan` exit non-zero when any stored finding is at
 or above the given level (`info|low|medium|high|critical`), so a pipeline step
-fails the build on real problems:
+fails the build on real problems — this applies to any target shape, not just
+local paths:
 
 ```sh
-exfil scan files --fail-on high  # exit 1 if any high/critical finding exists
+exfil scan --fail-on high  # exit 1 if any high/critical finding exists
 ```
 
 See [Continuous Integration](./ci.md) for a full GitHub Actions example that
@@ -64,11 +69,34 @@ also uploads a SARIF report to code scanning.
 | `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`) |
 | `exfil feeds` | Manage the URL feed catalog and pull feeds into rule datasets (`list` default; `add`/`rm`/`show`/`pull`) |
 
+## Plugin settings {#plugin-settings}
+
+Each plugin can publish its own configurable settings beyond its
+`[plugins.<name>]` config-file table — typed, validated, and overridable
+without editing the config file. Overrides are stored in the catalog
+database, so they persist independently of the config file and survive
+`exfil store clean`.
+
+`exfil plugin config <plugin>` interactively walks every setting on a
+plugin — a select menu for fixed choices, a validated prompt for numbers —
+each pre-filled with its current effective value.
+
+A setting's effective value is resolved in order: the catalog override, then
+the config file's `[plugins.<name>]` table, then the plugin's own built-in
+default. Today's built-in plugin settings:
+
+| Plugin | Setting | Meaning |
+|---|---|---|
+| `scan` | `top-ports` (1-2000, default 100) | How many ports `--ports common` sweeps, ranked most-common-first |
+
+```sh
+exfil plugin config scan   # interactive: prompts for top-ports, pre-filled with 100
+```
+
 ## Store, interfaces & maintenance
 
 | Command | What it does |
 |---|---|
-| `exfil tui` | Open the app-style TUI workbench: scan, browse, edit, and query the graph live |
 | `exfil mcp` | Run an MCP server on stdio for AI agents |
 | `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
@@ -145,12 +173,12 @@ exfil completions fish > ~/.config/fish/completions/exfil.fish
 ### Dynamic sites (WebDriver)
 
 Static crawling misses content that JavaScript builds at runtime. Point
-`scan web` at a running WebDriver server (geckodriver/chromedriver) to render
-each page in a headless browser first:
+`exfil scan <url>` at a running WebDriver server (geckodriver/chromedriver) to
+render each page in a headless browser first:
 
 ```sh
 geckodriver --port 4444 &                                  # or chromedriver
-exfil scan web https://app.example.com --driver http://localhost:4444
+exfil scan https://app.example.com --driver http://localhost:4444
 ```
 
 exfil connects to the driver you run (it doesn't launch the browser). The

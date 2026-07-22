@@ -11,7 +11,7 @@ into each box.
 
 ## 1. Why a Cargo *workspace* of many crates?
 
-exfil is not one big program — it is **14 small libraries plus one binary**,
+exfil is not one big program — it is **12 small libraries plus one binary**,
 assembled in a *Cargo workspace*. A workspace is a set of related packages
 ("crates") that share one `Cargo.lock`, one `target/` build directory, and one
 set of lint rules, but compile as separate units.
@@ -21,14 +21,14 @@ set of lint rules, but compile as separate units.
 > (code other crates use) or a *binary* (an executable). See the
 > [Rust primer](./rust-primer.md#crates-and-modules).
 
-Why split one tool into 14 crates? Three concrete payoffs:
+Why split one tool into 13 crates? Three concrete payoffs:
 
 1. **Enforced layering.** A crate can only use another crate if it explicitly
    depends on it. `exfil-core` depends on *nothing*, so nothing in the core
    types can accidentally reach into the database or the UI. The compiler
    enforces the architecture — you cannot create a dependency cycle between
    crates.
-2. **Parallel, incremental builds.** Change the TUI and only `exfil-cli`
+2. **Parallel, incremental builds.** Change the CLI and only `exfil-cli`
    recompiles, not the scanner or the database layer.
 3. **Clear seams for plugins.** Each analysis capability (regex, AST, YARA…)
    lives behind a trait in one crate, so adding one is a local change.
@@ -83,15 +83,13 @@ exfil/
 │   │       └── run.rs        ← RunStage: fetch → scan → report
 │   ├── exfil-remote/    ← SSH/SFTP RemoteFs for scanning other hosts
 │   ├── exfil-report/    ← render findings as text / json / markdown
-│   ├── exfil-view/      ← pluggable Viewer trait + Registry (TUI content)
 │   ├── exfil-mcp/       ← MCP server: expose the graph to AI agents
 │   ├── exfil-llm/       ← offline LLM / rule-based finding enrichment
 │   ├── exfil-script/    ← Rhai scripting for user triage rules
-│   └── exfil-cli/       ← THE BINARY: argument parsing, TUI, wiring
+│   └── exfil-cli/       ← THE BINARY: argument parsing, wiring
 │       └── src/
-│           ├── main.rs       ← subcommands (scan, tui, analyze, gc…)
-│           ├── tui.rs        ← the ratatui mutt-style terminal UI
-│           ├── keymap.rs     ← configurable vim-style navigator keybindings
+│           ├── main.rs       ← subcommands (scan, search, analyze, gc…)
+│           ├── server.rs     ← HTTP + GraphQL server
 │           └── progress.rs   ← the scan progress bar
 │
 ├── datasets/             ← example rule/IOC data (gitleaks.json, *.yar, iocs…)
@@ -118,7 +116,7 @@ crates/exfil-<name>/
 
 ## 3. The layers
 
-The 14 crates stack into layers. **Arrows point "depends on" — always downward,
+The 13 crates stack into layers. **Arrows point "depends on" — always downward,
 never up or sideways in a cycle.** That downward-only rule is what keeps the
 design honest.
 
@@ -131,7 +129,6 @@ flowchart TD
     subgraph L7["① Binary · exfil-cli"]
         CLI_MAIN["main<br/>commands"]
         subgraph CLI_UI["interfaces"]
-            TUI["tui · keymap"]
             SERVER["server<br/>HTTP + GraphQL"]
             PROG["progress"]
         end
@@ -162,7 +159,6 @@ flowchart TD
         MCP["exfil-mcp"]
         LLM["exfil-llm<br/>enrich"]
         SCRIPT["exfil-script"]
-        VIEW["exfil-view"]
     end
     subgraph L3["⑤ Storage · exfil-store"]
         subgraph RECORDS["records"]
@@ -180,7 +176,7 @@ flowchart TD
         CORE["Match · Rule · CweEntry · Severity"]
     end
 
-    CLI_MAIN --> SSH & RUN & REGEX & DS & MCP & LLM & SCRIPT & VIEW & CONFIG & ANY
+    CLI_MAIN --> SSH & RUN & REGEX & DS & MCP & LLM & SCRIPT & CONFIG & ANY
     SERVER --> ANY
     SSH & WEB & WD & NET --> RUN
     RUN --> EXPAND & WALK & REGEX & REPORT & ANY & TASK
@@ -197,10 +193,10 @@ flowchart TD
 
 | Layer | Crates | Responsibility |
 |-------|--------|----------------|
-| ① Binary | `exfil-cli` | The one executable. Parses arguments, owns the TUI, wires every other crate together. Depends on all of them. |
+| ① Binary | `exfil-cli` | The one executable. Parses arguments, wires every other crate together. Depends on all of them. |
 | ② Remote | `exfil-remote` | Implements the engine's `RemoteFs` trait over SSH so a scan can target another host. |
 | ③ Orchestration | `exfil-engine` | Drives a whole scan: walk the tree, run the pipeline per file, persist results. The subject of [page 2](./engine.md). |
-| ④ Capabilities | `exfil-scan`, `-source`, `-report`, `-mcp`, `-llm`, `-script`, `-view` | The actual features. Each is independent and plugs into the store or the pipeline. |
+| ④ Capabilities | `exfil-scan`, `-source`, `-report`, `-mcp`, `-llm`, `-script` | The actual features. Each is independent and plugs into the store or the pipeline. |
 | ⑤ Storage | `exfil-store` | The findings graph — SurrealDB. Everything that produces or reads results goes through here. [Page 6](./store.md). |
 | ⑥ Primitives | `exfil-task`, `exfil-config` | The plugin-DAG machinery and config loading. `exfil-task` is [page 1](./pipeline.md). |
 | ⑦ Foundation | `exfil-core` | The shared types every layer speaks: `Match`, `Rule`, `Severity`, `FileMeta`, `Symbol`, `VirtualFile`. Depends on nothing. |

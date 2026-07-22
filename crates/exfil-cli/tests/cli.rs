@@ -59,7 +59,7 @@ fn scan_search_get_clean_roundtrip() {
     let sb = Sandbox::new("roundtrip");
 
     // scan: finds the secret, streams it, and prints a summary.
-    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "scan failed: {}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("aws-access-key-id"), "{text}");
@@ -69,7 +69,7 @@ fn scan_search_get_clean_roundtrip() {
     );
 
     // Rescan: unchanged files take the stat fast-path, findings don't duplicate.
-    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "rescan failed: {}", stderr(&out));
     let text = stdout(&out);
     assert!(
@@ -150,6 +150,20 @@ fn scan_search_get_clean_roundtrip() {
 }
 
 #[test]
+fn scan_ports_without_a_target_is_rejected() {
+    // `--ports` only makes sense sweeping a host/CIDR target; without one it
+    // must error, not silently fall through to a plain local directory scan.
+    let sb = Sandbox::new("ports-no-target");
+    let out = exfil(&sb.store, &["scan", "--ports", "22,80"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("TARGET"),
+        "expected a missing-target error, got:\n{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn rules_lists_builtin_ruleset() {
     let sb = Sandbox::new("rules");
     let out = exfil(&sb.store, &["rules"]);
@@ -189,7 +203,7 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 #[test]
 fn enrich_and_export_commands() {
     let sb = Sandbox::new("enrich");
-    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     // enrich writes a triage note to the finding.
@@ -217,7 +231,7 @@ fn mcp_server_answers_over_stdio() {
     use std::process::Stdio;
 
     let sb = Sandbox::new("mcp");
-    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_exfil"))
@@ -311,7 +325,7 @@ fn sources_pull_datasets_flow() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["scan", "files", sb.tree.to_str().unwrap()],
+        &["scan", sb.tree.to_str().unwrap()],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("acme-token"), "{}", stdout(&out));
@@ -348,7 +362,7 @@ fn ioc_hash_and_content_scanning() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["scan", "files", sb.tree.to_str().unwrap()],
+        &["scan", sb.tree.to_str().unwrap()],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
@@ -396,7 +410,7 @@ fn clamav_signatures_from_config() {
         .arg(&sb.store)
         .arg("--config")
         .arg(&cfg)
-        .args(["scan", "files", sb.tree.to_str().unwrap()])
+        .args(["scan", sb.tree.to_str().unwrap()])
         .output()
         .expect("run exfil");
     assert!(out.status.success(), "{}", stderr(&out));
@@ -411,7 +425,7 @@ fn clamav_signatures_from_config() {
 #[test]
 fn script_enricher_from_config() {
     let sb = Sandbox::new("script");
-    let out = exfil(&sb.store, &["scan", "files", sb.tree.to_str().unwrap()]);
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
     let script = sb.base.join("enrich.rhai");
@@ -484,7 +498,7 @@ fn yara_rules_from_config() {
         .arg(&sb.store)
         .arg("--config")
         .arg(&cfg)
-        .args(["scan", "files", sb.tree.to_str().unwrap()])
+        .args(["scan", sb.tree.to_str().unwrap()])
         .output()
         .expect("run exfil");
     assert!(out.status.success(), "{}", stderr(&out));

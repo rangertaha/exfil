@@ -11,7 +11,7 @@
 
 # ── Database ─────────────────────────────────────────────────────────────────
 # By default exfil uses an embedded, on-disk SurrealDB (findings under `store`,
-# the catalog in this config dir). To use a remote SurrealDB server or a
+# the catalog in the user data dir). To use a remote SurrealDB server or a
 # multi-instance cluster instead, set an endpoint and (for a server) sign-in
 # credentials — every command then uses it.
 # [database]
@@ -61,12 +61,6 @@
 # [llm]
 # enabled = false
 # tasks = ["extract", "triage"]
-
-# ── TUI graph-navigator keys ─────────────────────────────────────────────────
-# Remap the navigator's keys (vim defaults otherwise). Actions: Up, Down,
-# Ascend, Descend, Back, Forward, Edit, DeleteEdge, Undo, Redo, Quit.
-# [keymap.nav]
-# x = "Edit"
 
 # ── Datasets to download ─────────────────────────────────────────────────────
 # `exfil pull` with no argument (re)downloads every [[update]] entry. The

@@ -8,7 +8,6 @@
 - [Quick Start](guide/quick-start.md)
 - [Commands](guide/commands.md)
 - [Continuous Integration](guide/ci.md)
-- [The TUI](guide/tui.md)
 - [Configuration](guide/configuration.md)
 - [What exfil Analyzes](guide/surfaces.md)
 - [Features](guide/features.md)
@@ -23,7 +22,7 @@
 - [Taint Analysis](architecture/taint.md)
 - [The Other Scanners](architecture/scanners.md)
 - [The Graph Store](architecture/store.md)
-- [CLI, TUI & Navigator](architecture/cli-tui.md)
+- [CLI](architecture/cli.md)
 - [Integrations](architecture/integrations.md)
 - [Rust Primer](architecture/rust-primer.md)
 

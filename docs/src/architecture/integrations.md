@@ -1,11 +1,11 @@
 # 8 · Integrations (`mcp` · `llm` · `script` · `remote` · `report`)
 
-← [CLI, TUI & navigator](./cli-tui.md) · Next: [Rust primer →](./rust-primer.md)
+← [The CLI](./cli.md) · Next: [Rust primer →](./rust-primer.md)
 
 The final layer is how exfil talks to the outside world: an **MCP server** for AI
-agents, **offline enrichment** (rule-based and Rhai-scripted), **remote scanning**
-over SSH, and **reporters** that render findings for humans and CI. Each is a small
-crate behind a trait.
+agents, **offline enrichment** (rule-based and Rhai-scripted), **non-local scan
+sources** (processes, TCP banners, web crawling), and **reporters** that render
+findings for humans and CI. Each is a small crate behind a trait.
 
 ---
 
@@ -134,33 +134,39 @@ The safety story is the point:
 
 ---
 
-## 4. Remote scanning over SSH (`exfil-remote`) {#remote}
+## 4. Non-local scan sources (`exfil-remote`) {#remote}
 
-`exfil scan files --remote user@host:/path` scans another machine. `exfil-remote`
-implements the engine's [`RemoteFs`](./engine.md#10-remote-scans-scan_remote) trait
-over SSH/SFTP using pure-Rust [`russh`](https://docs.rs/russh) — no C `libssh2`.
+`exfil scan` dispatches on the shape of its target: the literal `processes`, a
+`host:port` (or a host/CIDR swept with `--ports`), or an `http(s)://` URL all
+route to a source in `exfil-remote`, each implementing the engine's
+[`RemoteFs`](./engine.md#10-remote-scans-scan_remote) trait.
 
 ```mermaid
 flowchart TD
-    TARGET["parse user@host:/path"] --> CONN["SshFs::connect<br/>authenticate + open SFTP"]
-    CONN --> LIST["list(root): iterative SFTP walk"]
-    CONN --> READ["read(path): SFTP open + read_to_end"]
-    LIST & READ --> ENGINE["engine::scan_remote<br/>(same scanners as local)"]
-    ENGINE --> STORE["findings tagged host = the remote"]
+    PROC["ProcessFs — local running processes"] --> ENGINE
+    TCP["TcpFs — host:port banner grab<br/>(netscan expands a host/CIDR + --ports)"] --> ENGINE
+    WEB["WebFs / WebDriverFs — crawl a URL<br/>(WebDriverFs renders JS via a WebDriver server)"] --> ENGINE
+    ENGINE["engine::scan_remote<br/>(same scanners as a local scan)"] --> STORE["findings tagged with the source"]
 ```
 
-- `RemoteTarget::parse` ([`remote/lib.rs:38`](../../crates/exfil-remote/src/lib.rs#L38))
-  handles SCP-style `[user@]host[:/path]`, defaulting the user to `$USER` and the
-  path to `/`.
-- Auth is key (`-k`, with optional passphrase) or password
-  (`$EXFIL_SSH_PASSWORD`) ([`remote/lib.rs:65`](../../crates/exfil-remote/src/lib.rs#L65)).
-- The directory walk is **stack-based, not recursive**
-  ([`remote/lib.rs:148`](../../crates/exfil-remote/src/lib.rs#L148)) — a `while let
-  Some(dir) = stack.pop()` loop — so a deep remote tree can't blow the call stack.
+- `ProcessFs` ([`remote/proc.rs`](../../crates/exfil-remote/src/proc.rs)) lists the
+  local host's running processes and presents each one's name, exe path, and
+  command line as scannable bytes.
+- `TcpFs` ([`remote/tcp.rs`](../../crates/exfil-remote/src/tcp.rs)) connects to each
+  `host:port` target and reads back its banner; `netscan::expand_targets`
+  ([`remote/netscan.rs`](../../crates/exfil-remote/src/netscan.rs)) turns a host or
+  IPv4 CIDR plus a `--ports` spec (list, ranges, or `common`) into that target list.
+- `WebFs` / `webdriver::WebDriverFs` ([`remote/web.rs`](../../crates/exfil-remote/src/web.rs),
+  [`remote/webdriver.rs`](../../crates/exfil-remote/src/webdriver.rs)) crawl a seed
+  URL up to `--max-pages`/`--max-depth`; the WebDriver variant renders each page
+  first, for JavaScript-heavy sites a plain HTTP fetch can't see.
 
-Because it implements `RemoteFs`, the scanners "never know the bytes came from the
-network" — the exact same [pipeline](./pipeline.md) runs. (Host-key verification is
-a noted follow-up; today it accepts any host key.)
+Because each implements `RemoteFs`, the scanners "never know the bytes came from
+the network" — the exact same [pipeline](./pipeline.md) runs regardless of source.
+
+> SSH/SFTP remote-host scanning (walking another machine's filesystem by logging
+> into it) was removed — these sources reach a target's processes, ports, or
+> served pages, not its filesystem.
 
 ---
 
@@ -221,15 +227,14 @@ flowchart TD
     STORE --> MCP["Enricher? no — MCP reads via handle()"]
     STORE --> ENR["Enricher: RuleBased | Script"]
     STORE --> REP["Reporter: text/json/md/junit"]
-    ENGINE["Engine"] --> RFS["RemoteFs: SshFs | MemoryFs"]
+    ENGINE["Engine"] --> RFS["RemoteFs: ProcessFs | TcpFs | WebFs | WebDriverFs"]
 
     classDef t fill:#0f766e,color:#fff
     class MCP,ENR,REP,RFS t
 ```
 
 - `Enricher` (llm/script), `Reporter` (report), `RemoteFs` (remote), `Source`
-  (source), `Viewer` (view) — all the same pattern: **define a trait, implement it,
-  register it.**
+  (source) — all the same pattern: **define a trait, implement it, register it.**
 - That is the through-line of the whole architecture. Once you've seen
   [`FileTask`](./pipeline.md), every other extension point reads the same way.
 

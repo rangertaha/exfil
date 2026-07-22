@@ -74,9 +74,7 @@ match produced {
 ```
 
 This models "a value that varies in shape" with *compile-time* guarantees — no
-casting, no checking a type tag by hand. The TUI uses the same pattern for `Mode`,
-`EditOp`, and `Prompt` ([cli-tui](./cli-tui.md#4-the-graph-navigator)); reversible
-undo/redo falls right out of it.
+casting, no checking a type tag by hand.
 
 ---
 
@@ -133,7 +131,7 @@ how Rust does polymorphism (there's no class inheritance). `FileTask`
 interface — anything implementing `name`/`needs`/`provides`/`run` *is* a plugin.
 
 exfil is built almost entirely on a handful of traits: `FileTask`, `Scanner`,
-`Reporter`, `Enricher`, `Viewer`, `Source`, `RemoteFs`, `RunStage`. Define a trait,
+`Reporter`, `Enricher`, `Source`, `RemoteFs`, `RunStage`. Define a trait,
 implement it, register it — that's the extension pattern everywhere.
 
 ### Trait default methods {#trait-default-methods}
@@ -171,8 +169,7 @@ interface.
 - `Box<...>` puts it on the heap, because different implementors have different
   sizes and a `Vec` needs uniform-sized elements.
 
-The same pattern holds every plugin list: `Vec<Box<dyn Viewer>>`
-([view](./cli-tui.md#6-pluggable-viewers-exfil-view)), `Vec<Box<dyn Source>>`,
+The same pattern holds every plugin list: `Vec<Box<dyn Source>>`,
 `&[Box<dyn RunStage>]`. Trait objects are how a plugin architecture works in Rust.
 
 ---
@@ -258,10 +255,24 @@ return a boxed future, which *is* object-safe — so `Box<dyn RunStage>` works
 
 ### Bridging async and blocking
 
-The TUI is blocking but needs async store calls, so it runs on `spawn_blocking` with
-a tokio `Handle`: `handle.block_on(fut)` runs one async op to completion,
-`handle.spawn(fut)` launches a background task
-([cli-tui](./cli-tui.md#2-the-asyncblocking-bridge)).
+Some work is unavoidably blocking (a synchronous DNS resolver, a WHOIS client)
+but must not stall the async runtime's worker threads. `tokio::task::spawn_blocking`
+moves a closure onto a dedicated blocking-thread pool and returns a future you can
+`.await` for its result. `cmd_check_dns` does exactly this for each observed domain
+([`main.rs:779`](../../crates/exfil-cli/src/main.rs#L779)):
+
+```rust
+let finding =
+    tokio::task::spawn_blocking(move || exfil_scan::dns::check_domain(&d, "dns"))
+        .await
+        .ok()
+        .flatten();
+```
+
+`cmd_check_whois` ([`main.rs:723`](../../crates/exfil-cli/src/main.rs#L723)) does the
+same for the blocking WHOIS lookup. The async task stays free to run other work
+while the blocking call proceeds on its own thread; `.await` picks the result back
+up once it finishes.
 
 ---
 

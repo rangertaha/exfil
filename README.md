@@ -16,7 +16,7 @@ flowchart LR
     T["Targets<br/>code · config · deps<br/>hosts · web"] --> S["Scan<br/>walk · parse · render"]
     S --> M["Match<br/>secrets · taint · IOCs<br/>YARA · PII · supply-chain"]
     M --> G[("Findings graph<br/>SurrealDB")]
-    G --> R["Report<br/>search · TUI · reports<br/>HTTP · GraphQL · MCP"]
+    G --> R["Report<br/>search · reports<br/>HTTP · GraphQL · MCP"]
 ```
 
 **What it scans**
@@ -25,14 +25,13 @@ flowchart LR
 - **Infrastructure & config** — Terraform/HCL, Dockerfiles, Kubernetes/YAML
 - **Dependencies** — `package.json`, `requirements*.txt`, `Cargo.toml`
 - **Archives & container layers** — zip/jar/war/tar/tar.gz/gz, unpacked and scanned in place
-- **Hosts** — the local filesystem, remote hosts over SSH, and running processes
+- **Hosts** — the local filesystem and running processes
 - **Web & network** — crawled sites (incl. JavaScript-rendered pages via WebDriver) and TCP service banners
 
 **What it finds** — leaked credentials, code-injection flows, supply-chain
 risks (malicious & typosquatted dependencies), malware signatures (YARA ·
 ClamAV), IOCs (bad domains/IPs/hashes), and PII. Findings land in an embedded
-graph DB (or a remote cluster) you can query, browse in a TUI, or serve over
-HTTP/GraphQL.
+graph DB (or a remote cluster) you can query or serve over HTTP/GraphQL.
 
 📖 **Full documentation: <https://rangertaha.github.io/exfil/>**
 
@@ -60,9 +59,6 @@ exfil search                      # everything
 exfil search severity=critical    # by field: rule/cwe/severity/path
 exfil search aws                  # free text against rule names
 
-# open the live TUI (mutt-style index + pager)
-exfil tui
-
 # look at one record, list rules, clean up
 exfil get file:<blake3-hash>
 exfil rules
@@ -81,10 +77,11 @@ scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 
 | Command | What it does |
 |---|---|
-| `exfil scan [files] [path]` | Scan a directory tree for secrets and security issues (`--remote [user@]host:/path` for a host over SSH/SFTP) |
+| `exfil scan [path]` | Scan a directory tree for secrets and security issues |
+| `exfil scan processes` | Scan the local host's running processes |
+| `exfil scan example.com:22` | Grab and scan a TCP service banner (or `10.0.0.0/28 --ports 22,80,443` to sweep a CIDR) |
 | `exfil search [query]` | Query stored findings (by field or free text) |
 | `exfil analyze` | Render a report of the graph (`--format text\|json\|markdown\|junit\|sarif`) |
-| `exfil tui` | Open the mutt-style TUI to scan and browse live |
 | `exfil pull [ref]` | Download rule/IOC datasets into the catalog |
 | `exfil rules` | Show the rules a scan would apply |
 | `exfil store clean` | Delete the findings store (keeps downloaded datasets) |
@@ -121,9 +118,8 @@ The full docs live at **<https://rangertaha.github.io/exfil/>**:
 
 - [What exfil analyzes](https://rangertaha.github.io/exfil/guide/surfaces.html)
   and the full [feature list](https://rangertaha.github.io/exfil/guide/features.html)
-- The [command reference](https://rangertaha.github.io/exfil/guide/commands.html),
-  [TUI keys](https://rangertaha.github.io/exfil/guide/tui.html), and
-  [configuration](https://rangertaha.github.io/exfil/guide/configuration.html)
+- The [command reference](https://rangertaha.github.io/exfil/guide/commands.html)
+  and [configuration](https://rangertaha.github.io/exfil/guide/configuration.html)
 - The [architecture guide](https://rangertaha.github.io/exfil/architecture/) — a
   multi-page tour of how exfil is built, written for readers new to Rust
 
