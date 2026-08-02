@@ -252,18 +252,58 @@ Agents reach the same three via the MCP tools `hmm_train`, `hmm_score` and
 
 ---
 
-## 9. What isn't done
+## 9. Calibration {#calibration}
 
-Stated plainly, because a probability that looks authoritative and isn't is
-worse than no probability at all:
+Ranking and *probability* are different properties, and only the second licenses
+acting on the number.
 
-- **The scores are not calibrated.** On a cleanly separable corpus they saturate
-  at 1.0 and 0.0. They *rank* well, which is all the current features need, but
-  they should not yet be read as "there is a 90% chance of a finding here". A
-  `--confidence` stop condition — scan until the expected yield flattens — is
-  the natural next feature and is blocked on fixing this.
-- **The sequence model does not always earn its complexity.** `exfil hmm eval`
-  measures this and says so out loud — see below.
+A likelihood ratio between two chains is enormously confident: on a separable
+corpus the raw scores pile up at exactly 1.0 and 0.0. That ranks perfectly well
+— ordering is all `--budget` needs — but "1.0" as a probability is a claim no
+model should make, and a `--confidence` stop condition computed from such
+numbers would be meaningless.
+
+So the raw log-odds are passed through a **Platt scaling** — a two-parameter
+logistic fitted by gradient descent on cross-entropy:
+
+```text
+   raw:  log P(path | finding) − log P(path | no finding)   (+ base-rate log-odds)
+                          │
+                   σ(a·z + b)          a, b fitted on held-out predictions
+                          │
+   calibrated:  P(finding | path)
+```
+
+Two details carry the weight:
+
+- **Fitted out of fold.** Calibrating on the paths the chains were fitted on
+  would be circular — the model has seen those labels, its log-odds on them are
+  unrealistically confident, and the map would bake that overconfidence in
+  rather than correct it. A throwaway model is fitted on part of the corpus and
+  scored on the rest; the calibration is learned from *those* predictions and
+  then applied to the full-data chains.
+- **It cannot change the ranking.** A logistic with a positive slope is
+  monotonic, so recall-at-budget is identical before and after. `fit_platt`
+  refuses a non-positive slope and falls back to the identity, and a test
+  asserts the two orderings match — calibration must never cost ranking quality.
+
+When there is too little data to hold anything out, the map stays at the
+identity and `hmm status` says `uncalibrated` rather than pretending.
+
+Quality is measured, not asserted. `hmm eval` reports:
+
+- **Brier score** — mean squared error between predicted probability and
+  outcome. Always guessing the base rate scores about 0.25.
+- **Expected calibration error** — the average gap between claimed probability
+  and observed frequency across ten bins. Above ~0.15 the values should be read
+  as a ranking only, and the output says so.
+
+```text
+calibration: Brier 0.008, expected error 0.067
+```
+
+Before this, `secrets/x.env` scored a flat `1.0000`. It now scores `0.9000`,
+which is a statement you can act on.
 
 ---
 
@@ -320,6 +360,19 @@ So the honest position: **run `hmm eval` on your own corpus before trusting
 `--budget`.** If it reports the baseline tying, ranked scanning still helps a
 great deal over scanning in walk order — but a much simpler model would do the
 same job, and that is worth knowing.
+
+## 11. What isn't done
+
+Stated plainly, because a probability that looks authoritative and isn't is
+worse than no probability at all:
+
+- **A `--confidence` stop condition** — scan until the expected yield flattens,
+  rather than to a fixed budget. Now unblocked (the scores are calibrated), but
+  not built.
+- **The sequence model does not always earn its complexity.** `exfil hmm eval`
+  measures this and says so out loud — see below.
+
+---
 
 ---
 

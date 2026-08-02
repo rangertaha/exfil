@@ -167,20 +167,6 @@ impl Chain {
         scales.iter().map(|c| -c.max(FLOOR).ln()).sum()
     }
 
-    /// State posteriors `γ_t(i)` for every position.
-    pub fn posteriors(&self, obs: &[usize]) -> Vec<Vec<f64>> {
-        let (alpha, scales) = self.forward(obs);
-        let beta = self.backward(obs, &scales);
-        let mut gamma = vec![vec![0.0; self.states]; obs.len()];
-        for t in 0..obs.len() {
-            for i in 0..self.states {
-                gamma[t][i] = alpha[t][i] * beta[t][i];
-            }
-            normalize(&mut gamma[t]);
-        }
-        gamma
-    }
-
     /// Most likely hidden-state sequence (Viterbi), for explaining a score.
     pub fn viterbi(&self, obs: &[usize]) -> Vec<usize> {
         let s = self.states;
@@ -338,6 +324,22 @@ pub struct Hmm {
     /// Mean log-likelihood per path under the positive chain, for `hmm status`.
     #[serde(default)]
     pub log_likelihood: f64,
+    /// Platt scaling `(slope, intercept)` mapping the raw log-odds onto a
+    /// calibrated probability.
+    ///
+    /// A likelihood ratio between two chains is enormously confident on a
+    /// separable corpus — raw scores pile up at 0.0 and 1.0, which ranks fine
+    /// but is not a probability anyone should act on. Fitting a logistic on
+    /// *held-out* log-odds rescales them so that "0.7" means roughly seven in
+    /// ten. `(1.0, 0.0)` is the identity, used when there was too little data
+    /// to fit anything.
+    #[serde(default = "identity_platt")]
+    pub platt: (f64, f64),
+}
+
+/// The identity calibration: pass the raw log-odds straight through.
+fn identity_platt() -> (f64, f64) {
+    (1.0, 0.0)
 }
 
 impl Hmm {
@@ -374,23 +376,33 @@ impl Hmm {
     /// themselves are astronomically small for a long path, and only their
     /// ratio is meaningful.
     pub fn score(&self, path: &str) -> f64 {
+        match self.log_odds(path) {
+            Some(z) => {
+                let (a, b) = self.platt;
+                logistic(a * z + b)
+            }
+            None => self.prior,
+        }
+    }
+
+    /// The uncalibrated log-odds of a finding: how much more likely the path is
+    /// under the positive chain than the negative one, plus the base rate's
+    /// log-odds. `None` when there is nothing to read (empty path, empty model).
+    ///
+    /// This is what [`score`](Self::score) calibrates. It is exposed because
+    /// fitting the calibration needs the raw value, and because ranking only
+    /// needs the ordering — which calibration cannot change, since a logistic
+    /// with a positive slope is monotonic.
+    pub fn log_odds(&self, path: &str) -> Option<f64> {
         let obs = self.observe(path);
         // An empty vocabulary leaves the emission rows empty, so there is no
         // index that could be read: say nothing rather than reach into them.
         if obs.is_empty() || self.states() == 0 || self.vocab_len() == 0 {
-            return self.prior;
+            return None;
         }
         let pos = self.positive.log_likelihood(&obs) + self.prior.max(FLOOR).ln();
         let neg = self.negative.log_likelihood(&obs) + (1.0 - self.prior).max(FLOOR).ln();
-        let delta = neg - pos;
-        // Guard the exponential: a decisive path can overflow f64 otherwise.
-        if delta > 700.0 {
-            return 0.0;
-        }
-        if delta < -700.0 {
-            return 1.0;
-        }
-        1.0 / (1.0 + delta.exp())
+        Some(pos - neg)
     }
 
     /// The unconditional finding rate the model was trained on — the score to
@@ -456,6 +468,13 @@ impl Default for TrainConfig {
 /// Fit a classifier to `samples` — `(path, produced_a_finding)` pairs, which is
 /// exactly what the findings graph already holds.
 pub fn train(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
+    let mut model = train_chains_only(samples, cfg);
+    model.platt = fit_calibration(samples, cfg, &model);
+    model
+}
+
+/// Fit both chains and the prior, leaving the calibration at identity.
+fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
     let vocab = build_vocab(samples, cfg.vocab_cap);
     let v = vocab.len() + 1; // +1 for UNK at index 0
     let s = cfg.states.max(1);
@@ -509,7 +528,131 @@ pub fn train(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
         observations: samples.len() as u64,
         ruleset: cfg.ruleset.clone(),
         log_likelihood,
+        platt: identity_platt(),
     }
+}
+
+/// Fit the calibration map on **out-of-fold** log-odds.
+///
+/// The chains above are fitted on everything, which is what you want for
+/// ranking quality. But calibrating on those same paths would be circular: the
+/// model has already seen their labels, its log-odds on them are unrealistically
+/// confident, and the resulting map would bake that overconfidence in rather
+/// than correct it.
+///
+/// So a throwaway model is fitted on one part of the corpus and scored on the
+/// other, and the calibration is learned from *those* predictions — an honest
+/// estimate of how confident the model is on paths it has not seen. The map is
+/// then applied to the full-data chains.
+fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig, full: &Hmm) -> (f64, f64) {
+    // A cheap deterministic split; same idea as the evaluation harness.
+    let held = |p: &str| -> bool {
+        let mut h: u64 = 1469598103934665603;
+        for b in p.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        (h >> 13).is_multiple_of(4) // ~25% held out
+    };
+    let fit_set: Vec<(String, bool)> = samples.iter().filter(|(p, _)| !held(p)).cloned().collect();
+    let calib: Vec<&(String, bool)> = samples.iter().filter(|(p, _)| held(p)).collect();
+
+    let usable = |v: &[(String, bool)]| {
+        let pos = v.iter().filter(|(_, y)| *y).count();
+        pos >= 2 && v.len() - pos >= 2
+    };
+    if !usable(&fit_set) || calib.len() < 8 {
+        // Too little to hold anything out. Leave the scores uncalibrated rather
+        // than fit a map on the model's own training data.
+        return identity_platt();
+    }
+
+    // A throwaway model, deliberately cheaper: calibration needs the *shape* of
+    // the log-odds distribution, not a maximally converged fit.
+    let quick = TrainConfig {
+        iterations: cfg.iterations.min(10),
+        ..cfg.clone()
+    };
+    let holdout_model = {
+        let mut m = train_chains_only(&fit_set, &quick);
+        m.platt = identity_platt();
+        m
+    };
+    let pairs: Vec<(f64, bool)> = calib
+        .iter()
+        .filter_map(|(p, y)| holdout_model.log_odds(p).map(|z| (z, *y)))
+        .collect();
+    let (a, b) = fit_platt(&pairs);
+
+    // Sanity: the map must not flip the ranking the full model produces.
+    let _ = full;
+    (a, b)
+}
+
+/// The logistic function, guarded against overflow at the tails.
+fn logistic(z: f64) -> f64 {
+    if z > 700.0 {
+        return 1.0;
+    }
+    if z < -700.0 {
+        return 0.0;
+    }
+    1.0 / (1.0 + (-z).exp())
+}
+
+/// Fit Platt scaling: the `(slope, intercept)` of a logistic regression of the
+/// label on the raw log-odds.
+///
+/// Plain gradient descent on cross-entropy — a two-parameter fit, so there is
+/// no need for anything cleverer. The labels are smoothed toward the interior
+/// (Platt's own correction) so a perfectly separable calibration set drives the
+/// slope to infinity instead of converging.
+///
+/// Returns the identity when there is too little to fit, or when the fit
+/// produced a non-finite or non-monotonic result: a calibration that reorders
+/// the ranking would be worse than none at all.
+fn fit_platt(pairs: &[(f64, bool)]) -> (f64, f64) {
+    let pos = pairs.iter().filter(|(_, y)| *y).count();
+    let neg = pairs.len() - pos;
+    if pos < 2 || neg < 2 {
+        return identity_platt();
+    }
+    // Platt's label smoothing: targets sit just inside 0 and 1.
+    let hi = (pos as f64 + 1.0) / (pos as f64 + 2.0);
+    let lo = 1.0 / (neg as f64 + 2.0);
+
+    // The raw log-odds can be in the hundreds; scale the input so a fixed
+    // learning rate behaves for any corpus.
+    let scale = pairs
+        .iter()
+        .map(|(z, _)| z.abs())
+        .fold(1.0f64, f64::max)
+        .max(1.0);
+
+    let (mut a, mut b) = (1.0f64, 0.0f64);
+    let n = pairs.len() as f64;
+    for _ in 0..2_000 {
+        let (mut ga, mut gb) = (0.0, 0.0);
+        for (z, y) in pairs {
+            let x = z / scale;
+            let t = if *y { hi } else { lo };
+            let err = logistic(a * x + b) - t;
+            ga += err * x;
+            gb += err;
+        }
+        a -= 0.5 * ga / n;
+        b -= 0.5 * gb / n;
+        if !a.is_finite() || !b.is_finite() {
+            return identity_platt();
+        }
+    }
+    // Undo the input scaling so the parameters apply to the raw log-odds.
+    let a = a / scale;
+    if !a.is_finite() || !b.is_finite() || a <= 0.0 {
+        // A non-positive slope would invert the ranking — refuse it.
+        return identity_platt();
+    }
+    (a, b)
 }
 
 /// Normalize a distribution in place, returning the scale factor applied.

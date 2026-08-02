@@ -34,14 +34,6 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// A context for `store_dir` using the default config.
-    pub fn new(store_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            store_dir: store_dir.into(),
-            config: None,
-        }
-    }
-
     /// The config path as the setup helpers want it.
     fn config(&self) -> Option<&Path> {
         self.config.as_deref()
@@ -441,8 +433,11 @@ pub async fn hmm_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String> 
         ));
     }
     out.push_str(&format!(
-        "\nmean lift over blind selection: {:.1}x\n{}",
+        "\nmean lift over blind selection: {:.1}x\ncalibration: Brier {:.3}, expected error {:.3}{}\n{}",
         report.mean_lift(),
+        report.brier,
+        report.ece,
+        if report.is_calibrated() { "" } else { "  (uncalibrated — treat as a ranking)" },
         if report.mean_lift() <= 1.1 {
             "VERDICT: not beating blind selection — do not rely on budgeted scans here."
         } else if !report.beats_baseline() {

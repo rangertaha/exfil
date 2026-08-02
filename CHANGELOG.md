@@ -10,6 +10,21 @@ and this project adheres to
 
 ### Added
 
+- **Calibrated probabilities.** The raw likelihood ratio between the two chains
+  is enormously confident — on a separable corpus scores piled up at exactly
+  1.0 and 0.0, which ranks fine but is not a probability anyone should act on.
+  The log-odds now pass through a Platt scaling fitted on **out-of-fold**
+  predictions: calibrating on the paths the chains were fitted on would be
+  circular, so a throwaway model is fitted on part of the corpus and scored on
+  the rest. `secrets/x.env` went from a flat `1.0000` to `0.9000`.
+  - Calibration cannot change the ranking — a logistic with a positive slope is
+    monotonic — and `fit_platt` refuses a non-positive slope rather than invert
+    it. A test asserts the calibrated and raw orderings are identical.
+  - With too little data to hold anything out, the map stays at the identity and
+    `hmm status` reports `uncalibrated` instead of pretending.
+  - Quality is measured, not asserted: `hmm eval` now reports a **Brier score**
+    and **expected calibration error**, and says outright when the values should
+    be read as a ranking rather than as probabilities.
 - `exfil hmm eval` (and the MCP `hmm_eval` tool): measure whether the path model
   actually helps, before trusting a budgeted scan. Fits on part of the stored
   scans and reports how much of the findings a budgeted scan recovers on the
@@ -398,6 +413,11 @@ and this project adheres to
   the `russh` RUSTSEC-2025-0090/0091 advisories previously tracked here.
 
 ### Fixed
+
+- Removed two dead public items left behind by the two-chain rewrite:
+  `Chain::posteriors` (the state posteriors the abandoned single-chain read-out
+  needed; the classifier scores by likelihood ratio and never computes γ) and
+  `Ctx::new` (a convenience constructor with no callers).
 
 - `exfil hmm train` rejected a corpus where no file carried a finding, but
   accepted one where *every* file did — equally unlearnable, since the negative

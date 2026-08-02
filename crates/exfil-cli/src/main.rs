@@ -1349,6 +1349,17 @@ async fn cmd_hmm_status(config: Option<&std::path::Path>, name: &str) -> Result<
     println!("log-likelihood {:.4} per path", model.log_likelihood);
     println!("base rate     {:.4}", model.base_rate());
     println!(
+        "calibration   {}",
+        if model.platt == (1.0, 0.0) {
+            "identity (uncalibrated — too little held-out data to fit)".to_string()
+        } else {
+            format!(
+                "Platt slope {:.4}, intercept {:+.3}",
+                model.platt.0, model.platt.1
+            )
+        }
+    );
+    println!(
         "ruleset       {}",
         if model.ruleset.is_empty() {
             "(unrecorded)"
@@ -1411,6 +1422,16 @@ async fn cmd_hmm_eval(
     }
     println!();
     println!("mean lift over blind selection: {:.1}x", report.mean_lift());
+    println!(
+        "calibration: Brier {:.3}, expected error {:.3}{}",
+        report.brier,
+        report.ece,
+        if report.is_calibrated() {
+            ""
+        } else {
+            "  (too high — treat the scores as a ranking, not probabilities)"
+        }
+    );
     // The honest verdict, stated rather than left for the reader to infer.
     if report.mean_lift() <= 1.1 {
         println!("VERDICT: the model is not beating blind selection — do not rely on --budget.");

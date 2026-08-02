@@ -70,6 +70,14 @@ pub struct Report {
     pub test_positives: usize,
     /// Recall at each budget.
     pub points: Vec<Point>,
+    /// Brier score of the calibrated probabilities on the held-out set: the
+    /// mean squared error between predicted probability and outcome. Lower is
+    /// better; 0.25 is what always guessing 0.5 gets you.
+    pub brier: f64,
+    /// Expected calibration error: the average gap between predicted
+    /// probability and observed frequency, over ten probability bins. 0.0 is
+    /// perfect; above ~0.15 the numbers should not be read as probabilities.
+    pub ece: f64,
 }
 
 impl Report {
@@ -84,6 +92,12 @@ impl Report {
         wins * 2 > self.points.len()
     }
 
+    /// Whether the probabilities are trustworthy enough to be read as
+    /// probabilities rather than merely as a ranking.
+    pub fn is_calibrated(&self) -> bool {
+        self.ece <= 0.15
+    }
+
     /// Mean lift over blind selection across the measured budgets.
     pub fn mean_lift(&self) -> f64 {
         if self.points.is_empty() {
@@ -91,6 +105,47 @@ impl Report {
         }
         self.points.iter().map(Point::lift).sum::<f64>() / self.points.len() as f64
     }
+}
+
+/// Mean squared error between predicted probability and outcome.
+fn brier(preds: &[(f64, bool)]) -> f64 {
+    if preds.is_empty() {
+        return 0.0;
+    }
+    preds
+        .iter()
+        .map(|(p, y)| {
+            let target = if *y { 1.0 } else { 0.0 };
+            (p - target).powi(2)
+        })
+        .sum::<f64>()
+        / preds.len() as f64
+}
+
+/// Expected calibration error over ten equal-width probability bins: the
+/// average gap between what the model claimed and what actually happened.
+///
+/// This is the number that decides whether "0.7" may be read as "about seven in
+/// ten". A model can rank perfectly and still be badly calibrated — the two are
+/// different properties, and only this one licenses acting on the value.
+fn expected_calibration_error(preds: &[(f64, bool)]) -> f64 {
+    if preds.is_empty() {
+        return 0.0;
+    }
+    let mut sums = [0.0f64; 10];
+    let mut hits = [0.0f64; 10];
+    let mut counts = [0.0f64; 10];
+    for (p, y) in preds {
+        let b = ((p * 10.0) as usize).min(9);
+        sums[b] += p;
+        hits[b] += if *y { 1.0 } else { 0.0 };
+        counts[b] += 1.0;
+    }
+    let n = preds.len() as f64;
+    (0..10)
+        .filter(|&b| counts[b] > 0.0)
+        .map(|b| (counts[b] / n) * ((sums[b] / counts[b]) - (hits[b] / counts[b])).abs())
+        .sum()
 }
 
 /// A finding-rate prior over the parent directory — the baseline the sequence
@@ -222,11 +277,17 @@ pub fn evaluate(samples: &[(String, bool)], cfg: &TrainConfig, holdout: f64) -> 
         })
         .collect();
 
+    // Calibration is measured on the same held-out set, using the calibrated
+    // probability rather than the ranking score.
+    let preds: Vec<(f64, bool)> = test.iter().map(|(p, f)| (model.score(p), *f)).collect();
+
     Some(Report {
         train: train_set.len(),
         test: test.len(),
         test_positives,
         points,
+        brier: brier(&preds),
+        ece: expected_calibration_error(&preds),
     })
 }
 
@@ -349,5 +410,49 @@ mod tests {
             p.baseline
         );
         assert!(r.beats_baseline(), "verdict should favour the model");
+    }
+    #[test]
+    fn calibration_is_measured_and_reported() {
+        let r = evaluate(&learnable(120), &TrainConfig::default(), 0.3).unwrap();
+        assert!(
+            r.brier.is_finite() && (0.0..=1.0).contains(&r.brier),
+            "{r:?}"
+        );
+        assert!(r.ece.is_finite() && (0.0..=1.0).contains(&r.ece), "{r:?}");
+        // Always guessing the base rate scores ~0.25 on Brier; a model that has
+        // learned the corpus should do better than that.
+        assert!(
+            r.brier < 0.25,
+            "brier {:.3} is no better than guessing",
+            r.brier
+        );
+    }
+
+    /// Calibration must not reorder anything: a logistic with a positive slope
+    /// is monotonic, so recall-at-budget is unchanged by it. If this ever
+    /// fails, calibration has started costing ranking quality.
+    #[test]
+    fn calibration_preserves_the_ranking() {
+        let samples = learnable(80);
+        let cfg = TrainConfig::default();
+        let model = crate::train(&samples, &cfg);
+        let paths: Vec<&str> = samples.iter().map(|(p, _)| p.as_str()).collect();
+
+        let mut by_score = paths.clone();
+        by_score.sort_by(|a, b| {
+            model
+                .score(b)
+                .partial_cmp(&model.score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut by_raw = paths.clone();
+        by_raw.sort_by(|a, b| {
+            let (x, y) = (
+                model.log_odds(b).unwrap_or(0.0),
+                model.log_odds(a).unwrap_or(0.0),
+            );
+            x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        assert_eq!(by_score, by_raw, "calibration reordered the ranking");
     }
 }
