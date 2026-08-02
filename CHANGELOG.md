@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Reports now show **where** the findings are, not just what they are: a
+  "findings by directory" breakdown ranking the directories holding the most,
+  with each one's share of the total. One directory holding 40% of a scan is a
+  different problem from forty holding one each, and the flat finding list
+  can't tell you which you have. Appears in `text`, `markdown` (as a table, for
+  pasting into a PR) and `json` (as a `hotspots` array); JUnit and SARIF are
+  untouched, since those have fixed schemas. Needs no directory records —
+  findings already carry a full path, so it is derived at report time.
+  Ties break on summed severity then name, so the same findings always render
+  the same report; the shared path prefix is stated once in the heading rather
+  than repeated on every row; and the whole section is omitted when there is
+  only one directory to name.
+
 ### Changed
 
 - **Relicensed from MIT to GPL-3.0-or-later.** `LICENSE` carries the full GPLv3

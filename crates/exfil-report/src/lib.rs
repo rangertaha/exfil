@@ -66,6 +66,167 @@ impl Analysis {
             .filter_map(|f| f.severity.map(|s| s.weight()))
             .sum()
     }
+
+    /// Where the findings are concentrated: the directories holding the most,
+    /// worst-first, with each one's share of the total.
+    ///
+    /// A flat list of findings tells you *what* is wrong; this tells you
+    /// *where* to start, which is usually the more actionable question — one
+    /// directory holding 40% of a scan's findings is a different problem from
+    /// forty directories holding one each.
+    ///
+    /// Grouped by each finding's parent directory. Findings carry a full path,
+    /// so this is derivable at report time; it needs no directory records in
+    /// the store. Ties break on the directory name, so the same findings always
+    /// produce the same report.
+    pub fn hotspots(&self, limit: usize) -> Vec<Hotspot> {
+        let total = self.findings.len();
+        if total == 0 {
+            return Vec::new();
+        }
+        let mut by_dir: BTreeMap<&str, (usize, u32)> = BTreeMap::new();
+        for f in &self.findings {
+            // Split on both separators so a Windows path groups correctly.
+            let dir = match f.path.rfind(['/', '\\']) {
+                Some(i) if i > 0 => &f.path[..i],
+                Some(_) => "/",
+                None => ".",
+            };
+            let entry = by_dir.entry(dir).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += f.severity.map(|s| s.weight()).unwrap_or(0);
+        }
+        let mut rows: Vec<Hotspot> = by_dir
+            .into_iter()
+            .map(|(dir, (findings, risk))| Hotspot {
+                directory: dir.to_string(),
+                findings,
+                risk,
+                share: findings as f64 / total as f64,
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.findings
+                .cmp(&a.findings)
+                .then_with(|| b.risk.cmp(&a.risk))
+                .then_with(|| a.directory.cmp(&b.directory))
+        });
+        rows.truncate(limit);
+        rows
+    }
+}
+
+/// One directory's share of a scan's findings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hotspot {
+    /// The parent directory the findings sit in.
+    pub directory: String,
+    /// How many findings are in it.
+    pub findings: usize,
+    /// Summed severity weight, used to break ties between equal counts — ten
+    /// criticals in one directory outrank ten infos in another.
+    pub risk: u32,
+    /// Fraction of all findings in this report, in `0.0..=1.0`.
+    pub share: f64,
+}
+
+/// How many directories a report lists before stopping.
+pub const HOTSPOT_LIMIT: usize = 10;
+
+/// Render a hotspot table, or nothing when there is only one directory to
+/// name — a breakdown that says "100% of findings are in the one place they
+/// could be" is noise.
+fn write_hotspots(w: &mut dyn Write, a: &Analysis) -> Result<()> {
+    let rows = a.hotspots(HOTSPOT_LIMIT);
+    if rows.len() < 2 {
+        return Ok(());
+    }
+    let (root, names) = strip_common_prefix(&rows);
+    writeln!(w)?;
+    match &root {
+        Some(root) => writeln!(w, "findings by directory (under {root}):")?,
+        None => writeln!(w, "findings by directory:")?,
+    }
+    let width = names
+        .iter()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(48);
+    for (r, name) in rows.iter().zip(&names) {
+        let bar = "█".repeat(((r.share * 20.0).round() as usize).max(1));
+        writeln!(
+            w,
+            "  {:<width$} {:>5} {:>5.0}%  {}",
+            truncate_left(name, width),
+            r.findings,
+            r.share * 100.0,
+            bar,
+            width = width
+        )?;
+    }
+    Ok(())
+}
+
+/// Drop the directory prefix every hotspot shares, returning it once alongside
+/// the shortened names.
+///
+/// Scanning an absolute path makes every row start with the same forty
+/// characters, which crowds out the part that actually distinguishes them. The
+/// shared root is stated once in the heading instead. Compared component-wise,
+/// never mid-component, so `src/authz` and `src/auth` share `src` rather than
+/// a meaningless `src/auth`.
+fn strip_common_prefix(rows: &[Hotspot]) -> (Option<String>, Vec<String>) {
+    let split = |s: &str| -> Vec<String> {
+        s.split(['/', '\\'])
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let first = split(&rows[0].directory);
+    let mut shared = first.len();
+    for r in &rows[1..] {
+        let parts = split(&r.directory);
+        shared = shared.min(parts.iter().zip(&first).take_while(|(a, b)| a == b).count());
+    }
+    // Strip every shared component. Keeping one back for context would just
+    // repeat it on every row, which is the crowding this exists to remove.
+    let keep_from = shared;
+    if keep_from == 0 {
+        let names = rows.iter().map(|r| r.directory.clone()).collect();
+        return (None, names);
+    }
+    let root = first[..keep_from].join("/");
+    let names = rows
+        .iter()
+        .map(|r| {
+            let parts = split(&r.directory);
+            if parts.len() > keep_from {
+                parts[keep_from..].join("/")
+            } else {
+                // This row *is* the shared root — one directory holding
+                // findings directly, alongside others holding them deeper.
+                ".".to_string()
+            }
+        })
+        .collect();
+    let root = if rows[0].directory.starts_with(['/', '\\']) {
+        format!("/{root}")
+    } else {
+        root
+    };
+    (Some(root), names)
+}
+
+/// Shorten a long path from the left, keeping the tail — the end of a path is
+/// what identifies it, the prefix is usually shared boilerplate.
+fn truncate_left(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n <= width {
+        return s.to_string();
+    }
+    let keep: String = s.chars().skip(n - width + 1).collect();
+    format!("…{keep}")
 }
 
 /// A pluggable output renderer for one format.
@@ -133,6 +294,7 @@ impl Reporter for TextReporter {
         for (sev, n) in a.severity_counts() {
             writeln!(w, "  {:<8} {}", format!("{sev:?}").to_lowercase(), n)?;
         }
+        write_hotspots(w, a)?;
         Ok(())
     }
 }
@@ -160,6 +322,15 @@ impl Reporter for JsonReporter {
                 "severity": severity,
             },
             "findings": a.findings,
+            "hotspots": a.hotspots(HOTSPOT_LIMIT)
+                .into_iter()
+                .map(|h| serde_json::json!({
+                    "directory": h.directory,
+                    "findings": h.findings,
+                    "risk": h.risk,
+                    "share": h.share,
+                }))
+                .collect::<Vec<_>>(),
         });
         writeln!(w, "{}", serde_json::to_string_pretty(&doc)?)?;
         Ok(())
@@ -190,6 +361,23 @@ impl Reporter for MarkdownReporter {
             writeln!(w, "|---|---|")?;
             for (sev, n) in counts {
                 writeln!(w, "| {} | {} |", format!("{sev:?}").to_lowercase(), n)?;
+            }
+            writeln!(w)?;
+        }
+        let hotspots = a.hotspots(HOTSPOT_LIMIT);
+        if hotspots.len() > 1 {
+            writeln!(w, "### Findings by directory")?;
+            writeln!(w)?;
+            writeln!(w, "| Directory | Findings | Share |")?;
+            writeln!(w, "|---|---:|---:|")?;
+            for h in &hotspots {
+                writeln!(
+                    w,
+                    "| `{}` | {} | {:.0}% |",
+                    h.directory,
+                    h.findings,
+                    h.share * 100.0
+                )?;
             }
             writeln!(w)?;
         }
@@ -589,5 +777,214 @@ mod tests {
         let out = render(&JunitReporter, &Analysis::default());
         assert!(out.contains(r#"tests="0" failures="0""#));
         assert!(!out.contains("<testcase"));
+    }
+    /// Findings spread across directories, so hotspots have something to say.
+    fn spread() -> Analysis {
+        let at = |path: &str, sev: Severity| Match {
+            rule: "r".into(),
+            path: path.into(),
+            line: 1,
+            col: 1,
+            snippet: "x".into(),
+            severity: Some(sev),
+            cwe: None,
+            cve: None,
+        };
+        Analysis {
+            findings: vec![
+                at("src/auth/token.rs", Severity::Critical),
+                at("src/auth/login.rs", Severity::Critical),
+                at("src/auth/session.rs", Severity::High),
+                at("config/prod.toml", Severity::High),
+                at("config/dev.toml", Severity::Low),
+                at("README.md", Severity::Info),
+            ],
+            files: 20,
+            scans: 1,
+        }
+    }
+
+    #[test]
+    fn hotspots_rank_directories_by_share() {
+        let rows = spread().hotspots(HOTSPOT_LIMIT);
+        assert_eq!(rows[0].directory, "src/auth");
+        assert_eq!(rows[0].findings, 3);
+        assert!((rows[0].share - 0.5).abs() < 1e-9, "{:?}", rows[0]);
+        assert_eq!(rows[1].directory, "config");
+        // A file at the root groups under ".", not the empty string.
+        assert!(rows.iter().any(|r| r.directory == "."), "{rows:?}");
+        // Shares total 1.0 — every finding lands in exactly one bucket.
+        let total: f64 = rows.iter().map(|r| r.share).sum();
+        assert!((total - 1.0).abs() < 1e-9, "shares sum to {total}");
+    }
+
+    #[test]
+    fn hotspots_break_ties_by_risk_then_name() {
+        let at = |path: &str, sev: Severity| Match {
+            rule: "r".into(),
+            path: path.into(),
+            line: 1,
+            col: 1,
+            snippet: "x".into(),
+            severity: Some(sev),
+            cwe: None,
+            cve: None,
+        };
+        // Equal counts: the more severe directory must come first.
+        let a = Analysis {
+            findings: vec![
+                at("zzz/a.rs", Severity::Critical),
+                at("aaa/b.rs", Severity::Info),
+            ],
+            ..Default::default()
+        };
+        let rows = a.hotspots(HOTSPOT_LIMIT);
+        assert_eq!(rows[0].directory, "zzz", "severity should break the tie");
+
+        // Equal counts and equal risk fall back to the name, so the report is
+        // reproducible rather than dependent on iteration order.
+        let b = Analysis {
+            findings: vec![at("zzz/a.rs", Severity::Low), at("aaa/b.rs", Severity::Low)],
+            ..Default::default()
+        };
+        assert_eq!(b.hotspots(HOTSPOT_LIMIT)[0].directory, "aaa");
+    }
+
+    #[test]
+    fn hotspots_are_omitted_when_there_is_nothing_to_compare() {
+        // Every finding in one directory: a "100%" table teaches nothing.
+        let text = render(&TextReporter, &sample());
+        assert!(!text.contains("findings by directory"), "{text}");
+        // …and an empty report has no hotspots at all.
+        assert!(Analysis::default().hotspots(HOTSPOT_LIMIT).is_empty());
+    }
+
+    #[test]
+    fn hotspots_reach_every_human_facing_format() {
+        let a = spread();
+        let text = render(&TextReporter, &a);
+        assert!(text.contains("findings by directory"), "{text}");
+        assert!(text.contains("src/auth"), "{text}");
+        assert!(text.contains("50%"), "{text}");
+
+        let md = render(&MarkdownReporter, &a);
+        assert!(md.contains("### Findings by directory"), "{md}");
+        assert!(md.contains("| `src/auth` | 3 | 50% |"), "{md}");
+
+        let json = render(&JsonReporter, &a);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["hotspots"][0]["directory"], "src/auth");
+        assert_eq!(v["hotspots"][0]["findings"], 3);
+    }
+
+    #[test]
+    fn a_long_directory_is_shortened_from_the_left() {
+        // The tail identifies a path; the prefix is usually shared boilerplate.
+        assert_eq!(truncate_left("short", 10), "short");
+        let long = truncate_left("/a/very/deeply/nested/path/to/somewhere", 12);
+        assert_eq!(long.chars().count(), 12);
+        assert!(
+            long.starts_with('…') && long.ends_with("somewhere"),
+            "{long}"
+        );
+    }
+    #[test]
+    fn a_shared_root_is_stated_once_instead_of_on_every_row() {
+        let at = |path: &str| Match {
+            rule: "r".into(),
+            path: path.into(),
+            line: 1,
+            col: 1,
+            snippet: "x".into(),
+            severity: Some(Severity::High),
+            cwe: None,
+            cve: None,
+        };
+        let a = Analysis {
+            findings: vec![
+                at("/home/u/proj/src/auth/a.rs"),
+                at("/home/u/proj/src/auth/b.rs"),
+                at("/home/u/proj/config/c.toml"),
+                at("/home/u/proj/vendor/v.js"),
+            ],
+            ..Default::default()
+        };
+        let text = render(&TextReporter, &a);
+        // Scope the checks to the hotspot table: the finding list above it
+        // legitimately prints full paths.
+        let table = text
+            .split_once("findings by directory")
+            .expect("hotspot table")
+            .1;
+        assert!(table.starts_with(" (under /home/u/proj):"), "{table}");
+        assert!(table.contains("src/auth"), "{table}");
+        assert!(table.contains("vendor"), "{table}");
+        // The shared prefix is stated once, never repeated on the rows.
+        assert!(!table.contains("/home/u/proj/"), "{table}");
+    }
+
+    #[test]
+    fn the_prefix_is_compared_by_component_not_by_character() {
+        let rows = vec![
+            Hotspot {
+                directory: "src/auth".into(),
+                findings: 2,
+                risk: 10,
+                share: 0.5,
+            },
+            Hotspot {
+                directory: "src/authz".into(),
+                findings: 2,
+                risk: 10,
+                share: 0.5,
+            },
+        ];
+        // A character-wise prefix would wrongly share "src/auth".
+        let (root, names) = strip_common_prefix(&rows);
+        assert_eq!(root.as_deref(), Some("src"));
+        // A character-wise prefix would wrongly share "src/auth".
+        assert_eq!(names, vec!["auth", "authz"]);
+    }
+
+    #[test]
+    fn unrelated_directories_keep_their_full_names() {
+        let rows = vec![
+            Hotspot {
+                directory: "etc".into(),
+                findings: 1,
+                risk: 1,
+                share: 0.5,
+            },
+            Hotspot {
+                directory: "var/log".into(),
+                findings: 1,
+                risk: 1,
+                share: 0.5,
+            },
+        ];
+        let (root, names) = strip_common_prefix(&rows);
+        assert_eq!(root, None);
+        assert_eq!(names, vec!["etc", "var/log"]);
+    }
+
+    #[test]
+    fn a_row_that_is_the_shared_root_is_named_dot() {
+        let rows = vec![
+            Hotspot {
+                directory: "src/auth".into(),
+                findings: 2,
+                risk: 10,
+                share: 0.66,
+            },
+            Hotspot {
+                directory: "src".into(),
+                findings: 1,
+                risk: 5,
+                share: 0.34,
+            },
+        ];
+        let (root, names) = strip_common_prefix(&rows);
+        assert_eq!(root.as_deref(), Some("src"));
+        assert_eq!(names, vec!["auth", "."]);
     }
 }
