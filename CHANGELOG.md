@@ -10,6 +10,11 @@ and this project adheres to
 
 ### Added
 
+- The path model's tokenizer now treats `!` as a path separator, so a file
+  expanded from a container contributes the container as its own observation
+  (`archive.zip`, `inner`, `<ext:py>`) rather than one opaque token. "This came
+  out of an archive" is real signal, and it stops an extensionless entry at a
+  container root producing a junk `<ext:zip!readme>` vocabulary entry.
 - ISO 9660 disc-image expansion (`IsoExpander`, `Bytes → Files`): `.iso`/`.img`
   images are expanded into the files they contain (`appliance.iso!etc/shadow`),
   so a secret on installer media, an appliance image or a forensic capture is

@@ -64,8 +64,13 @@ const FLOOR: f64 = 1e-9;
 /// the extension is what generalises (`.pem` and `.env` mean something
 /// everywhere, `report-2024-final-v3.pem` means something only here).
 pub fn tokenize(path: &str) -> Vec<String> {
+    // `!` separates a container from what is inside it
+    // (`archive.zip!inner/app.py`). Splitting on it as well gives the model the
+    // container as its own observation — "this file came out of an archive" is
+    // real signal — and stops an extensionless entry at a container root from
+    // yielding a junk token like `<ext:zip!readme>`.
     let parts: Vec<&str> = path
-        .split(['/', '\\'])
+        .split(['/', '\\', '!'])
         .filter(|p| !p.is_empty() && *p != ".")
         .collect();
     let mut out: Vec<String> = Vec::with_capacity(parts.len());
@@ -916,5 +921,24 @@ mod tests {
             // The prior reflects the corpus it saw, clamped off the extremes.
             assert!(hmm.prior > 0.0 && hmm.prior < 1.0, "prior={}", hmm.prior);
         }
+    }
+    #[test]
+    fn container_paths_split_on_the_bang_too() {
+        // A file inside an archive: the container is its own observation, and
+        // the leaf still yields a clean extension.
+        assert_eq!(
+            tokenize("archive.zip!inner/app.py"),
+            vec!["archive.zip", "inner", "<ext:py>"]
+        );
+        // The case that used to produce a junk `<ext:zip!readme>` token.
+        assert_eq!(
+            tokenize("archive.zip!README"),
+            vec!["archive.zip", "<noext>"]
+        );
+        // Nested containers nest.
+        assert_eq!(
+            tokenize("outer.iso!inner.zip!x/key.pem"),
+            vec!["outer.iso", "inner.zip", "x", "<ext:pem>"]
+        );
     }
 }
