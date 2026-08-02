@@ -50,6 +50,40 @@ also uploads a SARIF report to code scanning.
 | `exfil graph` | Emit the findings graph (finding → file / rule) as JSON or DOT |
 | `exfil analyze` | Analyze the whole graph and render a report (`--format text\|json\|markdown\|junit\|sarif`) |
 
+## Ranked scanning
+
+exfil can learn which parts of a filesystem are worth looking at, from the scans
+already in your store, and spend a capped amount of work where findings actually
+are.
+
+| Command | What it does |
+|---|---|
+| `exfil hmm train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
+| `exfil hmm score <path>` | The model's `P(finding)` for a path, with each component's contribution |
+| `exfil hmm status` | States, vocabulary, base rate, and the ruleset it was trained under |
+
+Then bound the work:
+
+```sh
+exfil scan ./project --ranked        # worst-first; still scans everything
+exfil scan ./project --budget 20%    # worst-first, stop at 20% of files
+exfil scan ./project --budget 30s    # …or after 30 seconds
+exfil scan ./project --budget 500mb  # …or after reading 500 MB
+```
+
+`--budget` takes a suffix: `%` of files, `s`/`m`/`h` wall time, `kb`/`mb`/`gb`
+read, or a bare file count. Percentages and counts are reproducible; a time
+budget is not, so the file set it produced is recorded in the scan record.
+
+> **A budgeted scan does not certify anything.** It prints its coverage, and it
+> cannot be combined with `--fail-on` — a clean result from a 20% scan is not
+> evidence a tree is clean. `--ranked` on its own has no such caveat: it scans
+> everything, just worst-first, so `--fail-on` trips sooner.
+
+Changed files always outrank unchanged ones regardless of the model: only they
+can produce new findings, and the incremental index knows which they are with
+certainty. See the [architecture chapter](../architecture/ranking.md).
+
 ## Correlation & enrichment
 
 | Command | What it does |
@@ -97,7 +131,7 @@ exfil plugin config scan   # interactive: prompts for top-ports, pre-filled with
 
 | Command | What it does |
 |---|---|
-| `exfil mcp` | Run an MCP server on stdio giving AI agents exfil's whole tool surface (26 tools: query, scan, catalog, maintenance) |
+| `exfil mcp` | Run an MCP server on stdio giving AI agents exfil's whole tool surface (29 tools: query, scan, catalog, model, maintenance) |
 | `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
 | `exfil store export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
@@ -108,7 +142,7 @@ exfil plugin config scan   # interactive: prompts for top-ports, pre-filled with
 ## AI agents (MCP)
 
 `exfil mcp` speaks [MCP](https://modelcontextprotocol.io/) over stdio, exposing
-**26 tools** — everything the CLI does, not just reading results. Point any MCP
+**29 tools** — everything the CLI does, not just reading results. Point any MCP
 client at the binary:
 
 ```jsonc
@@ -125,6 +159,7 @@ a report, all in one session:
 | Scan | `scan` (path, `processes`, `host:port`, host/CIDR + ports, or a URL) |
 | Manage catalog | `pull` `feed_add` `feed_rm` `dataset_rm` `plugin_set` |
 | Post-scan passes | `normalize` `annotate_cwe` `check_dns` `check_whois` |
+| Path model | `hmm_train` `hmm_score` `hmm_status` |
 | Maintenance | `gc` `clean` |
 
 Every tool's description is prefixed with what it does beyond reading, so an

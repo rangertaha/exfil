@@ -9,7 +9,20 @@
   `requirements*.txt`, `Cargo.toml`) are checked for known-malicious packages,
   typosquats (Damerau-Levenshtein against popular package names), malicious
   install hooks, and cleartext dependency sources.
-- **Incremental rescans** — a stat fast-path (size + mtime) skips re-reading
+- **Probability-ranked scanning** — a hidden Markov model over path components,
+  trained on the scans already in your store (every recorded file is a sample;
+  whether it carried a finding is the label), estimates where findings are
+  likely. `exfil scan --ranked` scans worst-first; `--budget 20%` / `30s` /
+  `500mb` caps the work and spends it where it counts. A budgeted scan states
+  its coverage and refuses to combine with `--fail-on`, because a clean result
+  from a partial scan is not evidence a tree is clean. Changed files always
+  outrank unchanged ones — only they can produce new findings.
+
+- **Findings by directory** — every report names the directories holding the
+  most findings, with each one's share, so you know where to start rather than
+  only what is wrong.
+
+- **Incremental rescans, honestly** — a stat fast-path (size + mtime) skips re-reading
   unchanged files; re-scanned files have their findings replaced, never
   duplicated.
 - **Archive-aware** — zip/jar/war/tar/tar.gz/gz are unpacked into virtual files

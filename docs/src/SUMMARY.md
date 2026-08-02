@@ -24,6 +24,7 @@
 - [The Graph Store](architecture/store.md)
 - [CLI](architecture/cli.md)
 - [Integrations](architecture/integrations.md)
+- [Ranked Scanning](architecture/ranking.md)
 - [Rust Primer](architecture/rust-primer.md)
 
 # Project

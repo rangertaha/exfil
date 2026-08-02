@@ -753,4 +753,23 @@ mod tests {
         hmm.negative.emit = vec![Vec::new(); hmm.negative.states];
         assert_eq!(hmm.score("/anything/at/all.rs"), hmm.prior);
     }
+    /// A corpus with only one class cannot separate anything — the missing
+    /// chain is fitted on nothing. The model must stay usable (finite scores,
+    /// no panic) so callers can report the situation rather than crash.
+    #[test]
+    fn a_single_class_corpus_still_yields_a_usable_model() {
+        for all_found in [true, false] {
+            let samples: Vec<(String, bool)> = (0..20)
+                .map(|i| (format!("/t/dir{i}/f{i}.rs"), all_found))
+                .collect();
+            let hmm = train(&samples, &TrainConfig::default());
+            let s = hmm.score("/t/dir1/other.rs");
+            assert!(
+                s.is_finite() && (0.0..=1.0).contains(&s),
+                "all_found={all_found} score={s}"
+            );
+            // The prior reflects the corpus it saw, clamped off the extremes.
+            assert!(hmm.prior > 0.0 && hmm.prior < 1.0, "prior={}", hmm.prior);
+        }
+    }
 }

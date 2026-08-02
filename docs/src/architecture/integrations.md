@@ -1,6 +1,6 @@
 # 8 · Integrations (`mcp` · `remote` · `report`)
 
-← [The CLI](./cli.md) · Next: [Rust primer →](./rust-primer.md)
+← [The CLI](./cli.md) · Next: [Ranked scanning →](./ranking.md)
 
 The final layer is how exfil talks to the outside world: an **MCP server** giving
 AI agents the whole tool, **non-local scan sources** (processes, TCP banners, web
@@ -34,7 +34,7 @@ sequenceDiagram
     A->>S: {"method":"initialize"}
     S-->>A: { protocolVersion, capabilities, serverInfo }
     A->>S: {"method":"tools/list"}
-    S-->>A: 26 tools, each tagged by access class
+    S-->>A: 29 tools, each tagged by access class
     A->>S: {"method":"tools/call", "name":"scan", "target":"./src"}
     S->>DB: build pipeline · walk · persist findings
     DB-->>S: summary
@@ -60,7 +60,7 @@ costs a little per call and buys two things a long-lived handle can't give you:
 `clean` can delete the store directory without a live handle writing into unlinked
 files, and a `pull` is visible to the very next `scan` with no cache to invalidate.
 
-### The 26 tools
+### The 29 tools
 
 Tools are grouped by **access class**, which is prefixed to every advertised
 description ([`mcp/tools.rs:21`](../../crates/exfil-mcp/src/tools.rs#L21)) so an
@@ -87,6 +87,9 @@ call, not after:
 `plugin_set`.
 
 **Post-scan passes** — `normalize`, `annotate_cwe`, `check_dns`, `check_whois`.
+
+**The path model** — `hmm_train`, `hmm_score`, `hmm_status` (see
+[Ranked scanning](./ranking.md)).
 
 **Store maintenance** — `gc`, `clean`.
 
@@ -237,6 +240,6 @@ flowchart TD
 
 ---
 
-**Next:** the [Rust primer](./rust-primer.md) collects every Rust concept these
-pages leaned on — traits, enums, `Option`/`Result`, `Box<dyn>`, `async`, `Arc`,
-lifetimes — explained from scratch with the exact code that uses them.
+**Next:** [Ranked scanning](./ranking.md) — the path model that decides what a
+scan looks at first, work budgets, and the ruleset fingerprint that keeps an
+incremental scan honest.

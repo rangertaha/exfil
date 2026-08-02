@@ -339,6 +339,103 @@ async fn load_model(ctx: &Ctx) -> Option<exfil_hmm::Hmm> {
     serde_json::from_value(value).ok()
 }
 
+// ── The path model ───────────────────────────────────────────────────────────
+
+/// Train the path model on the scans already in the store.
+pub async fn hmm_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<String> {
+    let samples = ctx.findings().await?.training_paths().await?;
+    if samples.is_empty() {
+        return Ok("nothing to train on — run a scan first".into());
+    }
+    // A classifier needs both classes: all-positive is as unlearnable as
+    // all-negative, since one chain would be fitted on nothing.
+    let positives = samples.iter().filter(|(_, found)| *found).count();
+    let negatives = samples.len() - positives;
+    if positives == 0 || negatives == 0 {
+        let which = if positives == 0 {
+            "none carry a finding"
+        } else {
+            "every one carries a finding"
+        };
+        return Ok(format!(
+            "{} file(s) recorded but {which} — a model needs examples of both to \
+             tell them apart",
+            samples.len()
+        ));
+    }
+    let cfg = exfil_hmm::TrainConfig {
+        states: states.max(1),
+        iterations: iterations.max(1),
+        ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
+        ..exfil_hmm::TrainConfig::default()
+    };
+    let model = exfil_hmm::train(&samples, &cfg);
+    ctx.catalog()
+        .await?
+        .upsert_hmm("default", &serde_json::to_value(&model)?)
+        .await?;
+    Ok(format!(
+        "trained on {} path(s), {positives} with findings ({:.1}% base rate): \
+         {} states/chain, {} tokens",
+        samples.len(),
+        100.0 * positives as f64 / samples.len() as f64,
+        model.states(),
+        model.vocab.len(),
+    ))
+}
+
+/// Score one path under the trained model, with the per-component evidence.
+pub async fn hmm_score(ctx: &Ctx, path: &str) -> Result<String> {
+    let Some(model) = load_model(ctx).await else {
+        return Ok("no trained model — run hmm_train first".into());
+    };
+    let mut out = format!(
+        "{path}\nP(finding) = {:.4}   (base rate {:.4})\n\ncomponent contributions (log-odds):\n",
+        model.score(path),
+        model.base_rate()
+    );
+    let obs = model.observe(path);
+    for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
+        let unseen = if obs.get(i) == Some(&exfil_hmm::UNK) {
+            "  (unseen)"
+        } else {
+            ""
+        };
+        out.push_str(&format!("  {token:<28} {delta:>+9.3}{unseen}\n"));
+    }
+    Ok(out)
+}
+
+/// Summarize the trained path model.
+pub async fn hmm_status(ctx: &Ctx) -> Result<String> {
+    let Some(model) = load_model(ctx).await else {
+        return Ok("no trained model — run hmm_train first".into());
+    };
+    let current = exfil_engine::setup::ruleset_fingerprint(ctx.config()).await;
+    let stale = !model.ruleset.is_empty() && model.ruleset != current;
+    Ok(format!(
+        "states        {} per chain (positive + negative)\n\
+         vocabulary    {} token(s)\n\
+         trained on    {} path(s)\n\
+         base rate     {:.4}\n\
+         ruleset       {}{}\n",
+        model.states(),
+        model.vocab.len(),
+        model.observations,
+        model.base_rate(),
+        if model.ruleset.is_empty() {
+            "(unrecorded)"
+        } else {
+            &model.ruleset
+        },
+        if stale {
+            format!(" — STALE, this store now applies {current}; retrain")
+        } else {
+            String::new()
+        },
+    ))
+}
+
 // ── Catalog maintenance ──────────────────────────────────────────────────────
 
 /// Download a dataset into the catalog: a specific reference, or every

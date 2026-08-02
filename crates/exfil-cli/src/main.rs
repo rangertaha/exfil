@@ -1239,11 +1239,20 @@ async fn cmd_hmm_train(
         println!("nothing to train on — run `exfil scan` first");
         return Ok(());
     }
+    // A classifier needs both classes. All-positive is exactly as unlearnable as
+    // all-negative: with one chain fitted on nothing, every path scores the same
+    // and the ranking is arbitrary.
     let positives = samples.iter().filter(|(_, found)| *found).count();
-    if positives == 0 {
+    let negatives = samples.len() - positives;
+    if positives == 0 || negatives == 0 {
+        let which = if positives == 0 {
+            "none carry a finding"
+        } else {
+            "every one carries a finding"
+        };
         println!(
-            "{} file(s) recorded but none carry a finding — the model would have \
-             no signal to learn from",
+            "{} file(s) recorded but {which} — a model needs examples of both to \
+             tell them apart. Scan a wider tree, then train.",
             samples.len()
         );
         return Ok(());

@@ -44,9 +44,10 @@ exfil/
     exfil-store/    SurrealDB graph store: schema, upsert, queries, DAG-CBOR export
     exfil-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
     exfil-source/   Source trait + registry: builtin, file, http (reqwest)
-    exfil-report/   ✅ Reporter trait: text, json, markdown
+    exfil-report/   ✅ Reporter trait: text, json, markdown, junit, sarif + directory hotspots
+    exfil-hmm/      ✅ path model (two-chain HMM) ranking what a scan looks at first
     exfil-config/   ✅ TOML config with embedded default + per-plugin decode
-    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 26 tools over the whole CLI surface
+    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 29 tools over the whole CLI surface
     exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report);
                        setup.rs = shared store opening + pipeline building
     exfil-remote/   ✅ non-local sources (processes/TCP/web) + target.rs = shared scan-target dispatch

@@ -245,6 +245,36 @@ const TOOLS: &[Tool] = &[
             "flag domains registered within this many days (default 30)",
         )],
     },
+    // ── The path model ──
+    Tool {
+        name: "hmm_train",
+        access: Access::Write,
+        description: "Train the path model that ranks what a scan looks at first, on the \
+                      scans already in this store. Every recorded file is a sample; whether \
+                      a finding hangs off it is the label.",
+        params: &[
+            ("states", "integer", "latent states per chain (default 8)"),
+            (
+                "iterations",
+                "integer",
+                "max Baum-Welch iterations (default 30)",
+            ),
+        ],
+    },
+    Tool {
+        name: "hmm_score",
+        access: Access::Read,
+        description: "The trained model's P(finding) for a path, with each path component's \
+                      contribution in log-odds. The path need not exist.",
+        params: &[("path", "string", "path to score")],
+    },
+    Tool {
+        name: "hmm_status",
+        access: Access::Read,
+        description: "Summarize the trained path model, and warn when it was trained under a \
+                      different ruleset than this store now applies.",
+        params: &[],
+    },
     // ── Store maintenance ──
     Tool {
         name: "gc",
@@ -357,6 +387,18 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
                 .unwrap_or(30);
             ops::check_whois(ctx, days).await
         }
+
+        // The path model.
+        "hmm_train" => {
+            ops::hmm_train(
+                ctx,
+                number("states").unwrap_or(8),
+                number("iterations").unwrap_or(30),
+            )
+            .await
+        }
+        "hmm_score" => ops::hmm_score(ctx, &text("path")).await,
+        "hmm_status" => ops::hmm_status(ctx).await,
 
         // Store maintenance.
         "gc" => ops::gc(ctx).await,

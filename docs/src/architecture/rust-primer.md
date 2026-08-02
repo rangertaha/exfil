@@ -1,6 +1,6 @@
-# 9 · Rust Primer — Every Concept exfil Uses
+# 10 · Rust Primer — Every Concept exfil Uses
 
-← [Integrations](./integrations.md) · [Back to index](./README.md)
+← [Ranked scanning](./ranking.md) · [Back to index](./README.md)
 
 This page teaches the Rust concepts the rest of the guide relies on, each with the
 *exact code in exfil that uses it*. You don't need to read it top to bottom — the
@@ -17,7 +17,7 @@ that is one of several shapes). There is no garbage collector and no null.
 ## Crates and modules {#crates-and-modules}
 
 A **crate** is the unit of compilation — a library or a binary. exfil is a
-*workspace* of 14 crates ([overview](./overview.md#1-why-a-cargo-workspace-of-many-crates)).
+*workspace* of 12 crates ([overview](./overview.md#1-why-a-cargo-workspace-of-many-crates)).
 Inside a crate, code is organized into **modules**. `lib.rs` is the crate root; a
 `pub mod ast;` line pulls in `ast.rs` as a submodule
 ([`scan/lib.rs`](../../crates/exfil-scan/src/lib.rs)).
@@ -336,4 +336,4 @@ almost always "one more trait impl" — which is exactly the point of the design
 
 ---
 
-← [Integrations](./integrations.md) · [Back to the index](./README.md)
+← [Ranked scanning](./ranking.md) · [Back to the index](./README.md)

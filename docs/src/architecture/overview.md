@@ -81,10 +81,12 @@ exfil/
 │   │   └── src/
 │   │       ├── lib.rs        ← scan() / scan_remote(): walk, hash, persist
 │   │       ├── run.rs        ← RunStage: fetch → scan → report
+│   │       ├── plan.rs       ← Budget + ScanPlan: what to scan first, how much
 │   │       └── setup.rs      ← shared: open the stores, build the pipeline
 │   ├── exfil-remote/    ← non-local scan sources (processes, TCP, web)
 │   │   └── src/
 │   │       └── target.rs     ← shared: resolve a target spec, run the scan
+│   ├── exfil-hmm/       ← path model: P(finding | path), for ranked scanning
 │   ├── exfil-report/    ← render findings as text / json / markdown
 │   ├── exfil-mcp/       ← MCP server: expose the whole tool to AI agents
 │   └── exfil-cli/       ← THE BINARY: argument parsing, wiring
@@ -157,7 +159,7 @@ flowchart TD
             MITRE["mitre CWE"]
         end
         REPORT["exfil-report<br/>text·json·md·junit·sarif"]
-        MCP["exfil-mcp<br/>26 agent tools"]
+        MCP["exfil-mcp<br/>29 agent tools"]
     end
     subgraph L3["⑤ Storage · exfil-store"]
         subgraph RECORDS["records"]

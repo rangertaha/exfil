@@ -10,6 +10,20 @@ and this project adheres to
 
 ### Added
 
+- The path model reaches AI agents: `hmm_train`, `hmm_score` and `hmm_status`
+  join the MCP surface (29 tools), so an agent can fit the model on a store,
+  ask what a path scores and why, and be told when the model is stale relative
+  to the ruleset now in force. `exfil hmm` was previously CLI-only, which
+  contradicted the server's claim to expose everything the CLI does.
+- Architecture guide chapter 9, [Ranked scanning](docs/src/architecture/ranking.md):
+  why a sequence model rather than a frequency table, why two chains rather than
+  one (and the wrong first attempt that proved it), the scaling and determinism
+  the maths needs, budgets and expected-value ordering, the two-phase walk, the
+  three rules that stop a partial scan reading as a clean one, and the ruleset
+  fingerprint. Ranked scanning is also documented in the command guide, the
+  feature list, and the README.
+
+
 - Reports now show **where** the findings are, not just what they are: a
   "findings by directory" breakdown ranking the directories holding the most,
   with each one's share of the total. One directory holding 40% of a scan is a
@@ -23,56 +37,6 @@ and this project adheres to
   than repeated on every row; and the whole section is omitted when there is
   only one directory to name.
 
-### Changed
-
-- **Relicensed from MIT to GPL-3.0-or-later.** `LICENSE` carries the full GPLv3
-  text; the workspace manifest (inherited by every crate) and the standalone
-  desktop app declare `GPL-3.0-or-later`. The Rust dependency tree is
-  unaffected — the MIT/Apache-2.0 mix common on crates.io is one-way compatible
-  into GPLv3.
-
-### Removed
-
-- `crates/exfil-remote/top-ports.txt`, the port ranking derived from nmap's
-  `nmap-services` data. It was retained under MIT with an in-file notice, but
-  the Nmap Public Source License is a modified GPLv2 with added restrictions
-  and is **not GPL-compatible**, so it could not be carried into a GPLv3 work.
-  `--ports common` now reads `netscan::COMMON_PORTS`, written for this project:
-  IANA service assignments — facts, not authorship — ordered by our own
-  judgement of what a security scan cares about (web and remote access first,
-  then file shares, databases, directory/auth, orchestration, industrial
-  control, then the long tail). Deliberately *not* a frequency ranking, since
-  an observed-frequency ordering is someone's measurement and carries their
-  licence with it. 768 unique ports, deduplicated at startup because the
-  grouped literal repeats a few for readability; the `top-ports` setting's
-  maximum drops 2000 → 750 so it can never advertise more ports than exist.
-  exfil now ships no third-party data.
-
-### Fixed
-
-- **New rules were never applied to unchanged files.** The stat fast-path skips
-  a file whose size and mtime match the last scan — but that promise only holds
-  for the rules that produced the stored findings. `exfil pull` a new dataset,
-  rescan, and every unchanged file stayed unexamined by rules that had never
-  seen it. Each scan now records a fingerprint of the ruleset it applied
-  (`exfil_engine::setup::ruleset_fingerprint`, hashed over built-in plus
-  catalog rule names and patterns, order-independent); when the next scan's
-  fingerprint differs, the fast-path is bypassed and everything is re-examined
-  exactly once, after which it resumes. `Summary::ruleset_changed` reports it,
-  and a path model trained under different rules now warns instead of silently
-  ranking on stale assumptions.
-- A stored path model whose vocabulary outran its emission matrices — a
-  truncated write, a hand edit, a version skew — indexed out of bounds and
-  panicked the scanner mid-walk. Indices are now clamped to the matrix width
-  and an empty vocabulary returns the base rate: a model that cannot be trusted
-  degrades to "I know nothing", it does not take the process down.
-- `--budget`/`--ranked` were accepted and silently ignored for non-path targets
-  (`processes`, `host:port`, URLs), so a request to scan 10% quietly ran a full
-  scan. `Target::honors_plan()` now gates it: the CLI warns and the MCP `scan`
-  tool appends an explicit note. Being misled about coverage is the exact
-  failure this feature exists to prevent.
-
-### Added
 
 - Probability-ranked scanning (`exfil-hmm`, `exfil hmm`, `scan --budget`). A
   hidden Markov model over path components learns which parts of a filesystem
@@ -140,109 +104,6 @@ and this project adheres to
   `Pipeline::run_file_binary_only`, while text-pattern scanners keep skipping
   it as before.
 
-### Fixed
-
-- The engine read every file fully into memory with no size cap, so a single
-  large file (a VM image, a database dump, a core file) could exhaust RAM —
-  multiplied by the parallel walk, which could have one such allocation per
-  thread. Files are now capped at `MAX_SCAN_BYTES` (512 MiB) for *content
-  scanning* only: an oversize file is still stat'ed, still hashed (streamed in
-  1 MiB chunks, so memory stays bounded), and still recorded, keeping
-  filesystem coverage and the stat fast-path intact. `scan_remote` applies the
-  same rule, though `RemoteFs` returns a whole `Vec<u8>` with no stat, so there
-  it bounds the scanning work rather than the allocation.
-- `SqliteExpander` bounded its *output* (rows, tables, bytes) but not its
-  input, while opening a database means staging every byte to a temp file
-  first — so a multi-gigabyte `.db` was copied to the temp directory in full,
-  once per walker thread, before a single row was read. New
-  `Limits::max_input_bytes` (2 GiB) rejects it before anything is written.
-- A file whose *name* matched a container extension was scanned by nothing at
-  all when its content wasn't really that format. The engine decided
-  "is this a container?" from `applies(path)`, and expanders match on filename
-  alone, so a plain text file named `notes.db` (or `.zip`, `.gz`, …) was
-  expanded to nothing and then skipped — its contents never reaching any
-  scanner. Container-ness is now decided by content: the name-based branch is
-  gone, the expanders declare themselves `binary_safe`, and the binary sniff
-  alone routes each file. Real archives and databases still expand (and now
-  additionally reach YARA/ClamAV, which they never did before), while a text
-  file wearing a container extension is scanned as the text it is. Existing
-  `.db`-named non-SQLite files are the most likely to have been silently
-  missed, since the new SQLite expander widened `applies` to a very common
-  extension.
-- `exfil scan --ports <spec>` with no target silently fell through to a plain
-  passive scan of the current directory instead of erroring — `ports` now
-  `requires` a target at the clap level.
-- A plugin setting resolved from `[plugins.<name>]` (or, defensively, a
-  catalog override) was used as-is even when it failed the field's own
-  schema validation (e.g. `top-ports = 0` or `top-ports = 99999` in config);
-  `resolve_plugin_setting` now validates at each layer and falls through
-  (with a warning) instead of using an out-of-range value.
-- `Config::plugin_field` treated a TOML float the same as an absent field
-  (silently falling back to the schema default); it now stringifies floats
-  too, so an invalid-for-its-schema value is rejected explicitly instead of
-  vanishing as if unconfigured.
-- `exfil scan <host/cidr> --ports common` with a resolved `top-ports` of 0
-  silently swept zero ports and reported success; `expand_ports` now bails
-  instead, consistent with an explicitly empty port spec.
-- `plugin_setting` records were keyed by `"{plugin}.{key}"` string
-  concatenation, so a plugin/key pair containing a `.` (e.g. plugin `a.b` key
-  `c`) could collide with a different pair with the same concatenation
-  (plugin `a` key `b.c`); now keyed by a genuine `[plugin, key]` composite
-  record id.
-
-### Security
-
-- Upgraded `yara-x` (0.13 → 1.19), which moves its bundled `wasmtime` from
-  29.0.1 to 43.0.2 and clears 16 RustSec advisories — including two critical
-  (CVSS 9.0) WebAssembly sandbox escapes reachable via YARA rules pulled from
-  remote feeds. Bumped `ratatui` (0.29 → 0.30) alongside it (required to resolve
-  the shared `unicode-width` pin), which also drops the unsound `lru` 0.12 from
-  its dependency path.
-
-### Removed
-
-- Finding enrichment and its two crates. `exfil-llm` (the `Enricher` trait plus
-  the model-free `RuleBasedEnricher` that wrote a `triage` note onto each
-  finding) and `exfil-script` (the Rhai `ScriptEnricher` for user-written triage
-  rules, and the `rhai` dependency) are gone, along with the `[plugins.script]`
-  and `[llm]` config blocks and the `llm` field on `Config`. The rule-based
-  notes only restated the severity and CWE already on the finding, and the
-  offline Candle/GGUF model the trait was a seam for never landed; agent-driven
-  triage now goes through the MCP server, which reasons over the graph directly.
-  **`exfil enrich` remains**, as the MITRE CWE-name annotation pass it always
-  also was — that half never depended on the enricher.
-- The `exfil tui` workbench (mutt-style index/pager, the vim-style graph
-  navigator, configurable keymaps) has been removed, along with the
-  `exfil-view` crate that backed its preview panes. May return in a future
-  release.
-- SSH/SFTP remote-host scanning (`scan files --remote`, the `russh`/
-  `russh-sftp` dependencies) has been removed. Local process scanning, TCP
-  banner grabbing, port sweeps, and web crawling are all still available
-  under the unified `scan` command (see Changed below) — only logging into a
-  remote host over SSH to walk its filesystem is gone. This also obsoletes
-  the `russh` RUSTSEC-2025-0090/0091 advisories previously tracked here.
-
-### Changed
-
-- The default config is now a fully-documented reference: every option is shown
-  with its default value and commented out (only the shipped `security` dataset
-  is active), so exfil runs on built-in defaults and users uncomment only what
-  they want to change.
-
-- Grouped the CLI into nested subcommands: the reachability checks live under
-  `check` (`check dns`, `check whois`) and store maintenance under `store`
-  (`store export`, `store gc`, `store clean`).
-
-- Unified all scan targets onto a single `exfil scan [target]` command
-  (previously `scan files`/`tcp`/`port`/`web`/`processes` subcommands): the
-  shape of `target` picks the scanner — a local path or nothing (current
-  directory), the literal `processes`, comma-separated `host:port` banner
-  targets, a host/CIDR swept with `--ports`, or an `http(s)://` URL (`--driver`
-  for a WebDriver-rendered crawl). `-a`/`-p` label a scan active (it reached a
-  remote system) or passive (local only) in its summary, inferred from the
-  target's shape when neither is given.
-
-### Added
 
 - Per-plugin config schemas and overrides: a plugin can publish a typed,
   validated `PluginSchema` (`exfil_config::PluginSchema`/`FieldSchema`) beyond
@@ -350,6 +211,32 @@ and this project adheres to
 
 ### Changed
 
+- **Relicensed from MIT to GPL-3.0-or-later.** `LICENSE` carries the full GPLv3
+  text; the workspace manifest (inherited by every crate) and the standalone
+  desktop app declare `GPL-3.0-or-later`. The Rust dependency tree is
+  unaffected — the MIT/Apache-2.0 mix common on crates.io is one-way compatible
+  into GPLv3.
+
+
+- The default config is now a fully-documented reference: every option is shown
+  with its default value and commented out (only the shipped `security` dataset
+  is active), so exfil runs on built-in defaults and users uncomment only what
+  they want to change.
+
+- Grouped the CLI into nested subcommands: the reachability checks live under
+  `check` (`check dns`, `check whois`) and store maintenance under `store`
+  (`store export`, `store gc`, `store clean`).
+
+- Unified all scan targets onto a single `exfil scan [target]` command
+  (previously `scan files`/`tcp`/`port`/`web`/`processes` subcommands): the
+  shape of `target` picks the scanner — a local path or nothing (current
+  directory), the literal `processes`, comma-separated `host:port` banner
+  targets, a host/CIDR swept with `--ports`, or an `http(s)://` URL (`--driver`
+  for a WebDriver-rendered crawl). `-a`/`-p` label a scan active (it reached a
+  remote system) or passive (local only) in its summary, inferred from the
+  target's shape when neither is given.
+
+
 - Folded `exfil update` into `exfil pull`: `pull <ref>` fetches one dataset,
   `pull` (no argument) fetches every configured `[[update]]`.
 - CLI commands: `scan`, `search`, `get`, `rules`, `config`, `clean`, `tui`.
@@ -455,3 +342,130 @@ and this project adheres to
 - Added `exfil check-whois`: WHOIS-checks domains observed during scans and
   flags newly-registered ones (a phishing signal) via a port-43 IANA-referral
   lookup, with a dependency-free date parser. Online, opt-in.
+
+### Removed
+
+- `crates/exfil-remote/top-ports.txt`, the port ranking derived from nmap's
+  `nmap-services` data. It was retained under MIT with an in-file notice, but
+  the Nmap Public Source License is a modified GPLv2 with added restrictions
+  and is **not GPL-compatible**, so it could not be carried into a GPLv3 work.
+  `--ports common` now reads `netscan::COMMON_PORTS`, written for this project:
+  IANA service assignments — facts, not authorship — ordered by our own
+  judgement of what a security scan cares about (web and remote access first,
+  then file shares, databases, directory/auth, orchestration, industrial
+  control, then the long tail). Deliberately *not* a frequency ranking, since
+  an observed-frequency ordering is someone's measurement and carries their
+  licence with it. 768 unique ports, deduplicated at startup because the
+  grouped literal repeats a few for readability; the `top-ports` setting's
+  maximum drops 2000 → 750 so it can never advertise more ports than exist.
+  exfil now ships no third-party data.
+
+
+- Finding enrichment and its two crates. `exfil-llm` (the `Enricher` trait plus
+  the model-free `RuleBasedEnricher` that wrote a `triage` note onto each
+  finding) and `exfil-script` (the Rhai `ScriptEnricher` for user-written triage
+  rules, and the `rhai` dependency) are gone, along with the `[plugins.script]`
+  and `[llm]` config blocks and the `llm` field on `Config`. The rule-based
+  notes only restated the severity and CWE already on the finding, and the
+  offline Candle/GGUF model the trait was a seam for never landed; agent-driven
+  triage now goes through the MCP server, which reasons over the graph directly.
+  **`exfil enrich` remains**, as the MITRE CWE-name annotation pass it always
+  also was — that half never depended on the enricher.
+- The `exfil tui` workbench (mutt-style index/pager, the vim-style graph
+  navigator, configurable keymaps) has been removed, along with the
+  `exfil-view` crate that backed its preview panes. May return in a future
+  release.
+- SSH/SFTP remote-host scanning (`scan files --remote`, the `russh`/
+  `russh-sftp` dependencies) has been removed. Local process scanning, TCP
+  banner grabbing, port sweeps, and web crawling are all still available
+  under the unified `scan` command (see Changed below) — only logging into a
+  remote host over SSH to walk its filesystem is gone. This also obsoletes
+  the `russh` RUSTSEC-2025-0090/0091 advisories previously tracked here.
+
+### Fixed
+
+- `exfil hmm train` rejected a corpus where no file carried a finding, but
+  accepted one where *every* file did — equally unlearnable, since the negative
+  chain is then fitted on nothing and every path scores identically. Both
+  degenerate cases are now reported, in the CLI and over MCP.
+
+
+- **New rules were never applied to unchanged files.** The stat fast-path skips
+  a file whose size and mtime match the last scan — but that promise only holds
+  for the rules that produced the stored findings. `exfil pull` a new dataset,
+  rescan, and every unchanged file stayed unexamined by rules that had never
+  seen it. Each scan now records a fingerprint of the ruleset it applied
+  (`exfil_engine::setup::ruleset_fingerprint`, hashed over built-in plus
+  catalog rule names and patterns, order-independent); when the next scan's
+  fingerprint differs, the fast-path is bypassed and everything is re-examined
+  exactly once, after which it resumes. `Summary::ruleset_changed` reports it,
+  and a path model trained under different rules now warns instead of silently
+  ranking on stale assumptions.
+- A stored path model whose vocabulary outran its emission matrices — a
+  truncated write, a hand edit, a version skew — indexed out of bounds and
+  panicked the scanner mid-walk. Indices are now clamped to the matrix width
+  and an empty vocabulary returns the base rate: a model that cannot be trusted
+  degrades to "I know nothing", it does not take the process down.
+- `--budget`/`--ranked` were accepted and silently ignored for non-path targets
+  (`processes`, `host:port`, URLs), so a request to scan 10% quietly ran a full
+  scan. `Target::honors_plan()` now gates it: the CLI warns and the MCP `scan`
+  tool appends an explicit note. Being misled about coverage is the exact
+  failure this feature exists to prevent.
+
+
+- The engine read every file fully into memory with no size cap, so a single
+  large file (a VM image, a database dump, a core file) could exhaust RAM —
+  multiplied by the parallel walk, which could have one such allocation per
+  thread. Files are now capped at `MAX_SCAN_BYTES` (512 MiB) for *content
+  scanning* only: an oversize file is still stat'ed, still hashed (streamed in
+  1 MiB chunks, so memory stays bounded), and still recorded, keeping
+  filesystem coverage and the stat fast-path intact. `scan_remote` applies the
+  same rule, though `RemoteFs` returns a whole `Vec<u8>` with no stat, so there
+  it bounds the scanning work rather than the allocation.
+- `SqliteExpander` bounded its *output* (rows, tables, bytes) but not its
+  input, while opening a database means staging every byte to a temp file
+  first — so a multi-gigabyte `.db` was copied to the temp directory in full,
+  once per walker thread, before a single row was read. New
+  `Limits::max_input_bytes` (2 GiB) rejects it before anything is written.
+- A file whose *name* matched a container extension was scanned by nothing at
+  all when its content wasn't really that format. The engine decided
+  "is this a container?" from `applies(path)`, and expanders match on filename
+  alone, so a plain text file named `notes.db` (or `.zip`, `.gz`, …) was
+  expanded to nothing and then skipped — its contents never reaching any
+  scanner. Container-ness is now decided by content: the name-based branch is
+  gone, the expanders declare themselves `binary_safe`, and the binary sniff
+  alone routes each file. Real archives and databases still expand (and now
+  additionally reach YARA/ClamAV, which they never did before), while a text
+  file wearing a container extension is scanned as the text it is. Existing
+  `.db`-named non-SQLite files are the most likely to have been silently
+  missed, since the new SQLite expander widened `applies` to a very common
+  extension.
+- `exfil scan --ports <spec>` with no target silently fell through to a plain
+  passive scan of the current directory instead of erroring — `ports` now
+  `requires` a target at the clap level.
+- A plugin setting resolved from `[plugins.<name>]` (or, defensively, a
+  catalog override) was used as-is even when it failed the field's own
+  schema validation (e.g. `top-ports = 0` or `top-ports = 99999` in config);
+  `resolve_plugin_setting` now validates at each layer and falls through
+  (with a warning) instead of using an out-of-range value.
+- `Config::plugin_field` treated a TOML float the same as an absent field
+  (silently falling back to the schema default); it now stringifies floats
+  too, so an invalid-for-its-schema value is rejected explicitly instead of
+  vanishing as if unconfigured.
+- `exfil scan <host/cidr> --ports common` with a resolved `top-ports` of 0
+  silently swept zero ports and reported success; `expand_ports` now bails
+  instead, consistent with an explicitly empty port spec.
+- `plugin_setting` records were keyed by `"{plugin}.{key}"` string
+  concatenation, so a plugin/key pair containing a `.` (e.g. plugin `a.b` key
+  `c`) could collide with a different pair with the same concatenation
+  (plugin `a` key `b.c`); now keyed by a genuine `[plugin, key]` composite
+  record id.
+
+### Security
+
+- Upgraded `yara-x` (0.13 → 1.19), which moves its bundled `wasmtime` from
+  29.0.1 to 43.0.2 and clears 16 RustSec advisories — including two critical
+  (CVSS 9.0) WebAssembly sandbox escapes reachable via YARA rules pulled from
+  remote feeds. Bumped `ratatui` (0.29 → 0.30) alongside it (required to resolve
+  the shared `unicode-width` pin), which also drops the unsound `lru` 0.12 from
+  its dependency path.
