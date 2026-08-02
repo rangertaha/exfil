@@ -40,6 +40,8 @@ hex = "0.4"
 aho-corasick = "1"
 yara-x = "1.19"
 serde = { workspace = true, features = ["derive"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
 
 [lints]
 workspace = true

@@ -26,6 +26,11 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
+// Store opening and pipeline building live in the engine so the CLI and the MCP
+// server (which exposes the same operations to agents) cannot drift apart.
+use exfil_engine::setup::{build_pipeline, open_catalog, open_findings};
+use exfil_remote::target::{self, Mode as ScanMode, Target};
+
 /// Worked examples shown at the bottom of `exfil --help`. Grouped so a new user
 /// can see the common paths (scan → search → triage) at a glance.
 const EXAMPLES: &str = "\
@@ -61,45 +66,6 @@ fn print_tally(counts: &progress::SevCounts) {
     if let Some(tally) = progress::tally_line(counts) {
         println!("{tally}");
     }
-}
-
-/// The `[database]` override from config, or `None` for the embedded default.
-/// An empty (or absent) endpoint keeps the built-in per-path embedded stores.
-fn database_override(config: Option<&std::path::Path>) -> Option<exfil_store::DbConfig> {
-    let db = exfil_config::load(config).ok()?.database?;
-    if db.endpoint.trim().is_empty() {
-        return None;
-    }
-    Some(exfil_store::DbConfig {
-        endpoint: db.endpoint,
-        username: db.username,
-        password: db.password,
-    })
-}
-
-/// Open the findings database: the configured `[database]` endpoint, or the
-/// embedded on-disk store at `store_dir`.
-async fn open_findings(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-) -> Result<exfil_store::Store> {
-    match database_override(config) {
-        Some(db) => exfil_store::Store::connect(&db, exfil_store::DB_FINDINGS).await,
-        None => exfil_store::Store::open_findings(store_dir).await,
-    }
-}
-
-/// Open the catalog database (datasets, rules, CWE): the configured
-/// `[database]` endpoint, or the embedded catalog in the config directory.
-async fn open_catalog(config: Option<&std::path::Path>) -> Result<exfil_store::Store> {
-    if let Some(db) = database_override(config) {
-        return exfil_store::Store::connect(&db, exfil_store::DB_CATALOG).await;
-    }
-    let dir = exfil_config::catalog_dir()?;
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    exfil_store::Store::open_catalog(&dir).await
 }
 
 /// Print a discoverability hint to stderr, but only on an interactive terminal
@@ -151,7 +117,7 @@ enum Command {
     /// List the available dataset source plugins.
     Sources,
     /// Download datasets: a specific `reference`, or every configured
-    /// `[[update]]` (datasets + LLM model) when no reference is given.
+    /// `[[update]]` entry when no reference is given.
     Pull { reference: Option<String> },
     /// Manage catalog datasets (list by default; add/show/rm subcommands).
     Datasets {
@@ -247,7 +213,8 @@ enum Command {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Run the offline LLM enrichment pass over the stored graph.
+    /// Annotate stored findings with authoritative MITRE CWE names (run
+    /// `exfil pull mitre://cwe` first to download the catalog).
     Enrich,
     /// Look up a weakness in the local MITRE CWE catalog (`exfil pull
     /// mitre://cwe` downloads it).
@@ -431,8 +398,11 @@ async fn main() -> Result<()> {
         Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
         Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
         Command::Mcp => {
-            let store = open_findings(&store_dir, cfg).await?;
-            exfil_mcp::serve(store).await?;
+            exfil_mcp::serve(exfil_mcp::Ctx {
+                store_dir: store_dir.clone(),
+                config: cli.config.clone(),
+            })
+            .await?
         }
         Command::Server { addr } => cmd_server(&store_dir, cfg, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
@@ -466,26 +436,8 @@ fn cmd_config(explicit: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
-/// Whether a scan reached out to a remote system (active) or stayed on the
-/// local one (passive). Shown with the scan summary; `-a`/`-p` override the
-/// default inferred from the target's shape.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScanMode {
-    Active,
-    Passive,
-}
-
-impl std::fmt::Display for ScanMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            ScanMode::Active => "active",
-            ScanMode::Passive => "passive",
-        })
-    }
-}
-
 /// Resolve the `-a`/`-p` flags (mutually exclusive per clap) to an explicit
-/// mode override, or `None` to infer one from the target.
+/// mode override, or `None` to infer one from the target's shape.
 fn explicit_scan_mode(active: bool, passive: bool) -> Option<ScanMode> {
     if active {
         Some(ScanMode::Active)
@@ -494,18 +446,6 @@ fn explicit_scan_mode(active: bool, passive: bool) -> Option<ScanMode> {
     } else {
         None
     }
-}
-
-/// Parse `spec` as one or more comma-separated `host:port` banner-grab
-/// targets. `None` if any piece lacks a trailing `:<port>`, so callers fall
-/// back to treating `spec` as a local path.
-fn parse_tcp_targets(spec: &str) -> Option<Vec<String>> {
-    let pieces: Vec<&str> = spec.split(',').collect();
-    let all_host_port = pieces.iter().all(|p| {
-        p.rsplit_once(':')
-            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
-    });
-    all_host_port.then(|| pieces.into_iter().map(String::from).collect())
 }
 
 /// Every plugin's published config schema (see `exfil_config::PluginSchema`),
@@ -572,12 +512,17 @@ async fn cmd_plugin_config(config: Option<&std::path::Path>, plugin: &str) -> Re
         .find(|p| p.name == plugin)
         .with_context(|| format!("no such plugin {plugin:?}"))?;
     let catalog = open_catalog(config).await?;
-    println!("Configuring {plugin:?} ({} setting(s)):\n", schema.fields.len());
+    println!(
+        "Configuring {plugin:?} ({} setting(s)):\n",
+        schema.fields.len()
+    );
     for field in schema.fields {
         let current = resolve_plugin_setting(config, plugin, field).await;
         let answer = prompt_field(field, &current)?;
         let normalized = field.validate(&answer).map_err(|e| anyhow::anyhow!(e))?;
-        catalog.set_plugin_setting(plugin, field.key, &normalized).await?;
+        catalog
+            .set_plugin_setting(plugin, field.key, &normalized)
+            .await?;
         println!("{plugin}.{} = {normalized}\n", field.key);
     }
     Ok(())
@@ -618,15 +563,15 @@ fn prompt_field(field: &'static exfil_config::FieldSchema, current: &str) -> Res
     }
 }
 
-/// Dispatch a scan by the shape of `target`: an `http(s)://` URL crawls a
-/// site; the literal `processes` scans local running processes; `--ports`
-/// sweeps `target` as a host/CIDR; comma-separated `host:port` grabs banners;
-/// anything else (or no target) scans a local directory tree.
+/// Dispatch a scan by the shape of `target` — resolved by
+/// [`exfil_remote::target`], which the MCP server uses too, so a spec means the
+/// same thing however it arrives. Progress renders live: a ratatui gauge on a
+/// terminal, plain match lines when piped.
 #[allow(clippy::too_many_arguments)]
 async fn cmd_scan(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
-    target: Option<String>,
+    spec: Option<String>,
     ports: Option<String>,
     max_pages: usize,
     max_depth: usize,
@@ -634,55 +579,53 @@ async fn cmd_scan(
     mode: Option<ScanMode>,
     fail_on: Option<exfil_core::Severity>,
 ) -> Result<()> {
-    if let Some(spec) = &target {
-        if let Some(ports) = &ports {
-            let top_n = match find_plugin_field("scan", "top-ports") {
-                Some((_, field)) => resolve_plugin_setting(config, "scan", field)
-                    .await
-                    .parse()
-                    .unwrap_or(100),
-                None => 100,
-            };
-            let targets = exfil_remote::netscan::expand_targets(spec, ports, top_n)?;
-            eprintln!("sweeping {} host:port targets…", targets.len());
-            cmd_scan_tcp(store_dir, config, targets, mode.unwrap_or(ScanMode::Active)).await?
-        } else if let Some(url) = spec
-            .strip_prefix("https://")
-            .map(|_| spec.as_str())
-            .or_else(|| spec.strip_prefix("http://").map(|_| spec.as_str()))
-        {
-            cmd_scan_web(
-                store_dir,
-                config,
-                url,
-                max_pages,
-                max_depth,
-                driver,
-                mode.unwrap_or(ScanMode::Active),
-            )
-            .await?
-        } else if spec == "processes" {
-            cmd_processes(store_dir, config, mode.unwrap_or(ScanMode::Passive)).await?
-        } else if let Some(targets) = parse_tcp_targets(spec) {
-            cmd_scan_tcp(store_dir, config, targets, mode.unwrap_or(ScanMode::Active)).await?
-        } else {
-            cmd_scan_files(
-                store_dir,
-                config,
-                Some(spec.clone()),
-                mode.unwrap_or(ScanMode::Passive),
-            )
-            .await?
-        }
-    } else {
-        cmd_scan_files(store_dir, config, None, mode.unwrap_or(ScanMode::Passive)).await?
+    // `common` expands to this many ports; configurable per the scan plugin's
+    // published schema.
+    let top_ports = match find_plugin_field("scan", "top-ports") {
+        Some((_, field)) => resolve_plugin_setting(config, "scan", field)
+            .await
+            .parse()
+            .unwrap_or(100),
+        None => 100,
+    };
+    let opts = target::Options {
+        ports,
+        max_pages: Some(max_pages),
+        max_depth: Some(max_depth),
+        driver: driver.map(String::from),
+        top_ports,
+    };
+    let target = target::parse(spec.as_deref(), &opts)?;
+    announce(&target, opts.ports.is_some());
+
+    let built = build_pipeline(config).await?;
+    if !built.skipped.is_empty() {
+        eprintln!(
+            "skipped {} rule(s) with unsupported patterns",
+            built.skipped.len()
+        );
     }
+    let store = open_findings(store_dir, config).await?;
+    // A local walk must exclude the store itself; remote targets have no
+    // directory to skip.
+    let skip = matches!(target, Target::Path(_)).then_some(store_dir);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let renderer = progress::spawn(rx);
+    let result = target::run(target, &built.pipeline, &store, skip, Some(tx), mode).await;
+    // The scan dropped its sender, so the renderer is finishing; wait for it
+    // before printing the summary under the (now final) progress bar. Joining
+    // yields the per-severity counts of the matches it just streamed.
+    let counts = renderer.join().unwrap_or_default();
+    let outcome = result?;
+    println!("{}", summary_line(&outcome));
+    print_tally(&counts);
+    scan_hints(&outcome);
 
     // CI gate: exit non-zero when the store holds a finding at or above the
     // threshold. Checked against the whole store, so a fresh scan gates on its
     // own results and an incremental scan gates on the cumulative state.
     if let Some(threshold) = fail_on {
-        let store = open_findings(store_dir, config).await?;
         let findings = store.search_findings("").await?;
         let breaching = findings
             .iter()
@@ -691,157 +634,64 @@ async fn cmd_scan(
         if breaching > 0 {
             use std::io::Write;
             let _ = std::io::stdout().flush();
-            eprintln!("✗ {breaching} finding(s) at or above {threshold:?}");
+            eprintln!("\u{2717} {breaching} finding(s) at or above {threshold:?}");
             std::process::exit(1);
         }
     }
     Ok(())
 }
 
-/// Walk a local directory tree, scan it with the registered scanners, and
-/// persist files + findings into the local store. Progress renders live: a
-/// ratatui gauge on a terminal, plain match lines when piped.
-async fn cmd_scan_files(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    path: Option<String>,
-    mode: ScanMode,
-) -> Result<()> {
-    let target = PathBuf::from(match path {
-        Some(p) if !p.is_empty() => p,
-        _ => ".".to_string(),
-    });
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
+/// Tell the user what a long-running remote target is about to do, before it
+/// starts — a sweep, a crawl, or a rendered crawl can take a while with nothing
+/// to show until the first result arrives.
+fn announce(target: &Target, swept: bool) {
+    match target {
+        Target::Tcp(targets) if swept => {
+            eprintln!("sweeping {} host:port targets\u{2026}", targets.len())
+        }
+        Target::Web {
+            url,
+            driver: Some(driver),
+            ..
+        } => eprintln!("rendering {url} via WebDriver {driver}\u{2026}"),
+        Target::Web { url, .. } => eprintln!("crawling {url}\u{2026}"),
+        _ => {}
+    }
+}
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan(&target, &pipeline, &store, Some(store_dir), Some(tx)).await;
-    // The engine dropped its sender, so the renderer is finishing; wait for it
-    // before printing the summary under the (now final) progress bar. Joining
-    // yields the per-severity counts of the matches it just streamed.
-    let counts = renderer.join().unwrap_or_default();
-    let summary = result?;
-    println!(
-        "scanned {} files ({} unchanged): {} new matches, {} unreadable ({mode})",
-        summary.files, summary.unchanged, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    if summary.matches > 0 {
-        hint("\nNext: `exfil analyze` for a report · `exfil search severity=critical` to filter");
-    } else if summary.files > 0 {
+/// The summary line for a finished scan, phrased for the target that ran.
+fn summary_line(outcome: &target::Outcome) -> String {
+    let s = &outcome.summary;
+    let mode = outcome.mode;
+    match &outcome.target {
+        Target::Path(_) => format!(
+            "scanned {} files ({} unchanged): {} new matches, {} unreadable ({mode})",
+            s.files, s.unchanged, s.matches, s.errors
+        ),
+        Target::Processes => format!(
+            "scanned {} processes: {} matches, {} unreadable ({mode})",
+            s.files, s.matches, s.errors
+        ),
+        Target::Tcp(_) => format!(
+            "grabbed {} banner(s): {} matches, {} unreachable ({mode})",
+            s.files, s.matches, s.errors
+        ),
+        Target::Web { .. } => format!(
+            "crawled {} page(s): {} matches, {} unreadable ({mode})",
+            s.files, s.matches, s.errors
+        ),
+    }
+}
+
+/// Point at the obvious next command after a scan (terminal only).
+fn scan_hints(outcome: &target::Outcome) {
+    if outcome.summary.matches > 0 {
+        hint("\nNext: `exfil analyze` for a report \u{b7} `exfil search severity=critical` to filter");
+    } else if outcome.summary.files > 0 {
         hint(
             "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
         );
     }
-    Ok(())
-}
-
-/// Scan the local host's running processes: each process's name, exe path,
-/// and command line is scanned by the full pipeline (secrets on a command
-/// line, PII, bad domains/IPs in arguments). Reuses `scan_remote` with a
-/// process source.
-async fn cmd_processes(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    mode: ScanMode,
-) -> Result<()> {
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
-    let fs = exfil_remote::ProcessFs::new();
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(&fs, "proc://", &pipeline, &store, Some(tx)).await;
-    let counts = renderer.join().unwrap_or_default();
-    let summary = result?;
-    println!(
-        "scanned {} processes: {} matches, {} unreadable ({mode})",
-        summary.files, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    Ok(())
-}
-
-/// Grab TCP service banners from `targets` and scan them with the full
-/// pipeline (version strings, exposed secrets, bad indicators in banners).
-async fn cmd_scan_tcp(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    targets: Vec<String>,
-    mode: ScanMode,
-) -> Result<()> {
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
-    let fs = exfil_remote::TcpFs::new(targets);
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(&fs, "tcp://", &pipeline, &store, Some(tx)).await;
-    let counts = renderer.join().unwrap_or_default();
-    let summary = result?;
-    println!(
-        "grabbed {} banner(s): {} matches, {} unreachable ({mode})",
-        summary.files, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    Ok(())
-}
-
-/// Crawl a website and scan the fetched pages with the full pipeline (leaked
-/// secrets/keys in HTML/JS, PII, bad indicators).
-#[allow(clippy::too_many_arguments)]
-async fn cmd_scan_web(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    url: &str,
-    max_pages: usize,
-    max_depth: usize,
-    driver: Option<&str>,
-    mode: ScanMode,
-) -> Result<()> {
-    let pipeline = build_pipeline(config).await?;
-    let store = open_findings(store_dir, config).await?;
-
-    // A WebDriver server renders JavaScript (dynamic sites); otherwise a plain
-    // HTTP crawl. Both present the pages as a `RemoteFs` to the same scan.
-    let (counts, summary) = match driver {
-        Some(driver) => {
-            eprintln!("rendering {url} via WebDriver {driver}…");
-            let fs = exfil_remote::webdriver::WebDriverFs::crawl(driver, url, max_pages, max_depth)
-                .await
-                .with_context(|| format!("render {url} via WebDriver"))?;
-            run_web_scan(&fs, &pipeline, &store).await
-        }
-        None => {
-            eprintln!("crawling {url}…");
-            let fs = exfil_remote::WebFs::crawl(url, max_pages, max_depth)
-                .await
-                .with_context(|| format!("crawl {url}"))?;
-            run_web_scan(&fs, &pipeline, &store).await
-        }
-    };
-    let summary = summary?;
-    println!(
-        "crawled {} page(s): {} matches, {} unreadable ({mode})",
-        summary.files, summary.matches, summary.errors
-    );
-    print_tally(&counts);
-    Ok(())
-}
-
-/// Scan an already-crawled/rendered site (a `RemoteFs`) through the pipeline,
-/// draining progress. Returns the severity counts and the scan result.
-async fn run_web_scan(
-    fs: &impl exfil_engine::RemoteFs,
-    pipeline: &exfil_task::Pipeline,
-    store: &exfil_store::Store,
-) -> (progress::SevCounts, Result<exfil_engine::Summary>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let renderer = progress::spawn(rx);
-    let result = exfil_engine::scan_remote(fs, "/", pipeline, store, Some(tx)).await;
-    let counts = renderer.join().unwrap_or_default();
-    (counts, result)
 }
 
 /// WHOIS-check every observed domain and flag newly-registered ones (a common
@@ -931,64 +781,6 @@ async fn cmd_check_dns(
     }
     println!("{flagged} domain(s) resolve to reserved addresses");
     Ok(())
-}
-
-/// Build the scan pipeline: built-in rules plus any catalog datasets, plus
-/// ClamAV signatures from files listed under `[plugins.clamav]` in config.
-/// Non-compiling external regex patterns are reported and skipped.
-async fn build_pipeline(config: Option<&std::path::Path>) -> Result<exfil_task::Pipeline> {
-    let mut rules = exfil_scan::builtin_rules();
-    // YARA rules from feeds are stored as `yara:<source>` in the catalog;
-    // split them out and compile them into the YARA scanner.
-    let mut yara_from_feeds = String::new();
-    if let Ok(catalog) = open_catalog(config).await {
-        for rule in catalog.all_rules().await.unwrap_or_default() {
-            if let Some(src) = exfil_scan::yara::is_yara_source(&rule.pattern) {
-                yara_from_feeds.push_str(src);
-                yara_from_feeds.push('\n');
-            } else {
-                rules.push(rule);
-            }
-        }
-    }
-    let clamav_signatures = load_plugin_files(config, "clamav", "signatures");
-    let yara_rules = format!(
-        "{}\n{yara_from_feeds}",
-        load_plugin_files(config, "yara", "rules")
-    );
-    let (pipeline, skipped) =
-        exfil_scan::pipeline_with_rules(rules, &clamav_signatures, &yara_rules)?;
-    if !skipped.is_empty() {
-        eprintln!(
-            "skipped {} rule(s) with unsupported patterns",
-            skipped.len()
-        );
-    }
-    Ok(pipeline)
-}
-
-/// Read and concatenate the files listed in a plugin's string-array field
-/// (e.g. `[plugins.clamav] signatures = [...]` or `[plugins.yara] rules =
-/// [...]`). Missing files are skipped silently; a missing/unreadable config or
-/// absent field yields an empty string.
-fn load_plugin_files(config: Option<&std::path::Path>, plugin: &str, field: &str) -> String {
-    let Ok(cfg) = exfil_config::load(config) else {
-        return String::new();
-    };
-    let Ok(Some(table)) = cfg.plugin::<toml::Value>(plugin) else {
-        return String::new();
-    };
-    let Some(paths) = table.get(field).and_then(|v| v.as_array()) else {
-        return String::new();
-    };
-    let mut text = String::new();
-    for path in paths.iter().filter_map(|v| v.as_str()) {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            text.push_str(&contents);
-            text.push('\n');
-        }
-    }
-    text
 }
 
 /// List the available dataset source plugins.
@@ -1300,24 +1092,14 @@ async fn cmd_graph(
     Ok(())
 }
 
-/// Enrich stored findings with triage notes. A Rhai script configured under
-/// `[plugins.script] enrich = "…"` supersedes the built-in rule-based enricher;
-/// a downloaded offline model could too, via the same trait.
+/// Enrich stored findings from the local MITRE catalog: attach the
+/// authoritative CWE name to every finding carrying a `cwe`. A no-op until
+/// `exfil pull mitre://cwe` has downloaded the catalog.
 async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path>) -> Result<()> {
     let store = open_findings(store_dir, config).await?;
-    let enricher: Box<dyn exfil_llm::Enricher> = match enrich_script_path(config) {
-        Some(path) => Box::new(exfil_script::ScriptEnricher::from_file(&path)?),
-        None => exfil_llm::default_enricher(),
-    };
-    let n = exfil_llm::run(&store, enricher.as_ref()).await?;
-    println!("enriched {n} finding(s) via {}", enricher.name());
-
-    // Annotate findings with the authoritative CWE name from the local MITRE
-    // catalog, when one has been pulled (`exfil pull mitre://cwe`).
-    match annotate_cwe(&store, config).await {
-        Ok(0) => {}
-        Ok(a) => println!("annotated {a} finding(s) with CWE names from the MITRE catalog"),
-        Err(e) => eprintln!("cwe annotation skipped: {e:#}"),
+    match annotate_cwe(&store, config).await? {
+        0 => println!("nothing to annotate (run `exfil pull mitre://cwe` for the CWE catalog)"),
+        n => println!("annotated {n} finding(s) with CWE names from the MITRE catalog"),
     }
     Ok(())
 }
@@ -1362,16 +1144,6 @@ async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
         None => println!("no {id} in the local CWE catalog (run `exfil pull mitre://cwe`)"),
     }
     Ok(())
-}
-
-/// The `[plugins.script] enrich = "path"` script path, if configured.
-fn enrich_script_path(config: Option<&std::path::Path>) -> Option<String> {
-    let cfg = exfil_config::load(config).ok()?;
-    let table = cfg.plugin::<toml::Value>("script").ok()??;
-    table
-        .get("enrich")
-        .and_then(|v| v.as_str())
-        .map(String::from)
 }
 
 /// Export the whole graph as a portable snapshot in CBOR or JSON.
@@ -1543,7 +1315,7 @@ fn confirm(question: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{feed_rule_kind, find_plugin_field, parse_tcp_targets, resolve_plugin_setting};
+    use super::{feed_rule_kind, find_plugin_field, resolve_plugin_setting};
 
     #[test]
     fn feed_rule_kind_classifies_by_scheme() {
@@ -1559,29 +1331,10 @@ mod tests {
         assert_eq!(feed_rule_kind("https://not-a-scheme"), "regex");
     }
 
-    #[test]
-    fn parse_tcp_targets_rejects_paths_and_windows_drive_letters() {
-        assert_eq!(
-            parse_tcp_targets("example.com:22"),
-            Some(vec!["example.com:22".to_string()])
-        );
-        assert_eq!(
-            parse_tcp_targets("a.test:22,b.test:80"),
-            Some(vec!["a.test:22".to_string(), "b.test:80".to_string()])
-        );
-        // A local path (even an absolute one) has no trailing `:<port>`.
-        assert_eq!(parse_tcp_targets("/etc/passwd"), None);
-        // A Windows drive letter looks like `host:port` but the "port" half
-        // isn't numeric, so it must not be misread as a scan target.
-        assert_eq!(parse_tcp_targets(r"C:\Users\x"), None);
-    }
-
     #[tokio::test]
     async fn resolve_plugin_setting_falls_back_when_config_value_is_out_of_range() {
-        let dir = std::env::temp_dir().join(format!(
-            "exfil-cli-resolve-setting-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("exfil-cli-resolve-setting-{}", std::process::id()));
         let path = dir.join("config.toml");
         std::fs::create_dir_all(&dir).unwrap();
         // mem:// isolates this from the developer's real catalog; top-ports
@@ -1594,7 +1347,10 @@ mod tests {
 
         let (_, field) = find_plugin_field("scan", "top-ports").expect("scan.top-ports exists");
         let resolved = resolve_plugin_setting(Some(&path), "scan", field).await;
-        assert_eq!(resolved, field.default, "out-of-range config value must fall back to default");
+        assert_eq!(
+            resolved, field.default,
+            "out-of-range config value must fall back to default"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

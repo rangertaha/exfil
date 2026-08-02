@@ -295,36 +295,67 @@ test that sets a file to `0o000` and asserts the scan still completes with
 
 ```mermaid
 flowchart TD
-    START([run_pipeline path, content]) --> ARCH{"Is this an archive?<br/>any task provides Files<br/>AND applies(path)"}
-    ARCH -->|yes| EXPAND["pipeline.run_file → collect expanded entries only<br/>❌ never content-scan the raw archive bytes"]
-    ARCH -->|no| BIN{"NUL byte in first<br/>8192 bytes?"}
-    BIN -->|yes, binary| RECORD["record the file,<br/>❌ do not scan"]
+    START([run_pipeline path, content]) --> BIN{"NUL byte in first<br/>8192 bytes?"}
+    BIN -->|yes, binary| BINSCAN["pipeline.run_file_binary_only →<br/>✅ expanders + YARA/ClamAV (binary_safe) run<br/>❌ text scanners (regex, PII, IOC…) skipped"]
     BIN -->|no, text| SCAN["pipeline.run_file → matches + ast + expanded"]
-
-    classDef skip fill:#7c2d12,color:#fff
-    class EXPAND,RECORD skip
 ```
 
-Two guards, each preventing garbage findings:
+One guard, `binary_safe`, does all the work:
 
-- **Archives are containers, not content** ([`lib.rs:449-462`](../../crates/exfil-engine/src/lib.rs#L449)).
-  A `.zip`'s raw compressed bytes would match rules by coincidence (compression
-  looks random). So an archive is *expanded* but never content-scanned; only its
-  inner files are scanned, individually, after expansion.
-- **Binary files are recorded but not scanned** ([`lib.rs:464-468`](../../crates/exfil-engine/src/lib.rs#L464)).
-  A NUL byte in the first 8 KB (`BINARY_SNIFF_LEN`) marks a file as binary. It
-  still gets a file record (full filesystem coverage) but text scanners would
-  produce noise on it, so they are skipped. (Hash-based scanners like IOC/ClamAV
-  would still apply on non-binary paths; the point is the *text* scanners.)
+- **Binary content only reaches binary-safe tasks.** A NUL byte in the first
+  8 KB (`BINARY_SNIFF_LEN`) marks a file as binary. It still gets a file record
+  (full filesystem coverage), and [`FileTask::binary_safe`](../../crates/exfil-task/src/lib.rs)
+  tasks still run on the raw bytes via `run_file_binary_only`. Text-pattern
+  tasks (regex, PII, IOC, AST, taint…) default to `binary_safe() == false` and
+  are skipped, since they'd just match binary noise as if it were text.
+- **Containers are binary-safe, so they still expand.** The expanders (archive,
+  SQLite) declare `binary_safe() == true` — parsing binary formats is precisely
+  their job. A `.zip` or `.db` is therefore expanded, and its raw bytes reach
+  YARA and ClamAV (worth doing: a packed binary is exactly where a signature
+  match matters), while the text scanners that *would* match compression noise
+  by coincidence never see them.
+
+There is deliberately **no name-based container check**. Expanders match on
+filename alone, so keying "is this a container?" off `applies(path)` would mean
+a plain text file named `notes.db` — a common enough thing — got treated as a
+container, expanded to nothing, and then scanned by nothing at all. Letting
+content decide keeps that file on the text path, where it belongs. Regression
+test: `text_file_with_a_container_extension_is_still_scanned`.
+
+### The size cap, upstream of all of this
+
+`run_pipeline` needs the whole file in memory, and the walk is parallel, so
+`process_file` refuses to read anything over `MAX_SCAN_BYTES` (512 MiB). That
+bounds peak memory at roughly *threads × 512 MiB* rather than *threads ×
+largest-file-in-the-tree* — the difference between a scan that survives a VM
+image or a database dump in the tree and one that gets OOM-killed.
+
+An oversize file is **not** an error and **not** invisible: it is still stat'ed,
+still hashed (via `hash_file_streaming`, one 1 MiB buffer at a time), and still
+recorded, so filesystem coverage stays complete and the stat fast-path keeps
+working on the next run. Only its *content* goes unscanned. Because the stored
+hash is a real digest, `streamed_hash_matches_the_in_memory_hash` pins the
+streaming and in-memory hashes together — if they diverged, rescans and
+`contained_in` links would break silently.
+
+`scan_remote` applies the same rule, with one caveat: [`RemoteFs`](../../crates/exfil-engine/src/lib.rs)
+hands back a whole `Vec<u8>` with no stat to size it up front, so there the cap
+bounds the scanning work but not the allocation. That loop is sequential, so
+peak memory is one file rather than one per thread.
 
 ---
 
-## 7. Archives: recursive expansion {#archives}
+## 7. Containers: recursive expansion {#archives}
 
-When `run_pipeline` expands an archive, `expand_into`
+When `run_pipeline` expands a container, `expand_into`
 ([`lib.rs:481`](../../crates/exfil-engine/src/lib.rs#L481)) turns each entry into
-its own `FileResult`, scans it, and **recurses into nested archives** — a zip
-inside a tar inside a zip:
+its own `FileResult`, scans it, and **recurses into nested containers** — a zip
+inside a tar inside a zip. This is generic over *any* `Bytes → Files` task, not
+just `ArchiveExpander`: `SqliteExpander` (a `.db`'s tables, one virtual file per
+table) goes through the identical mechanism, `contained_in` edge and all —
+there's a test doing exactly that
+([`lib.rs`](../../crates/exfil-engine/src/lib.rs), search
+`scans_inside_sqlite_databases_and_links_container`).
 
 ```mermaid
 flowchart TD
@@ -501,11 +532,15 @@ flowchart TD
     WALK --> PF["process_file"]
     PF --> FAST{"unchanged?"}
     FAST -->|yes| U["Unchanged (reuse)"]
-    FAST -->|no| RP["read+hash → run_pipeline"]
-    RP --> ARCHQ{"archive?"}
-    ARCHQ -->|yes| EXP["expand_into (recurse ≤8)"]
-    ARCHQ -->|no| DAG["plugin DAG: regex·ast·taint·yara·…"]
-    U & EXP & DAG -->|mpsc| DRAIN["drain: upsert_file · clear_findings · add_finding · edges"]
+    FAST -->|no| SZ{"> 512 MiB?"}
+    SZ -->|yes| BIG["stream-hash only:<br/>record, no content scan"]
+    SZ -->|no| RP["read+hash → run_pipeline"]
+    RP --> BINQ{"binary?"}
+    BINQ -->|yes| BDAG["binary-safe tasks only:<br/>expanders·yara·clamav"]
+    BINQ -->|no| DAG["plugin DAG: regex·ast·taint·yara·…"]
+    BDAG & DAG --> EXPQ{"expanded any files?"}
+    EXPQ -->|yes| EXP["expand_into (recurse ≤8)"]
+    U & BIG & EXP & EXPQ -->|mpsc| DRAIN["drain: upsert_file · clear_findings · add_finding · edges"]
     DRAIN --> COMMIT["commit_scan"]
     COMMIT --> SUM["Summary {files, matches, unchanged, errors}"]
 

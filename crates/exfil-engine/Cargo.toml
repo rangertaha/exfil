@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 exfil-core = { workspace = true }
+exfil-config = { workspace = true }
 exfil-scan = { workspace = true }
 exfil-task = { workspace = true }
 exfil-store = { workspace = true }
@@ -20,6 +21,7 @@ gethostname = "0.5"
 [dev-dependencies]
 tokio = { workspace = true }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [lints]
 workspace = true

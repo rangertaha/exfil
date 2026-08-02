@@ -8,8 +8,72 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- The MCP server now exposes **exfil's whole surface**, not just the findings
+  graph: 26 tools covering reads (`search`, `graph`, `neighbors`, `get`,
+  `analyze` in any reporter format, `stats`, `export`, `rules`, `cwe`,
+  `datasets`, `feeds`, `sources`, `config`, `plugin_settings`), scanning
+  (`scan`, taking the same target spec as the CLI), catalog maintenance
+  (`pull`, `feed_add`, `feed_rm`, `dataset_rm`, `plugin_set`), post-scan passes
+  (`normalize`, `annotate_cwe`, `check_dns`, `check_whois`), and store
+  maintenance (`gc`, `clean`). Every advertised description is prefixed with an
+  access class — `[read-only]`, `[writes to the local store]`, `[network:
+  reaches remote systems]`, `[DESTRUCTIVE: deletes stored data]` — so an agent
+  can see a call's consequence before making it. `exfil-mcp` splits into
+  `lib.rs` (protocol), `tools.rs` (catalog + dispatch), and `ops.rs`
+  (operations); `serve` now takes a `Ctx { store_dir, config }` instead of an
+  open `Store`, opening each store per operation so `clean` can delete the
+  store directory and a `pull` is visible to the very next `scan`.
+- `exfil_engine::setup` and `exfil_remote::target`: store opening, pipeline
+  building, and scan-target resolution moved out of the CLI into shared
+  library code, so an agent-run scan applies the same ruleset and resolves a
+  target spec identically to a shell-run one.
+- SQLite database expansion (`SqliteExpander`, `Bytes → Files`): `.db`/
+  `.sqlite`/`.sqlite3` files (sniffed by magic header, not just extension)
+  have every user table's rows flattened into one virtual file each
+  (`app.db!users`, `col=val` per line, NULLs omitted, blobs shown as a byte
+  count) so the existing regex/PII/IOC/hash scanners find secrets or PII
+  sitting in database content exactly as if it were a plain text file — the
+  same `Bytes → Files` seam `ArchiveExpander` uses for zip/tar, row/table/byte
+  capped against oversize databases. Opened read-only via a temp file
+  (`rusqlite`, bundled SQLite — no system library needed).
+- `FileTask`/`Scanner` gained a `binary_safe()` method (default `false`).
+  YARA and ClamAV — built to match raw binary signatures — override it to
+  `true`; the engine now runs `binary_safe` tasks on binary content (`YARA`
+  rules now actually fire on real binaries) via a new
+  `Pipeline::run_file_binary_only`, while text-pattern scanners keep skipping
+  it as before.
+
 ### Fixed
 
+- The engine read every file fully into memory with no size cap, so a single
+  large file (a VM image, a database dump, a core file) could exhaust RAM —
+  multiplied by the parallel walk, which could have one such allocation per
+  thread. Files are now capped at `MAX_SCAN_BYTES` (512 MiB) for *content
+  scanning* only: an oversize file is still stat'ed, still hashed (streamed in
+  1 MiB chunks, so memory stays bounded), and still recorded, keeping
+  filesystem coverage and the stat fast-path intact. `scan_remote` applies the
+  same rule, though `RemoteFs` returns a whole `Vec<u8>` with no stat, so there
+  it bounds the scanning work rather than the allocation.
+- `SqliteExpander` bounded its *output* (rows, tables, bytes) but not its
+  input, while opening a database means staging every byte to a temp file
+  first — so a multi-gigabyte `.db` was copied to the temp directory in full,
+  once per walker thread, before a single row was read. New
+  `Limits::max_input_bytes` (2 GiB) rejects it before anything is written.
+- A file whose *name* matched a container extension was scanned by nothing at
+  all when its content wasn't really that format. The engine decided
+  "is this a container?" from `applies(path)`, and expanders match on filename
+  alone, so a plain text file named `notes.db` (or `.zip`, `.gz`, …) was
+  expanded to nothing and then skipped — its contents never reaching any
+  scanner. Container-ness is now decided by content: the name-based branch is
+  gone, the expanders declare themselves `binary_safe`, and the binary sniff
+  alone routes each file. Real archives and databases still expand (and now
+  additionally reach YARA/ClamAV, which they never did before), while a text
+  file wearing a container extension is scanned as the text it is. Existing
+  `.db`-named non-SQLite files are the most likely to have been silently
+  missed, since the new SQLite expander widened `applies` to a very common
+  extension.
 - `exfil scan --ports <spec>` with no target silently fell through to a plain
   passive scan of the current directory instead of erroring — `ports` now
   `requires` a target at the clap level.
@@ -42,6 +106,16 @@ and this project adheres to
 
 ### Removed
 
+- Finding enrichment and its two crates. `exfil-llm` (the `Enricher` trait plus
+  the model-free `RuleBasedEnricher` that wrote a `triage` note onto each
+  finding) and `exfil-script` (the Rhai `ScriptEnricher` for user-written triage
+  rules, and the `rhai` dependency) are gone, along with the `[plugins.script]`
+  and `[llm]` config blocks and the `llm` field on `Config`. The rule-based
+  notes only restated the severity and CWE already on the finding, and the
+  offline Candle/GGUF model the trait was a seam for never landed; agent-driven
+  triage now goes through the MCP server, which reasons over the graph directly.
+  **`exfil enrich` remains**, as the MITRE CWE-name annotation pass it always
+  also was — that half never depended on the enricher.
 - The `exfil tui` workbench (mutt-style index/pager, the vim-style graph
   navigator, configurable keymaps) has been removed, along with the
   `exfil-view` crate that backed its preview panes. May return in a future

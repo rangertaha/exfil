@@ -72,6 +72,10 @@ impl Scanner for YaraScanner {
         self.rules.is_some()
     }
 
+    fn binary_safe(&self) -> bool {
+        true
+    }
+
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>> {
         let Some(rules) = &self.rules else {
             return Ok(Vec::new());

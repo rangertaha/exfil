@@ -35,6 +35,7 @@ pub mod leak;
 pub mod log;
 pub mod netioc;
 pub mod pii;
+pub mod sqlite;
 pub mod supply;
 pub mod taint;
 pub mod typosquat;
@@ -50,6 +51,7 @@ pub use leak::LeakScanner;
 pub use log::LogScanner;
 pub use netioc::NetworkIocScanner;
 pub use pii::PiiScanner;
+pub use sqlite::SqliteExpander;
 pub use supply::SupplyChainScanner;
 pub use taint::TaintScanner;
 pub use typosquat::DomainTyposquatScanner;
@@ -71,6 +73,15 @@ pub trait Scanner: Send + Sync {
     /// engine only offers actual files (real or expanded from an archive), so
     /// this is purely content-type gating, not a file-vs-directory check.
     fn applies(&self, path: &Path) -> bool;
+
+    /// Whether this scanner can meaningfully match binary (non-text) content.
+    /// Defaults to false. Binary-signature scanners ([`YaraScanner`],
+    /// [`ClamavScanner`]) override this to true — matching raw binary bytes
+    /// is exactly what they're for, unlike the text-pattern scanners, which
+    /// would just produce noise on binary content.
+    fn binary_safe(&self) -> bool {
+        false
+    }
 
     /// Analyze `content` (the bytes of `path`) and return any matches.
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>>;
@@ -97,6 +108,10 @@ impl<S: Scanner> FileTask for ScanTask<S> {
         self.0.applies(path)
     }
 
+    fn binary_safe(&self) -> bool {
+        self.0.binary_safe()
+    }
+
     fn run(&self, path: &Path, input: &Artifact) -> Result<Artifact> {
         let Artifact::Bytes(bytes) = input else {
             anyhow::bail!("{}: expected Bytes input", self.0.name());
@@ -105,14 +120,15 @@ impl<S: Scanner> FileTask for ScanTask<S> {
     }
 }
 
-/// The standard plugin lineup as a pipeline: an archive expander (so scanners
-/// see files inside archives), regex over the built-in security ruleset, and
-/// supply-chain manifest checks. The CLI and TUI both scan with this.
-/// Additional tasks (AST, taint) register here and the scheduler orders them by
-/// their declared dependencies.
+/// The standard plugin lineup as a pipeline: an archive expander and a
+/// SQLite-database expander (so scanners see files inside archives and rows
+/// inside databases), regex over the built-in security ruleset, and
+/// supply-chain manifest checks. Additional tasks (AST, taint) register here
+/// and the scheduler orders them by their declared dependencies.
 pub fn default_pipeline() -> Result<Pipeline> {
     Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
+        Box::new(SqliteExpander::default()),
         Box::new(ScanTask(RegexScanner::new(builtin_rules())?)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
@@ -147,6 +163,7 @@ pub fn pipeline_with_rules(
     let (regex, skipped) = RegexScanner::new_lenient(rules);
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
+        Box::new(SqliteExpander::default()),
         Box::new(ScanTask(regex)),
         Box::new(ScanTask(ioc)),
         Box::new(ScanTask(clamav)),

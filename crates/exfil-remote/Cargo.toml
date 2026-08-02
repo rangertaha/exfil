@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 exfil-config = { workspace = true }
 exfil-engine = { workspace = true }
+exfil-store = { workspace = true }
+exfil-task = { workspace = true }
 anyhow = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }

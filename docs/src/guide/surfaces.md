@@ -22,6 +22,14 @@ same scanners and into the same findings graph.
 - **Container & package artifacts** — zip/jar/war/tar/tar.gz/gz archives (image
   layers and build outputs included) are unpacked into virtual files that flow
   through the same scanners, depth- and size-capped against bombs.
+- **SQLite databases** — `.db`/`.sqlite`/`.sqlite3` files (sniffed by magic
+  header, not just extension) have every table's rows flattened into a
+  virtual file so the same scanners can find secrets or PII sitting in
+  database content, row/table-count capped against oversize databases.
+- **Binary files** — YARA and ClamAV signature matching still runs on raw
+  binary content (compiled binaries, image layers, …); text-oriented scanners
+  (regex, PII, IOC) skip it, since matching binary noise as text would just
+  produce garbage findings.
 - **Dependencies** — `package.json`, `requirements*.txt`, and `Cargo.toml`
   manifests checked for known-malicious packages, typosquats, and malicious
   install hooks.

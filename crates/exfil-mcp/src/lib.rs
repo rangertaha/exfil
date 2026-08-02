@@ -1,65 +1,38 @@
-//! A minimal [Model Context Protocol](https://modelcontextprotocol.io) server
-//! exposing the findings graph to AI agents over stdio.
+//! A [Model Context Protocol](https://modelcontextprotocol.io) server exposing
+//! exfil to AI agents over stdio.
 //!
 //! It speaks JSON-RPC 2.0 with newline-delimited messages (MCP's stdio
 //! transport): `initialize`, `tools/list`, and `tools/call`. The tools are
-//! read-only queries over the store — `search`, `graph`, `neighbors`, `get`,
-//! `analyze` — so an agent can explore what a scan found. The protocol logic is
-//! a pure [`handle`] function (testable without any I/O); [`serve`] is the thin
-//! stdio loop around it.
+//! exfil's whole surface — scanning, catalog management, post-scan passes, and
+//! store maintenance as well as read-only queries over the findings graph — so
+//! an agent can do anything the CLI can, driving the same library calls. See
+//! [`tools`] for the catalog and [`ops`] for what each one runs.
+//!
+//! The protocol logic is a pure [`handle`] function (testable without any I/O);
+//! [`serve`] is the thin stdio loop around it.
+//!
+//! # Rust notes
+//!
+//! Tool *failures* come back as `isError` content rather than JSON-RPC errors,
+//! per the MCP convention: the agent is meant to read the message and adapt, so
+//! it belongs in the result the model sees, not in the transport's error slot.
+//! Only malformed protocol (an unknown method) is a JSON-RPC error.
+
+pub mod ops;
+pub mod tools;
+
+pub use ops::Ctx;
 
 use anyhow::Result;
-use exfil_report::{reporter_for, Analysis};
-use exfil_store::Store;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// The MCP protocol version this server implements.
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// The tools this server advertises, with their input schemas.
-fn tool_definitions() -> Value {
-    let str_arg = |name: &str, desc: &str| {
-        json!({
-            "type": "object",
-            "properties": { name: { "type": "string", "description": desc } },
-        })
-    };
-    json!([
-        {
-            "name": "search",
-            "description": "Search stored findings. Empty query returns all; \
-                            'field=value' filters on rule/cwe/severity/path; \
-                            other text matches rule names.",
-            "inputSchema": str_arg("query", "filter expression or free text"),
-        },
-        {
-            "name": "graph",
-            "description": "The findings graph (finding→file/rule nodes and edges) \
-                            for findings matching an optional filter.",
-            "inputSchema": str_arg("query", "optional finding filter"),
-        },
-        {
-            "name": "neighbors",
-            "description": "Nodes connected to a graph node (table:key) by any edge.",
-            "inputSchema": str_arg("id", "node id, e.g. file:<hash>"),
-        },
-        {
-            "name": "get",
-            "description": "Fetch one record (table:key) as JSON.",
-            "inputSchema": str_arg("id", "record id, e.g. finding:… or file:<hash>"),
-        },
-        {
-            "name": "analyze",
-            "description": "A text report over the findings graph (counts, risk score).",
-            "inputSchema": str_arg("query", "optional finding filter"),
-        },
-    ])
-}
-
 /// Handle one JSON-RPC request, returning the response value — or `None` for
 /// notifications (requests without an `id`), which get no reply.
-pub async fn handle(store: &Store, req: &Value) -> Option<Value> {
+pub async fn handle(ctx: &Ctx, req: &Value) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     // Notifications (no id) are acknowledged silently.
@@ -72,8 +45,8 @@ pub async fn handle(store: &Store, req: &Value) -> Option<Value> {
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "exfil", "version": env!("CARGO_PKG_VERSION") },
         })),
-        "tools/list" => Ok(json!({ "tools": tool_definitions() })),
-        "tools/call" => call_tool(store, req.get("params")).await,
+        "tools/list" => Ok(json!({ "tools": tools::definitions() })),
+        "tools/call" => call_tool(ctx, req.get("params")).await,
         other => Err(format!("unknown method {other:?}")),
     };
 
@@ -88,31 +61,21 @@ pub async fn handle(store: &Store, req: &Value) -> Option<Value> {
 
 /// Dispatch a `tools/call` to the named tool, wrapping the output as MCP text
 /// content. Tool errors are returned as `isError` content, not JSON-RPC errors,
-/// per the MCP convention (so the agent sees the message).
-async fn call_tool(store: &Store, params: Option<&Value>) -> std::result::Result<Value, String> {
+/// so the agent sees the message.
+async fn call_tool(ctx: &Ctx, params: Option<&Value>) -> std::result::Result<Value, String> {
     let params = params.ok_or("missing params")?;
     let name = params
         .get("name")
         .and_then(Value::as_str)
         .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    let arg = |k: &str| {
-        args.get(k)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
 
-    let output: Result<String> = match name {
-        "search" => run_search(store, &arg("query")).await,
-        "graph" => run_json(store.graph(&arg("query")).await),
-        "neighbors" => run_json(store.neighbors(&arg("id")).await),
-        "get" => run_json(store.get_record(&arg("id")).await),
-        "analyze" => run_analyze(store, &arg("query")).await,
-        other => return Err(format!("unknown tool {other:?}")),
-    };
+    // An unknown tool is a protocol-level mistake, not a failed operation.
+    if !tools::exists(name) {
+        return Err(format!("unknown tool {name:?}"));
+    }
 
-    Ok(match output {
+    Ok(match tools::dispatch(ctx, name, &args).await {
         Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
         Err(e) => json!({
             "content": [{ "type": "text", "text": format!("error: {e:#}") }],
@@ -121,51 +84,15 @@ async fn call_tool(store: &Store, params: Option<&Value>) -> std::result::Result
     })
 }
 
-/// Search findings and format them as text lines plus a count.
-async fn run_search(store: &Store, query: &str) -> Result<String> {
-    let findings = store.search_findings(query).await?;
-    let mut out = String::new();
-    for m in &findings {
-        out.push_str(&format!(
-            "{}:{}:{} [{}] {}\n",
-            m.path, m.line, m.col, m.rule, m.snippet
-        ));
-    }
-    out.push_str(&format!("{} finding(s)", findings.len()));
-    Ok(out)
-}
-
-/// Pretty-print any serializable store result as JSON text.
-fn run_json<T: serde::Serialize>(result: Result<T>) -> Result<String> {
-    let value = result?;
-    Ok(serde_json::to_string_pretty(&value)?)
-}
-
-/// Render the text analysis report.
-async fn run_analyze(store: &Store, query: &str) -> Result<String> {
-    let findings = store.search_findings(query).await?;
-    let (files, scans) = store.counts().await?;
-    let analysis = Analysis {
-        findings,
-        files,
-        scans,
-    };
-    let mut buf = Vec::new();
-    reporter_for("text")
-        .ok_or_else(|| anyhow::anyhow!("text reporter"))?
-        .report(&mut buf, &analysis)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
 /// Serve the MCP protocol over stdio until stdin closes.
-pub async fn serve(store: Store) -> Result<()> {
-    serve_io(store, tokio::io::stdin(), tokio::io::stdout()).await
+pub async fn serve(ctx: Ctx) -> Result<()> {
+    serve_io(ctx, tokio::io::stdin(), tokio::io::stdout()).await
 }
 
 /// The stdio loop, generic over its reader and writer so it can be driven from
 /// a test with in-memory pipes. Each input line is one JSON-RPC message; each
 /// response is written as one line. Blank and malformed lines are skipped.
-async fn serve_io<R, W>(store: Store, reader: R, mut writer: W) -> Result<()>
+async fn serve_io<R, W>(ctx: Ctx, reader: R, mut writer: W) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: AsyncWriteExt + Unpin,
@@ -179,7 +106,7 @@ where
             Ok(v) => v,
             Err(_) => continue, // ignore malformed lines
         };
-        if let Some(resp) = handle(&store, &req).await {
+        if let Some(resp) = handle(&ctx, &req).await {
             let mut s = serde_json::to_string(&resp)?;
             s.push('\n');
             writer.write_all(s.as_bytes()).await?;
@@ -194,6 +121,7 @@ mod tests {
     use super::*;
 
     use exfil_core::{FileMeta, Match, Severity};
+    use exfil_store::Store;
 
     fn meta(hash: &str, path: &str) -> FileMeta {
         FileMeta {
@@ -219,91 +147,99 @@ mod tests {
             col: 1,
             snippet: "hit".into(),
             severity: Some(Severity::High),
-            cwe: None,
+            cwe: Some("CWE-798".into()),
             cve: None,
         }
     }
 
-    async fn store_with_finding() -> (Store, std::path::PathBuf) {
+    /// A context over a fresh store seeded with one finding. The config path
+    /// points at a written file so no test touches the user's real config.
+    async fn ctx_with_finding() -> (Ctx, std::path::PathBuf) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
+        let base = std::env::temp_dir().join(format!(
             "exfil-mcp-{}-{}",
             std::process::id(),
             N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = Store::open(&dir, exfil_store::DB_FINDINGS).await.unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let store_dir = base.join("store");
+
+        let store = Store::open_findings(&store_dir).await.unwrap();
         store.upsert_file(&meta("aaa", "a.env")).await.unwrap();
         store
             .add_finding(&finding("aws-key", "a.env"), "aaa")
             .await
             .unwrap();
-        (store, dir)
+        drop(store);
+
+        let config = base.join("config.toml");
+        std::fs::write(&config, "store = \".exfil\"\n").unwrap();
+        let ctx = Ctx {
+            store_dir,
+            config: Some(config),
+        };
+        (ctx, base)
+    }
+
+    /// Call a tool and return its text content.
+    async fn call(ctx: &Ctx, name: &str, args: Value) -> Value {
+        handle(
+            ctx,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":name,"arguments":args}}),
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn initialize_and_tools_list() {
-        let (store, dir) = store_with_finding().await;
+        let (ctx, base) = ctx_with_finding().await;
 
-        let init = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
-        )
-        .await
-        .unwrap();
+        let init = handle(&ctx, &json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
+            .await
+            .unwrap();
         assert_eq!(init["result"]["serverInfo"]["name"], "exfil");
         assert_eq!(init["result"]["protocolVersion"], PROTOCOL_VERSION);
 
-        let list = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-        )
-        .await
-        .unwrap();
+        let list = handle(&ctx, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .await
+            .unwrap();
         let names: Vec<&str> = list["result"]["tools"]
             .as_array()
             .unwrap()
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert!(names.contains(&"search") && names.contains(&"graph"));
+        // The graph queries, and the wider surface beyond them.
+        for expected in ["search", "graph", "scan", "rules", "pull", "gc", "clean"] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
     async fn tools_call_search_and_graph() {
-        let (store, dir) = store_with_finding().await;
+        let (ctx, base) = ctx_with_finding().await;
 
-        let search = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
-                    "params":{"name":"search","arguments":{"query":""}}}),
-        )
-        .await
-        .unwrap();
+        let search = call(&ctx, "search", json!({"query": ""})).await;
         let text = search["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("aws-key") && text.contains("1 finding(s)"));
 
-        let graph = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
-                    "params":{"name":"graph","arguments":{}}}),
-        )
-        .await
-        .unwrap();
+        let graph = call(&ctx, "graph", json!({})).await;
         let gtext = graph["result"]["content"][0]["text"].as_str().unwrap();
         assert!(gtext.contains("\"nodes\""));
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
     async fn unknown_method_and_tool_errors() {
-        let (store, dir) = store_with_finding().await;
+        let (ctx, base) = ctx_with_finding().await;
 
-        // Unknown method → JSON-RPC error.
-        let bad = handle(&store, &json!({"jsonrpc":"2.0","id":5,"method":"nope"}))
+        let bad = handle(&ctx, &json!({"jsonrpc":"2.0","id":5,"method":"nope"}))
             .await
             .unwrap();
         assert!(bad["error"]["message"]
@@ -311,72 +247,131 @@ mod tests {
             .unwrap()
             .contains("unknown method"));
 
-        // Unknown tool → JSON-RPC error.
-        let bad_tool = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":6,"method":"tools/call",
-                    "params":{"name":"frobnicate","arguments":{}}}),
-        )
-        .await
-        .unwrap();
+        let bad_tool = call(&ctx, "frobnicate", json!({})).await;
         assert!(bad_tool["error"]["message"]
             .as_str()
             .unwrap()
             .contains("unknown tool"));
 
         // A notification (no id) gets no response.
-        let none = handle(&store, &json!({"jsonrpc":"2.0","method":"initialized"})).await;
+        let none = handle(&ctx, &json!({"jsonrpc":"2.0","method":"initialized"})).await;
         assert!(none.is_none());
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
     async fn tools_call_analyze_renders_report() {
-        let (store, dir) = store_with_finding().await;
-        let resp = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
-                    "params":{"name":"analyze","arguments":{}}}),
-        )
-        .await
-        .unwrap();
+        let (ctx, base) = ctx_with_finding().await;
+        let resp = call(&ctx, "analyze", json!({})).await;
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("finding(s)"), "{text}");
         assert!(text.contains("risk score"), "{text}");
-        let _ = std::fs::remove_dir_all(&dir);
+
+        // A named format is honored.
+        let sarif = call(&ctx, "analyze", json!({"format": "sarif"})).await;
+        let stext = sarif["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(stext.contains("\"version\""), "{stext}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
     async fn tool_failure_reports_is_error() {
-        let (store, dir) = store_with_finding().await;
+        let (ctx, base) = ctx_with_finding().await;
         // An invalid search field makes the tool return an error result.
-        let resp = handle(
-            &store,
-            &json!({"jsonrpc":"2.0","id":8,"method":"tools/call",
-                    "params":{"name":"search","arguments":{"query":"bogus=1"}}}),
-        )
-        .await
-        .unwrap();
+        let resp = call(&ctx, "search", json!({"query": "bogus=1"})).await;
         assert_eq!(resp["result"]["isError"], json!(true), "{resp}");
         assert!(resp["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
             .starts_with("error:"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn read_only_tools_over_the_wider_surface() {
+        let (ctx, base) = ctx_with_finding().await;
+
+        let rules = call(&ctx, "rules", json!({"filter": "aws"})).await;
+        let text = rules["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("aws-access-key-id"), "{text}");
+
+        let stats = call(&ctx, "stats", json!({})).await;
+        let text = stats["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("findings: 1"), "{text}");
+
+        let sources = call(&ctx, "sources", json!({})).await;
+        let text = sources["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("builtin://"), "{text}");
+
+        let config = call(&ctx, "config", json!({})).await;
+        let text = config["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("# config:"), "{text}");
+
+        let export = call(&ctx, "export", json!({})).await;
+        let text = export["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"tables\""), "{text}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scan_tool_walks_a_tree_into_the_store() {
+        let (ctx, base) = ctx_with_finding().await;
+        let tree = base.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("leak.env"), "AWS=AKIA0123456789ABCDEF\n").unwrap();
+
+        let resp = call(&ctx, "scan", json!({"target": tree.to_str().unwrap()})).await;
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("scanned 1 files"), "{text}");
+        assert!(text.contains("passive"), "{text}");
+
+        // The finding is queryable straight afterwards.
+        let search = call(&ctx, "search", json!({"query": "aws"})).await;
+        let stext = search["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(stext.contains("aws-access-key-id"), "{stext}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn normalize_then_gc_then_clean() {
+        let (ctx, base) = ctx_with_finding().await;
+
+        let norm = call(&ctx, "normalize", json!({})).await;
+        let text = norm["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("normalized 1 finding(s)"), "{text}");
+
+        let gc = call(&ctx, "gc", json!({})).await;
+        let text = gc["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("gc: removed"), "{text}");
+
+        // clean deletes the store directory outright.
+        assert!(ctx.store_dir.exists());
+        let clean = call(&ctx, "clean", json!({})).await;
+        let text = clean["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("removed store"), "{text}");
+        assert!(!ctx.store_dir.exists());
+
+        // A second clean is a no-op, not an error.
+        let again = call(&ctx, "clean", json!({})).await;
+        let text = again["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("no store at"), "{text}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]
     async fn serve_io_processes_lines_and_skips_junk() {
-        let (store, dir) = store_with_finding().await;
+        let (ctx, base) = ctx_with_finding().await;
         // Blank line and malformed line are skipped; the real request answered.
         let input = "\n\
                      not json\n\
                      {\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}\n";
         let mut output = Vec::new();
-        serve_io(store, input.as_bytes(), &mut output)
-            .await
-            .unwrap();
+        serve_io(ctx, input.as_bytes(), &mut output).await.unwrap();
         let out = String::from_utf8(output).unwrap();
         assert_eq!(
             out.lines().count(),
@@ -384,6 +379,6 @@ mod tests {
             "only the valid request replies: {out}"
         );
         assert!(out.contains("\"tools\""), "{out}");
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

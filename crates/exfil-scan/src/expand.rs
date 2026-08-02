@@ -99,6 +99,12 @@ impl FileTask for ArchiveExpander {
         Self::kind_of(path).is_some()
     }
 
+    /// Archives are binary by nature — decompressing them is exactly this
+    /// task's job, so it must not be held back from binary content.
+    fn binary_safe(&self) -> bool {
+        true
+    }
+
     fn run(&self, path: &Path, input: &Artifact) -> Result<Artifact> {
         let Artifact::Bytes(bytes) = input else {
             anyhow::bail!("archive-expand: expected Bytes input");

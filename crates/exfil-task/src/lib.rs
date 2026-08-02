@@ -172,6 +172,16 @@ pub trait FileTask: Send + Sync {
         true
     }
 
+    /// Whether this task can meaningfully process binary (non-text) content.
+    /// Defaults to false: most tasks look for textual patterns and would
+    /// produce noise matching compression/binary artifacts. Binary-signature
+    /// scanners (YARA, ClamAV) override this to true — that's exactly the
+    /// content they're built to match. The engine only runs
+    /// non-`binary_safe` tasks on content it can confirm is text.
+    fn binary_safe(&self) -> bool {
+        false
+    }
+
     /// Transform the input artifact into an output artifact.
     fn run(&self, path: &Path, input: &Artifact) -> Result<Artifact>;
 }
@@ -225,11 +235,30 @@ impl Pipeline {
     /// entries. `Bytes` seeds the run; each task's output becomes available to
     /// later tasks. Matches accumulate; other kinds keep the latest value.
     pub fn run_file(&self, path: &Path, bytes: Vec<u8>) -> Result<FileArtifacts> {
+        self.run_file_inner(path, bytes, false)
+    }
+
+    /// Like [`run_file`](Self::run_file), but only runs tasks that declare
+    /// themselves [`FileTask::binary_safe`] — for content already known to be
+    /// binary, where a text-oriented task would just produce noise.
+    pub fn run_file_binary_only(&self, path: &Path, bytes: Vec<u8>) -> Result<FileArtifacts> {
+        self.run_file_inner(path, bytes, true)
+    }
+
+    fn run_file_inner(
+        &self,
+        path: &Path,
+        bytes: Vec<u8>,
+        binary_only: bool,
+    ) -> Result<FileArtifacts> {
         let mut available: HashMap<ArtifactKind, Artifact> = HashMap::new();
         available.insert(ArtifactKind::Bytes, Artifact::Bytes(bytes));
 
         let mut out = FileArtifacts::default();
         for task in &self.tasks {
+            if binary_only && !task.binary_safe() {
+                continue;
+            }
             if !task.applies(path) {
                 continue;
             }
@@ -410,6 +439,7 @@ mod tests {
         needs: ArtifactKind,
         output: fn() -> Artifact,
         applies: bool,
+        binary_safe: bool,
     }
 
     impl FileTask for Producer {
@@ -424,6 +454,9 @@ mod tests {
         }
         fn applies(&self, _p: &Path) -> bool {
             self.applies
+        }
+        fn binary_safe(&self) -> bool {
+            self.binary_safe
         }
         fn run(&self, _p: &Path, _i: &Artifact) -> Result<Artifact> {
             Ok((self.output)())
@@ -450,6 +483,7 @@ mod tests {
                 }])
             },
             applies: true,
+            binary_safe: false,
         })])
         .unwrap();
         let out = pipeline
@@ -466,10 +500,66 @@ mod tests {
             needs: ArtifactKind::Bytes,
             output: || Artifact::Matches(vec![]),
             applies: false, // never runs
+            binary_safe: false,
         })])
         .unwrap();
         let out = pipeline.run_file(Path::new("f"), b"data".to_vec()).unwrap();
         assert!(out.matches.is_empty());
+    }
+
+    #[test]
+    fn run_file_binary_only_skips_non_binary_safe_tasks() {
+        let pipeline = Pipeline::new(vec![
+            Box::new(Producer {
+                name: "regex",
+                needs: ArtifactKind::Bytes,
+                output: || {
+                    Artifact::Matches(vec![Match {
+                        rule: "regex".into(),
+                        path: String::new(),
+                        line: 1,
+                        col: 1,
+                        snippet: String::new(),
+                        severity: None,
+                        cwe: None,
+                        cve: None,
+                    }])
+                },
+                applies: true,
+                binary_safe: false,
+            }),
+            Box::new(Producer {
+                name: "yara",
+                needs: ArtifactKind::Bytes,
+                output: || {
+                    Artifact::Matches(vec![Match {
+                        rule: "yara".into(),
+                        path: String::new(),
+                        line: 1,
+                        col: 1,
+                        snippet: String::new(),
+                        severity: None,
+                        cwe: None,
+                        cve: None,
+                    }])
+                },
+                applies: true,
+                binary_safe: true,
+            }),
+        ])
+        .unwrap();
+
+        // A normal run exercises both tasks.
+        let text_out = pipeline.run_file(Path::new("f"), b"data".to_vec()).unwrap();
+        let text_rules: Vec<&str> = text_out.matches.iter().map(|m| m.rule.as_str()).collect();
+        assert!(text_rules.contains(&"regex") && text_rules.contains(&"yara"));
+
+        // Binary-only mode runs just the binary-safe one.
+        let bin_out = pipeline
+            .run_file_binary_only(Path::new("f"), b"data".to_vec())
+            .unwrap();
+        let bin_rules: Vec<&str> = bin_out.matches.iter().map(|m| m.rule.as_str()).collect();
+        assert_eq!(bin_rules, vec!["yara"]);
     }
 
     #[test]

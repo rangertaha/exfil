@@ -55,7 +55,7 @@ also uploads a SARIF report to code scanning.
 | Command | What it does |
 |---|---|
 | `exfil normalize` | Normalize findings into Splunk-CIM events for cross-source correlation |
-| `exfil enrich` | Enrich findings with triage notes and (if pulled) authoritative MITRE CWE names |
+| `exfil enrich` | Annotate findings with authoritative MITRE CWE names (needs `exfil pull mitre://cwe`) |
 | `exfil cwe <id>` | Look up a weakness in the local MITRE CWE catalog (e.g. `exfil cwe 798`) |
 | `exfil check dns` | Resolve observed domains and flag reserved/private resolutions *(online)* |
 | `exfil check whois` | WHOIS-check observed domains and flag newly-registered ones *(online)* |
@@ -97,13 +97,49 @@ exfil plugin config scan   # interactive: prompts for top-ports, pre-filled with
 
 | Command | What it does |
 |---|---|
-| `exfil mcp` | Run an MCP server on stdio for AI agents |
+| `exfil mcp` | Run an MCP server on stdio giving AI agents exfil's whole tool surface (26 tools: query, scan, catalog, maintenance) |
 | `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
 | `exfil store export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
 | `exfil store gc` | Garbage-collect unreachable records |
 | `exfil store clean [-y]` | Delete the findings store (asks first on a terminal; `-y` skips) |
 | `exfil completions <shell>` | Print a shell completion script (bash, zsh, fish, powershell, elvish) |
+
+## AI agents (MCP)
+
+`exfil mcp` speaks [MCP](https://modelcontextprotocol.io/) over stdio, exposing
+**26 tools** — everything the CLI does, not just reading results. Point any MCP
+client at the binary:
+
+```jsonc
+{ "mcpServers": { "exfil": { "command": "exfil", "args": ["mcp"] } } }
+```
+
+An agent can then scan a tree, query what it found, follow the graph, and render
+a report, all in one session:
+
+| Group | Tools |
+|---|---|
+| Query results | `search` `graph` `neighbors` `get` `analyze` `stats` `export` |
+| Inspect config | `rules` `cwe` `datasets` `feeds` `sources` `config` `plugin_settings` |
+| Scan | `scan` (path, `processes`, `host:port`, host/CIDR + ports, or a URL) |
+| Manage catalog | `pull` `feed_add` `feed_rm` `dataset_rm` `plugin_set` |
+| Post-scan passes | `normalize` `annotate_cwe` `check_dns` `check_whois` |
+| Maintenance | `gc` `clean` |
+
+Every tool's description is prefixed with what it does beyond reading, so an
+agent sees the consequence before it calls:
+
+- `[read-only]` — changes nothing
+- `[writes to the local store]` — modifies the findings store or catalog
+- `[network: reaches remote systems]` — `scan` on a remote target, `pull`,
+  `check dns`, `check whois`
+- `[DESTRUCTIVE: deletes stored data]` — `clean`
+
+> Pass `--store` / `--config` to `exfil mcp` as usual; the server honors them for
+> every tool. Since the surface includes network scans and store deletion, point
+> it at a store you're willing to let an agent drive, and only scan targets you
+> are authorized to scan.
 
 ## Feed catalog
 

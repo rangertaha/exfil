@@ -26,6 +26,7 @@
 //! the compiler will not let one thread borrow another's locals.
 
 pub mod run;
+pub mod setup;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,12 +40,25 @@ use exfil_task::Pipeline;
 use ignore::{WalkBuilder, WalkState};
 
 /// How much of a file's head to inspect for NUL bytes when deciding whether
-/// it is binary (binary files are recorded but not scanned).
+/// it is binary. Binary content still gets a file record either way; only
+/// `binary_safe` tasks (YARA, ClamAV signature matching) run on it — text
+/// scanners (regex, PII, IOC…) would just match compression/binary noise.
 const BINARY_SNIFF_LEN: usize = 8192;
 
 /// How deep archive-within-archive expansion recurses before stopping. Bounds
 /// work on hostile nested archives (a zip inside a zip inside a zip…).
 const MAX_EXPAND_DEPTH: u32 = 8;
+
+/// Largest file whose *content* is scanned. Scanning requires the whole file in
+/// memory and the walk is parallel, so this bounds peak memory at roughly
+/// `threads × MAX_SCAN_BYTES` instead of `threads × largest-file-in-the-tree`.
+/// Files above it are still stat'ed, hashed, and recorded — they just aren't
+/// read into memory or handed to the pipeline.
+const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Chunk size for [`hash_file_streaming`]; large enough to keep syscall
+/// overhead negligible, small enough to stay off the stack and out of the way.
+const HASH_CHUNK: usize = 1024 * 1024;
 
 /// Result of one scan run.
 #[derive(Debug, Default, Clone)]
@@ -329,7 +343,18 @@ pub async fn scan_remote(
         };
 
         let mut results = Vec::new();
-        let processed = run_pipeline(Path::new(&path), content, pipeline);
+        // Same [`MAX_SCAN_BYTES`] rule as the local walk, so a file's treatment
+        // doesn't depend on which side of the network it sits on. Note the cap
+        // can only be applied *after* the read here: `RemoteFs` hands back a
+        // whole `Vec<u8>` with no stat to size it up front, so this bounds the
+        // scanning work but not the allocation. It is the weaker of the two
+        // guards, and mitigated by this loop being sequential — peak memory is
+        // one file, not one per walker thread.
+        let processed = if content.len() as u64 > MAX_SCAN_BYTES {
+            Processed::default()
+        } else {
+            run_pipeline(Path::new(&path), content, pipeline)
+        };
         results.push(FileResult {
             meta,
             matches: processed.matches,
@@ -389,6 +414,25 @@ pub async fn scan_remote(
     Ok(summary)
 }
 
+/// Hash a file in fixed-size chunks, so a file of any size costs one
+/// [`HASH_CHUNK`] buffer rather than its own length in memory. Used for files
+/// over [`MAX_SCAN_BYTES`], which are recorded but never read whole.
+fn hash_file_streaming(path: &Path) -> Result<String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; HASH_CHUNK];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 /// Process one regular file: stat it, and either take the fast path (size and
 /// mtime match the stored record — reuse it unread) or read, hash, and scan.
 fn process_file(
@@ -415,8 +459,23 @@ fn process_file(
         }
     }
 
-    let content = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let hash = blake3::hash(&content).to_hex().to_string();
+    // Scanning needs the whole file in memory, and the walk is parallel, so an
+    // unbounded read means N threads can each hold a multi-gigabyte allocation
+    // — a VM image or database dump in the tree would take the process down.
+    // Past the cap the file is still hashed (streamed, so memory stays bounded)
+    // and still recorded, which keeps filesystem coverage complete; only its
+    // *content* goes unscanned.
+    let oversize = md.len() > MAX_SCAN_BYTES;
+    let content = if oversize {
+        Vec::new()
+    } else {
+        std::fs::read(path).with_context(|| format!("read {}", path.display()))?
+    };
+    let hash = if oversize {
+        hash_file_streaming(path).with_context(|| format!("hash {}", path.display()))?
+    } else {
+        blake3::hash(&content).to_hex().to_string()
+    };
     let own = ownership(&md);
 
     let meta = FileMeta {
@@ -435,7 +494,11 @@ fn process_file(
 
     // The container file plus everything expanded out of it (recursively).
     let mut results = Vec::new();
-    let processed = run_pipeline(path, content, pipeline);
+    let processed = if oversize {
+        Processed::default()
+    } else {
+        run_pipeline(path, content, pipeline)
+    };
     results.push(FileResult {
         meta,
         matches: processed.matches,
@@ -457,33 +520,27 @@ struct Processed {
     indicators: Option<exfil_task::Indicators>,
 }
 
-/// Run the pipeline over one file's bytes, skipping binary content (but still
-/// expanding archives — their inner files feed re-processing).
+/// Run the pipeline over one file's bytes. Binary content (archives,
+/// databases, executables) runs only the binary-safe tasks — the expanders,
+/// which turn containers into inner files for re-processing, plus the
+/// binary-signature scanners (YARA, ClamAV). Text-pattern scanners are held
+/// back from it, since matching regexes against compression artifacts just
+/// produces garbage findings. Text content runs everything.
+///
+/// Container-ness is decided by the content, not the filename: expanders match
+/// on extension alone, so a plain text file named `notes.db` expands to nothing
+/// and is then scanned as the text it is.
 fn run_pipeline(path: &Path, content: Vec<u8>, pipeline: &Pipeline) -> Processed {
-    // An archive is a container: expand it, but never content-scan its raw
-    // bytes (that would match on compression artifacts and produce garbage
-    // findings). Its inner files are scanned individually after expansion.
-    let is_archive = pipeline
-        .tasks()
-        .iter()
-        .any(|t| t.provides() == exfil_task::ArtifactKind::Files && t.applies(path));
-    if is_archive {
-        let expanded = match pipeline.run_file(path, content) {
-            Ok(out) => out.expanded,
-            Err(_) => Vec::new(),
-        };
-        return Processed {
-            expanded,
-            ..Default::default()
-        };
-    }
-
-    // Binary files get a record (full VFS coverage) but are not scanned.
+    // Binary files get a record (full VFS coverage) either way; only
+    // binary-safe tasks run on the content itself.
     let head = &content[..content.len().min(BINARY_SNIFF_LEN)];
-    if head.contains(&0) {
-        return Processed::default();
-    }
-    match pipeline.run_file(path, content) {
+    let is_binary = head.contains(&0);
+    let result = if is_binary {
+        pipeline.run_file_binary_only(path, content)
+    } else {
+        pipeline.run_file(path, content)
+    };
+    match result {
         Ok(out) => Processed {
             matches: out.matches,
             expanded: out.expanded,
@@ -763,6 +820,53 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn yara_still_matches_binary_content_but_regex_does_not() {
+        // A "binary" file (starts with a NUL byte) carrying both a YARA
+        // string match and a plain secret pattern the regex scanner would
+        // otherwise catch. YARA (binary_safe) must still fire; the built-in
+        // regex ruleset (not binary_safe) must not, since it's given no
+        // chance to run on binary content at all.
+        let base = std::env::temp_dir().join(format!("exfil-engine-binary-{}", std::process::id()));
+        let tree = base.join("tree");
+        let store_dir = tree.join("store");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        let mut content = vec![0u8]; // NUL byte marks this as binary
+        content.extend_from_slice(b"EVILMARKER AWS=AKIA0123456789ABCDEF\n");
+        std::fs::write(tree.join("blob.bin"), &content).unwrap();
+
+        let yara_rules = r#"
+rule Detect_Evil {
+    strings:
+        $a = "EVILMARKER"
+    condition:
+        $a
+}
+"#;
+        let (pipeline, skipped) =
+            exfil_scan::pipeline_with_rules(exfil_scan::builtin_rules(), "", yara_rules).unwrap();
+        assert!(skipped.is_empty());
+        let store = Store::open_findings(&store_dir).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, Some(&store_dir), None)
+            .await
+            .unwrap();
+        assert_eq!(summary.files, 1);
+
+        let found = store.search_findings("").await.unwrap();
+        let rules: Vec<&str> = found.iter().map(|m| m.rule.as_str()).collect();
+        assert!(
+            rules.iter().any(|r| r.starts_with("yara:")),
+            "YARA must still match binary content: {rules:?}"
+        );
+        assert!(
+            !rules.iter().any(|r| r.contains("aws")),
+            "the regex scanner must not run on binary content: {rules:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn gc_prunes_superseded_scan_and_files() {
         let base = std::env::temp_dir().join(format!("exfil-engine-gc-{}", std::process::id()));
         let tree = base.join("tree");
@@ -874,6 +978,113 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn streamed_hash_matches_the_in_memory_hash() {
+        // Oversize files get their hash from `hash_file_streaming` while every
+        // other file gets it from `blake3::hash`. If the two ever disagreed,
+        // the stat fast-path and container links would silently break, so pin
+        // them together — including at the chunk boundary, where a bug in the
+        // read loop would show up first.
+        let base = std::env::temp_dir().join(format!("exfil-engine-hash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        for (name, len) in [
+            ("empty", 0),
+            ("small", 100),
+            ("one-chunk-minus-1", HASH_CHUNK - 1),
+            ("exactly-one-chunk", HASH_CHUNK),
+            ("one-chunk-plus-1", HASH_CHUNK + 1),
+            ("several-chunks", HASH_CHUNK * 3 + 7),
+        ] {
+            // Non-repeating bytes, so a chunk read out of order would change
+            // the digest rather than cancel out.
+            let content: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let path = base.join(name);
+            std::fs::write(&path, &content).unwrap();
+            assert_eq!(
+                hash_file_streaming(&path).unwrap(),
+                blake3::hash(&content).to_hex().to_string(),
+                "{name} ({len} bytes)"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversize_files_are_recorded_and_hashed_but_not_scanned() {
+        // A sparse file just over MAX_SCAN_BYTES: it costs no real disk, but
+        // the engine sees the full length and must take the streaming path.
+        let base =
+            std::env::temp_dir().join(format!("exfil-engine-oversize-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let big = tree.join("huge.bin");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_SCAN_BYTES + 1).unwrap();
+        drop(file);
+        // A normal-size file alongside it, to prove the cap is per file and
+        // does not poison the rest of the scan.
+        std::fs::write(tree.join("small.txt"), b"AWS_KEY=AKIA0123456789ABCDEF\n").unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // Both files are recorded — coverage stays complete — and neither is
+        // an error.
+        assert_eq!(summary.files, 2, "oversize file still gets a record");
+        assert_eq!(summary.errors, 0, "oversize is not an error");
+
+        // The small file is scanned as usual; the oversize one contributes
+        // no findings.
+        let found = store.search_findings("aws-access-key-id").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].path.contains("small.txt"), "{:?}", found[0].path);
+
+        // The oversize file's stored hash is the real digest of its contents,
+        // not a placeholder — a rescan depends on it.
+        let expected = hash_file_streaming(&big).unwrap();
+        let index = store.file_index().await.unwrap();
+        let abs = std::fs::canonicalize(&big).unwrap().display().to_string();
+        let stat = index.get(&abs).expect("oversize file is in the index");
+        assert_eq!(stat.hash, expected, "oversize file keeps a real hash");
+        assert_eq!(stat.size, MAX_SCAN_BYTES + 1);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_file_with_a_container_extension_is_still_scanned() {
+        // Expanders match on filename alone, so a plain text file named
+        // `notes.db` (or `.zip`, …) looks like a container. It expands to
+        // nothing — and must then be scanned as the text it is, rather than
+        // silently going unscanned because its name implied a container.
+        let base =
+            std::env::temp_dir().join(format!("exfil-engine-fake-db-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("notes.db"), b"AWS_KEY=AKIA0123456789ABCDEF\n").unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(summary.files, 1);
+
+        let found = store.search_findings("aws-access-key-id").await.unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "a text file named .db must still be content-scanned"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn scans_inside_archives_and_links_container() {
         use std::io::Write;
@@ -923,6 +1134,66 @@ mod tests {
             .unwrap();
         let rows: Vec<serde_json::Value> = res.take(0).unwrap();
         assert_eq!(rows[0]["n"], 1, "inner file linked to container");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scans_inside_sqlite_databases_and_links_container() {
+        let base =
+            std::env::temp_dir().join(format!("exfil-engine-test-sqlite-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+
+        // A SQLite DB with a secret in a row; not present anywhere else on disk.
+        let db_path =
+            std::env::temp_dir().join(format!("exfil-engine-fixture-{}.db", std::process::id()));
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE users (id INTEGER, note TEXT)", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO users VALUES (1, 'AWS_KEY=AKIA0123456789ABCDEF')",
+                [],
+            )
+            .unwrap();
+        }
+        let db_bytes = std::fs::read(&db_path).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+        std::fs::write(tree.join("app.db"), &db_bytes).unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        let summary = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+
+        // The database plus its one expanded table are both recorded.
+        assert_eq!(summary.files, 2, "db + expanded table");
+        let found = store.search_findings("aws-access-key-id").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].path.contains("app.db!users"),
+            "{:?}",
+            found[0].path
+        );
+
+        // The expanded table is linked to its container database via contained_in.
+        let inner_hash = blake3::hash(b"id=1 note=AWS_KEY=AKIA0123456789ABCDEF\n")
+            .to_hex()
+            .to_string();
+        let container_hash = blake3::hash(&db_bytes).to_hex().to_string();
+        let mut res = store
+            .db()
+            .query(
+                "SELECT count() AS n FROM contained_in \
+                 WHERE in = type::thing('file', $i) AND out = type::thing('file', $c) GROUP ALL",
+            )
+            .bind(("i", inner_hash))
+            .bind(("c", container_hash))
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows[0]["n"], 1, "expanded table linked to its database");
 
         let _ = std::fs::remove_dir_all(&base);
     }

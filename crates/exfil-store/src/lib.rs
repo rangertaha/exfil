@@ -1749,16 +1749,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(&dir, DB_CATALOG).await.unwrap();
 
-        assert_eq!(store.get_plugin_setting("scan", "top-ports").await.unwrap(), None);
+        assert_eq!(
+            store.get_plugin_setting("scan", "top-ports").await.unwrap(),
+            None
+        );
 
-        store.set_plugin_setting("scan", "top-ports", "1000").await.unwrap();
+        store
+            .set_plugin_setting("scan", "top-ports", "1000")
+            .await
+            .unwrap();
         assert_eq!(
             store.get_plugin_setting("scan", "top-ports").await.unwrap(),
             Some("1000".to_string())
         );
 
         // Same plugin, different key: independent entries.
-        store.set_plugin_setting("scan", "max-pages", "128").await.unwrap();
+        store
+            .set_plugin_setting("scan", "max-pages", "128")
+            .await
+            .unwrap();
         let mut settings = store.list_plugin_settings("scan").await.unwrap();
         settings.sort();
         assert_eq!(
@@ -1770,11 +1779,17 @@ mod tests {
         );
 
         // A different plugin's settings don't show up in this list.
-        store.set_plugin_setting("taint", "enabled", "false").await.unwrap();
+        store
+            .set_plugin_setting("taint", "enabled", "false")
+            .await
+            .unwrap();
         assert_eq!(store.list_plugin_settings("scan").await.unwrap().len(), 2);
 
         // set again overwrites, not duplicates.
-        store.set_plugin_setting("scan", "top-ports", "500").await.unwrap();
+        store
+            .set_plugin_setting("scan", "top-ports", "500")
+            .await
+            .unwrap();
         assert_eq!(
             store.get_plugin_setting("scan", "top-ports").await.unwrap(),
             Some("500".to_string())
@@ -1789,12 +1804,16 @@ mod tests {
         // A dotted plugin/key name must not collide with a different pair
         // that would concatenate to the same string (e.g. "a.b"+"c" vs
         // "a"+"b.c" both naively stringify to "a.b.c").
-        let dir = std::env::temp_dir().join(format!("exfil-store-plugin-dots-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("exfil-store-plugin-dots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(&dir, DB_CATALOG).await.unwrap();
 
         store.set_plugin_setting("a.b", "c", "first").await.unwrap();
-        store.set_plugin_setting("a", "b.c", "second").await.unwrap();
+        store
+            .set_plugin_setting("a", "b.c", "second")
+            .await
+            .unwrap();
 
         assert_eq!(
             store.get_plugin_setting("a.b", "c").await.unwrap(),

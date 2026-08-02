@@ -2,10 +2,9 @@
 
 **exfil** (**EX**amine **F**iles, **I**nfrastructure & **L**ibraries) is an offline, cross-platform, plugin-based
 filesystem-analysis and SAST engine. It builds a queryable graph of files →
-AST → findings → rules with full provenance, backed by an embedded database,
-and can optionally enrich results with an embedded offline LLM. Written in
-Rust for a single portable binary, fast parallel scanning, native multi-language
-parsing, and a native embeddable LLM runtime.
+AST → findings → rules with full provenance, backed by an embedded database.
+Written in Rust for a single portable binary, fast parallel scanning, and
+native multi-language parsing.
 
 This document supersedes the Go prototype and the earlier Go plan.
 
@@ -15,8 +14,7 @@ This document supersedes the Go prototype and the earlier Go plan.
 - **Scalable** — parallel, gitignore-aware walking; content-hash dedup;
   incremental rescans; a real query engine instead of hand-rolled indexes.
 - **Modular** — a Cargo workspace of small library crates + a thin CLI binary.
-- **Offline & private** — no network to analyze; embedded LLM runtime; nothing
-  leaves the machine.
+- **Offline & private** — no network to analyze; nothing leaves the machine.
 - **Cross-platform** — one pure-Rust binary builds and scans on Windows, macOS,
   Linux, and Unix.
 
@@ -32,7 +30,6 @@ This document supersedes the Go prototype and the earlier Go plan.
 | Scan model | Parallel (`rayon` + `ignore` walker); stat fast-path incremental |
 | VFS coverage | A record for **every regular file** (metadata + hash, never contents) |
 | Provenance | Finding → Rule → Dataset → Source edges |
-| LLM | Embedded **Candle** runtime (pure-Rust, CPU); GGUF weights downloaded by `exfil update` into config |
 | Config | **TOML** via `toml`, embedded default (`include_str!`), per-plugin `[plugins.<name>]` tables |
 | Platforms | Windows/macOS/Linux/Unix; metadata via `cfg`-gated `MetadataExt` |
 
@@ -48,10 +45,11 @@ exfil/
     exfil-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
     exfil-source/   Source trait + registry: builtin, file, http (reqwest)
     exfil-report/   ✅ Reporter trait: text, json, markdown
-    exfil-llm/      ✅ Enricher trait + rule-based triage (Candle model = future impl); `enrich`
     exfil-config/   ✅ TOML config with embedded default + per-plugin decode
-    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): search/graph/neighbors/get/analyze
-    exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report)
+    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 26 tools over the whole CLI surface
+    exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report);
+                       setup.rs = shared store opening + pipeline building
+    exfil-remote/   ✅ non-local sources (processes/TCP/web) + target.rs = shared scan-target dispatch
   crates/exfil-cli/ (bin "exfil")  ✅ clap commands + progress gauge (the
     mutt-style `exfil tui` workbench was built here too, then later removed)
 ```
@@ -94,13 +92,12 @@ Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 | HTTP | `reqwest` (rustls) | dataset + model downloads, no OpenSSL |
 | Progress | `ratatui` | inline scan progress gauge |
 | Config | `toml` | pure-Rust, mature, per-plugin tables |
-| LLM | `candle-core`, `candle-transformers`, `tokenizers` | pure-Rust GGUF inference (CPU) |
 | Serde | `serde`, `serde_json` | reports, MCP |
 | Async | `tokio` | SurrealDB + reqwest are async |
 
 **Build note:** tree-sitter grammars are C (compiled via the `cc` crate at
 build time); cross-compilation uses `cargo-zigbuild`/`cross`. Everything else is
-pure Rust (SurrealKV, Candle-CPU, yara-x, rustls), so there is no system C/C++
+pure Rust (SurrealKV, yara-x, rustls), so there is no system C/C++
 library dependency.
 
 ## Graph data model (SurrealDB)
@@ -156,19 +153,20 @@ One `fn platform_meta(&Metadata) -> PlatformMeta`, `cfg`-gated:
 Portable core (path, host, mode, size, mtime, blake3) everywhere; platform
 fields fill in where available. ACL/xattr and security labels are a follow-up.
 
-## Offline embedded LLM
+## Offline embedded LLM (removed)
 
-- **Engine in the binary** — `candle` runs quantized GGUF models in pure Rust on
-  CPU, cross-platform, no CGo. Compiled in behind an `Llm` trait
-  (`available()`, `extract(text, schema)`, `enrich(finding)`); every call is a
-  **no-op when disabled or the model is absent**.
-- **Weights are a data file** — the GGUF is downloaded by `exfil update` into
-  the LLM plugin's config dir (`~/.config/exfil/plugins/llm/`), like a dataset:
-  fetched once, offline thereafter, preserved across `clean`. Precedence:
-  downloaded model → optional tiny `include_bytes!` default → disabled.
-- **Uses** — (1) extract structure from unstructured text (logs/docs/config
-  prose) into finding/entity records; (2) triage/enrich findings. Runs as a
-  separate **`exfil enrich`** pass over the stored graph so scans stay fast.
+An `Enricher` seam with a rule-based triage-note implementation shipped in an
+`exfil-llm` crate, alongside a Rhai (`exfil-script`) enricher for user-written
+triage rules, with a Candle/GGUF model as the intended future implementation.
+Both crates have since been **removed**: the rule-based notes restated what the
+finding's severity and CWE already said, and the model never landed. `exfil
+enrich` remains as the MITRE CWE-name annotation pass, which was always
+independent of the enricher.
+
+Agent-driven triage now happens through the
+[MCP server](./architecture/integrations.md) instead — an agent reads the graph
+and reasons about it directly, rather than exfil pre-writing a note into every
+record.
 
 ## Plugin traits
 
@@ -180,8 +178,7 @@ trait Scanner  { fn name(&self)->&str; fn applies(&self,p:&Path,m:&Metadata)->bo
 trait Reporter { fn name(&self)->&str; fn report(&self, w:&mut dyn Write, a:&Analysis)->Result<()>; }
 
 // opt-in capabilities:
-trait Updater { async fn update(&self) -> Result<()>; }         // refresh datasets/model
-trait UsesLlm { fn set_llm(&mut self, llm: Arc<dyn Llm>); }     // receive the model
+trait Updater { async fn update(&self) -> Result<()>; }         // refresh datasets
 ```
 
 The engine reads each file once and passes `content` to scanners.
@@ -193,13 +190,12 @@ exfil sources | pull | update | datasets | rules
 exfil scan [path]        # parallel, incremental, streaming
 exfil search [query]     # SurrealQL under the hood (rule/lang/cwe/severity)
 exfil graph  [query]     # findings graph (dot/json) via traversal
-exfil analyze [query]    # whole-graph report (text/json/markdown)
-exfil enrich             # offline LLM pass (structure extraction + triage)
+exfil analyze [query]    # whole-graph report (text/json/markdown/junit/sarif)
+exfil enrich             # annotate findings with MITRE CWE names
 exfil config | clean | gc | mcp | get <id>
 ```
 
-`update` downloads dataset refs *and* the LLM GGUF into their plugin config dirs
-with concurrent progress bars.
+`pull` downloads dataset refs into the catalog with concurrent progress bars.
 
 ## Config (TOML, embedded default)
 
@@ -218,36 +214,11 @@ languages = ["go", "python", "javascript"]
 [plugins.yara]
 rules = ["datasets/example.yar"]
 
-[llm]
-enabled = true
-tasks = ["extract", "triage"]
-
 [[update]]
 name = "security"
 ref = "builtin://security"
 
-[[update]]
-name = "llm-model"
-ref = "https://…/model.gguf"
-```
-
-## Milestones
-
-- **M0 Scaffold** ✅ — Cargo workspace, `clap` skeleton, SurrealKV store
-  open/close, TOML config + embedded default, cross-platform metadata.
-- **M1 Graph + scan** — mostly done: schema + edges (✅ `exfil-store`), regex
-  scanner + builtin ruleset (✅ `exfil-scan`), parallel walk → hash → scan →
-  upsert engine with live `ScanEvent` streaming (✅ `exfil-engine`),
-  `scan`/`search`/`get`/`rules` wired with a ratatui progress gauge (✅). (A
-  mutt-style `exfil tui` workbench — index/pager, `/` limit, `:` commands,
-  live scans — was also built here but has since been removed; may return in
-  a future release.) Still to do: incremental rescan (stat fast-path; today a
-  rescan re-reads and re-creates findings — dedup/replace prior scan's findings),
-  tree-sitter AST scanner + `has_ast` edges, `flagged_by`/rule provenance
-  edges (needs stored rules, ties into M2 datasets).
-- **M2 SAST breadth** — taint (tree-sitter), yara-x, sources (builtin/file/http),
-  `pull`/`update` with progress; provenance edges; `graph`/`analyze` + reports.
-- **M3 LLM** — Candle engine, model download, `enrich` (structure + triage).
+[Offline embedded LLM (removed)](#offline-embedded-llm-removed).
 - **M4 Ops** — `gc`, DAG-CBOR `export`, MCP server, docs, CI cross-builds.
 
 ## Risks & tradeoffs
@@ -256,8 +227,6 @@ ref = "https://…/model.gguf"
   slower. Mitigated by reusing its proven data model and rule sets.
 - **tree-sitter C grammars** — build needs a C compiler (`cc`); cross-compiles
   via `zigbuild`. The only non-pure-Rust piece; well-trodden.
-- **LLM quality/size** — Candle CPU inference suits small models; fine for
-  extraction/triage, not deep reasoning. Weights download keeps the binary lean.
 - **No IPLD** — SurrealDB is the sole store; content-hash record IDs give dedup
   and integrity. Merkle-DAG portability is out of scope (revisit only if a
   content-addressed export is ever needed).
@@ -268,8 +237,8 @@ ref = "https://…/model.gguf"
 
 A layered "neovim for graph traversal/editing" over the findings graph was
 built out (pluggable viewers in `exfil-view`, a two-pane edge-following
-navigator, field/edge CRUD with undo/redo, remappable vim keymaps, and a Rhai
-scripting enricher) and shipped as the `exfil tui` command. It has since been
+navigator, field/edge CRUD with undo/redo, and remappable vim keymaps) and
+shipped as the `exfil tui` command. It has since been
 removed (along with the `exfil-view` crate); it may return in a future
 release.
 

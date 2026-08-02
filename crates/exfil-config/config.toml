@@ -50,18 +50,6 @@
 # [plugins.clamav]
 # signatures = []     # e.g. ["sigs/custom.ndb"]
 
-# A Rhai script that computes a triage note per finding (`exfil enrich`). The
-# script sees `finding` (rule/path/line/severity/cwe/snippet) and returns a
-# string note or () to skip. Unset = the built-in rule-based enricher.
-# [plugins.script]
-# enrich = "enrich.rhai"
-
-# ── Offline LLM enrichment ───────────────────────────────────────────────────
-# No-op until a model is downloaded via `exfil pull`. Off by default.
-# [llm]
-# enabled = false
-# tasks = ["extract", "triage"]
-
 # ── Datasets to download ─────────────────────────────────────────────────────
 # `exfil pull` with no argument (re)downloads every [[update]] entry. The
 # built-in security ruleset ships enabled; add your own entries below.

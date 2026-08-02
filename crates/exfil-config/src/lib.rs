@@ -36,10 +36,7 @@ pub struct Config {
     /// Per-plugin tables, decoded on demand via [`Config::plugin`].
     #[serde(default)]
     pub plugins: BTreeMap<String, toml::Value>,
-    /// Optional LLM settings.
-    #[serde(default)]
-    pub llm: Option<toml::Value>,
-    /// Datasets/model to (re)download on `exfil update`.
+    /// Datasets to (re)download on `exfil pull`.
     #[serde(default)]
     pub update: Vec<Update>,
     /// Optional `[database]` connection settings (embedded by default).
@@ -226,6 +223,26 @@ impl Config {
             return Some(f.to_string());
         }
         value.as_bool().map(|b| b.to_string())
+    }
+
+    /// Read one field of a `[plugins.<name>]` table as a list of strings, e.g.
+    /// `[plugins.yara] rules = ["a.yar", "rules/"]`. An absent plugin, absent
+    /// field, or non-array value yields an empty list, so callers can treat
+    /// "not configured" and "configured empty" alike. Non-string array entries
+    /// are skipped.
+    pub fn plugin_strings(&self, plugin: &str, key: &str) -> Vec<String> {
+        let Some(array) = self
+            .plugins
+            .get(plugin)
+            .and_then(|table| table.get(key))
+            .and_then(|v| v.as_array())
+        else {
+            return Vec::new();
+        };
+        array
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
     }
 }
 

@@ -206,23 +206,22 @@ fn enrich_and_export_commands() {
     let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
-    // enrich writes a triage note to the finding.
+    // With no MITRE catalog pulled (the sandbox isolates it), enrich says so
+    // rather than failing.
     let out = exfil(&sb.store, &["enrich"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
-        stdout(&out).contains("enriched 1 finding(s)"),
+        stdout(&out).contains("nothing to annotate"),
         "{}",
         stdout(&out)
     );
 
-    // export --format json includes the enriched triage field.
+    // export --format json round-trips the stored findings.
     let out = exfil(&sb.store, &["store", "export", "--format", "json"]);
     assert!(out.status.success());
     let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json snapshot");
-    let triage = snap["tables"]["finding"][0]["triage"]
-        .as_str()
-        .unwrap_or("");
-    assert!(triage.contains("credential"), "{triage}");
+    let rule = snap["tables"]["finding"][0]["rule"].as_str().unwrap_or("");
+    assert_eq!(rule, "aws-access-key-id");
 }
 
 #[test]
@@ -322,11 +321,7 @@ fn sources_pull_datasets_flow() {
 
     // A scan now applies the custom rule from the catalog.
     std::fs::write(sb.tree.join("token.txt"), "key = ACME-123456\n").unwrap();
-    let out = exfil_catalog(
-        &sb.store,
-        &catalog,
-        &["scan", sb.tree.to_str().unwrap()],
-    );
+    let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("acme-token"), "{}", stdout(&out));
 }
@@ -359,11 +354,7 @@ fn ioc_hash_and_content_scanning() {
     let out = exfil_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
 
-    let out = exfil_catalog(
-        &sb.store,
-        &catalog,
-        &["scan", sb.tree.to_str().unwrap()],
-    );
+    let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("bad-file"), "hash IOC missing:\n{text}");
@@ -422,54 +413,71 @@ fn clamav_signatures_from_config() {
     assert!(text.contains("clamav:Test.Body.Sig"), "body sig:\n{text}");
 }
 
+/// The MCP server exposes exfil's whole surface, not just graph queries: an
+/// agent can run a scan and then read the findings it just produced.
 #[test]
-fn script_enricher_from_config() {
-    let sb = Sandbox::new("script");
-    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
-    assert!(out.status.success(), "{}", stderr(&out));
+fn mcp_server_scans_and_lists_the_wider_surface() {
+    use std::io::Write;
+    use std::process::Stdio;
 
-    let script = sb.base.join("enrich.rhai");
-    std::fs::write(
-        &script,
-        r#"if finding.severity == "critical" { "SCRIPTED: " + finding.rule } else { () }"#,
-    )
-    .unwrap();
-    let cfg = sb.base.join("exfil.toml");
-    std::fs::write(
-        &cfg,
-        format!(
-            "store = \".exfil\"\n[plugins.script]\nenrich = {:?}\n",
-            script.to_str().unwrap()
-        ),
-    )
-    .unwrap();
+    let sb = Sandbox::new("mcp-surface");
+    let catalog = sb.base.join("catalog");
 
-    // enrich runs the user script.
-    let out = exfil_cfg(&sb.store, &cfg, &["enrich"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stdout(&out).contains("enrich.rhai"), "{}", stdout(&out));
-
-    // The scripted triage note landed on the finding.
-    let out = exfil(&sb.store, &["store", "export", "--format", "json"]);
-    let snap: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-    let triage = snap["tables"]["finding"][0]["triage"]
-        .as_str()
-        .unwrap_or("");
-    assert!(triage.contains("SCRIPTED: aws-access-key-id"), "{triage}");
-}
-
-/// Run exfil with an explicit config file (and an isolated catalog).
-fn exfil_cfg(store: &Path, cfg: &Path, args: &[&str]) -> Output {
-    let no_catalog = store.parent().unwrap_or(store).join("no-catalog");
-    Command::new(env!("CARGO_BIN_EXE_exfil"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_exfil"))
         .arg("--store")
-        .arg(store)
-        .arg("--config")
-        .arg(cfg)
-        .args(args)
-        .env("EXFIL_CATALOG_DIR", no_catalog)
-        .output()
-        .expect("run exfil")
+        .arg(&sb.store)
+        .arg("mcp")
+        .env("EXFIL_CATALOG_DIR", &catalog)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp");
+
+    let scan = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"scan","arguments":{{"target":{:?}}}}}}}"#,
+        sb.tree.to_str().unwrap()
+    );
+    let requests = format!(
+        "{}\n{}\n{}\n",
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        scan,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"stats","arguments":{}}}"#,
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(requests.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+
+    // The catalog advertises the mutating and destructive tools, each tagged.
+    let list: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for expected in ["scan", "pull", "normalize", "gc", "clean", "check_dns"] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    let clean = tools.iter().find(|t| t["name"] == "clean").unwrap();
+    assert!(
+        clean["description"]
+            .as_str()
+            .unwrap()
+            .contains("DESTRUCTIVE"),
+        "{clean}"
+    );
+
+    // The scan ran and wrote to the store.
+    let scanned: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let scan_text = scanned["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(scan_text.contains("scanned"), "{scan_text}");
+
+    // …and the very next tool call sees its findings.
+    let stats: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let stats_text = stats["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(stats_text.contains("findings: 1"), "{stats_text}");
 }
 
 #[test]

@@ -37,19 +37,25 @@ Nobody edits a central sequence.
 
 ---
 
-## 2. The four data kinds
+## 2. The five data kinds
 
-Everything flowing through the pipeline is one of four `ArtifactKind`s
+Everything flowing through the pipeline is one of five `ArtifactKind`s
 ([`lib.rs:34`](../../crates/exfil-task/src/lib.rs#L34)):
 
 ```rust
 pub enum ArtifactKind {
-    Bytes,    // raw file bytes — the seed input
-    Files,    // files expanded from a container (archive entries)
-    Ast,      // a parsed abstract syntax tree
-    Matches,  // security findings — a terminal output
+    Bytes,       // raw file bytes — the seed input
+    Files,       // files expanded from a container (archive/SQLite entries)
+    Ast,         // a parsed abstract syntax tree
+    Indicators,  // observables extracted from content (emails, domains, IPs, URLs, hashes)
+    Matches,     // security findings — a terminal output
 }
 ```
+
+(`Indicators` feeds the checker plugins — DNS, WHOIS, network-IOC, and leak —
+that act on observables rather than raw bytes; the two-hop chains below focus
+on `Ast`, the other one with intermediate consumers, but the same
+producer/consumer pattern applies.)
 
 `ArtifactKind` is just the *tag* — a lightweight label. The actual data travels
 in the parallel `Artifact` enum ([`lib.rs:92`](../../crates/exfil-task/src/lib.rs#L92)),
@@ -86,6 +92,7 @@ pub trait FileTask: Send + Sync {
     fn needs(&self) -> ArtifactKind;        // what I consume
     fn provides(&self) -> ArtifactKind;     // what I produce
     fn applies(&self, _path: &Path) -> bool { true }   // do I run for this file?
+    fn binary_safe(&self) -> bool { false } // do I want to run on binary content?
     fn run(&self, path: &Path, input: &Artifact) -> Result<Artifact>;
 }
 ```
@@ -96,6 +103,11 @@ pub trait FileTask: Send + Sync {
   it if it is selective (the AST scanner only applies to source files; the
   archive expander only to `.zip`/`.tar`/…). See
   [default methods](./rust-primer.md#trait-default-methods).
+- `binary_safe()` also defaults (`false`) — true text-pattern scanners would
+  just match noise on binary content, so the engine skips them there (see
+  [§6 of the engine page](./engine.md#6-what-actually-gets-scanned-run_pipeline)).
+  YARA and ClamAV override it to `true`: matching raw binary bytes is exactly
+  what they're for.
 - `run()` does the actual work: input artifact in, output artifact out.
 - The `: Send + Sync` bound means every plugin is safe to share across threads —
   required, because the engine runs the pipeline on many threads at once.
@@ -106,11 +118,12 @@ Here are the real plugins and their edges (from
 | Plugin | `needs()` | `provides()` | `applies()` to |
 |--------|-----------|--------------|----------------|
 | `ArchiveExpander` | `Bytes` | `Files` | `.zip/.tar/.gz/.jar/…` |
+| `SqliteExpander` | `Bytes` | `Files` | `.db/.sqlite/.sqlite3` (magic-header sniffed) |
 | `RegexScanner` | `Bytes` | `Matches` | every file |
 | `SupplyChainScanner` | `Bytes` | `Matches` | `package.json`, `Cargo.toml`, `requirements*.txt` |
 | `HashIocScanner` | `Bytes` | `Matches` | any file (if IOCs loaded) |
-| `ClamavScanner` | `Bytes` | `Matches` | any file (if sigs loaded) |
-| `YaraScanner` | `Bytes` | `Matches` | any file (if rules loaded) |
+| `ClamavScanner` | `Bytes` | `Matches` | any file (if sigs loaded); `binary_safe` |
+| `YaraScanner` | `Bytes` | `Matches` | any file (if rules loaded); `binary_safe` |
 | `AstExtractor` | `Bytes` | `Ast` | supported source files |
 | `DangerousCallScanner` | `Ast` | `Matches` | (runs where an `Ast` exists) |
 | `TaintScanner` | `Ast` | `Matches` | (runs where an `Ast` exists) |

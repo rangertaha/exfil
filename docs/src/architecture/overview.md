@@ -80,12 +80,13 @@ exfil/
 │   ├── exfil-engine/    ← ORCHESTRATION: the parallel walk + run stages
 │   │   └── src/
 │   │       ├── lib.rs        ← scan() / scan_remote(): walk, hash, persist
-│   │       └── run.rs        ← RunStage: fetch → scan → report
-│   ├── exfil-remote/    ← SSH/SFTP RemoteFs for scanning other hosts
+│   │       ├── run.rs        ← RunStage: fetch → scan → report
+│   │       └── setup.rs      ← shared: open the stores, build the pipeline
+│   ├── exfil-remote/    ← non-local scan sources (processes, TCP, web)
+│   │   └── src/
+│   │       └── target.rs     ← shared: resolve a target spec, run the scan
 │   ├── exfil-report/    ← render findings as text / json / markdown
-│   ├── exfil-mcp/       ← MCP server: expose the graph to AI agents
-│   ├── exfil-llm/       ← offline LLM / rule-based finding enrichment
-│   ├── exfil-script/    ← Rhai scripting for user triage rules
+│   ├── exfil-mcp/       ← MCP server: expose the whole tool to AI agents
 │   └── exfil-cli/       ← THE BINARY: argument parsing, wiring
 │       └── src/
 │           ├── main.rs       ← subcommands (scan, search, analyze, gc…)
@@ -155,10 +156,8 @@ flowchart TD
             DS["dataset fetch"]
             MITRE["mitre CWE"]
         end
-        REPORT["exfil-report<br/>text·json·md·junit"]
-        MCP["exfil-mcp"]
-        LLM["exfil-llm<br/>enrich"]
-        SCRIPT["exfil-script"]
+        REPORT["exfil-report<br/>text·json·md·junit·sarif"]
+        MCP["exfil-mcp<br/>26 agent tools"]
     end
     subgraph L3["⑤ Storage · exfil-store"]
         subgraph RECORDS["records"]

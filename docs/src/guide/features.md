@@ -16,6 +16,13 @@
   that flow through the same scanners (depth- and size-capped against bombs),
   each linked to its container in the graph, so a secret inside `dist.zip →
   app/.env` is found exactly as if it sat on disk.
+- **SQLite-aware** — `.db`/`.sqlite`/`.sqlite3` files (sniffed by magic header)
+  have every table's rows flattened into a virtual file, row/table-count
+  capped, so the same scanners catch a secret or PII value sitting in a
+  database column exactly as if it were a plain text file.
+- **Binary-signature scanning** — YARA and ClamAV still match raw binary
+  content directly; text-oriented scanners (regex, PII, IOC) skip binary
+  files, since matching noise as text would only produce garbage findings.
 - **Plugin DAG orchestration** — plugins are tasks declaring the artifact kinds
   they consume/produce (`Bytes → Ast → Matches`, `Bytes → Files`); a
   topological scheduler wires them by dependency, so new analyzers slot in
@@ -46,7 +53,7 @@
   `http(s)://` URL crawls the site (`--driver` for JS-rendered pages). `-a`/`-p`
   label the summary active/passive; it's otherwise inferred from the target.
 - **Plugin architecture** — scanners, dataset sources, and reporters are traits;
-  regex, supply-chain, archive expansion, tree-sitter AST, taint, IOC, and
-  ClamAV scanning ship today, YARA is planned (see the
-  [roadmap](../PLAN.md)).
+  regex, supply-chain, archive/SQLite expansion, tree-sitter AST, taint, IOC,
+  ClamAV, and YARA scanning all ship today (see the [roadmap](../PLAN.md) for
+  what's next).
 - **Single portable binary** — pure Rust, builds on Linux, macOS, and Windows.

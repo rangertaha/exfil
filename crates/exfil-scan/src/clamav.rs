@@ -128,6 +128,10 @@ impl crate::Scanner for ClamavScanner {
         !self.is_empty()
     }
 
+    fn binary_safe(&self) -> bool {
+        true
+    }
+
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>> {
         let path_str = path.to_string_lossy();
         let mut matches = Vec::new();

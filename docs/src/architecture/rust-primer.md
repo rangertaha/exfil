@@ -117,9 +117,10 @@ reads a file, and if it fails, returns an error *annotated* with which file
 adds a human message; `bail!("...")` returns an error immediately. This is how the
 whole codebase propagates failure without exceptions.
 
-> `.ok()?` converts a `Result` into an `Option` and short-circuits — the Rhai
-> enricher uses it so a script *runtime* error becomes "no note" instead of a crash
-> ([`script/lib.rs:89`](../../crates/exfil-script/src/lib.rs#L89)).
+> `.ok()?` converts a `Result` into an `Option` and short-circuits — `database_override`
+> uses it so an unreadable config means "no `[database]` override, use the embedded
+> store" instead of a hard failure
+> ([`engine/setup.rs:24`](../../crates/exfil-engine/src/setup.rs#L24)).
 
 ---
 
@@ -131,8 +132,8 @@ how Rust does polymorphism (there's no class inheritance). `FileTask`
 interface — anything implementing `name`/`needs`/`provides`/`run` *is* a plugin.
 
 exfil is built almost entirely on a handful of traits: `FileTask`, `Scanner`,
-`Reporter`, `Enricher`, `Source`, `RemoteFs`, `RunStage`. Define a trait,
-implement it, register it — that's the extension pattern everywhere.
+`Reporter`, `Source`, `RemoteFs`, `RunStage`. Define a trait, implement it,
+register it — that's the extension pattern everywhere.
 
 ### Trait default methods {#trait-default-methods}
 
@@ -323,7 +324,7 @@ If you've read this page, here's the recurring shape of the whole codebase:
 
 ```mermaid
 flowchart TD
-    T["Define a trait<br/>(FileTask, Reporter, Enricher…)"] --> I["Implement it for each variant<br/>(RegexScanner, JunitReporter…)"]
+    T["Define a trait<br/>(FileTask, Reporter, RemoteFs…)"] --> I["Implement it for each variant<br/>(RegexScanner, JunitReporter…)"]
     I --> B["Store them as Box&lt;dyn Trait&gt;<br/>in a Vec / Registry / Pipeline"]
     B --> D["Dispatch at runtime<br/>(the scheduler / registry picks one)"]
     D --> E["Errors flow up via Result + ?<br/>Absence via Option"]
