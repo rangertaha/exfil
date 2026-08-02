@@ -414,6 +414,15 @@ and this project adheres to
 
 ### Fixed
 
+- Documentation drift, swept mechanically rather than by eye: 14 `file.rs:NNN`
+  citations pointed at lines that no longer held the symbol they named, and
+  `cli.md`'s whole handler table had gone stale again after the `hmm` commands
+  landed. Every citation is now checked against the symbol's real definition.
+  Also corrected: `build_pipeline` was cited in `main.rs` when it lives in
+  `engine/setup.rs`; two pages still described scanning "a remote host over
+  SSH", removed several commits ago; the crate count said 13 (it is 12); and
+  the layer table still listed `exfil-llm`/`exfil-script`. `exfil-hmm` joins the
+  layer diagram and the `hmm` commands join the CLI table.
 - Removed two dead public items left behind by the two-chain rewrite:
   `Chain::posteriors` (the state posteriors the abandoned single-chain read-out
   needed; the classifier scores by likelihood ratio and never computes γ) and

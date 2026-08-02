@@ -33,7 +33,7 @@ flowchart LR
 1. **Sources** produce tainted data — `is_source`
    ([`taint.rs:36`](../../crates/exfil-scan/src/taint.rs#L36)).
 2. **Propagation** spreads taint through assignments — the forward pass in
-   `analyze` ([`taint.rs:119`](../../crates/exfil-scan/src/taint.rs#L119)).
+   `analyze` ([`taint.rs:124`](../../crates/exfil-scan/src/taint.rs#L124)).
 3. **Sinks** are where tainted data becomes dangerous — `taint_sink`
    ([`taint.rs:69`](../../crates/exfil-scan/src/taint.rs#L69)).
 
@@ -47,7 +47,7 @@ recorded.
 
 ## 2. The algorithm
 
-`analyze` ([`taint.rs:119`](../../crates/exfil-scan/src/taint.rs#L119)) is a
+`analyze` ([`taint.rs:124`](../../crates/exfil-scan/src/taint.rs#L124)) is a
 **single forward pass**, intentionally simple and cheap:
 
 ```mermaid
@@ -127,7 +127,7 @@ precisely so `process.argv[2]` is recognized as untrusted.
 
 ## 4. What counts as a sink
 
-`taint_sink` ([`taint.rs:69`](../../crates/exfil-scan/src/taint.rs#L69)) mirrors
+`taint_sink` ([`taint.rs:74`](../../crates/exfil-scan/src/taint.rs#L74)) mirrors
 the dangerous-call sinks but classifies them as injection when fed taint. It uses
 the same **cross-language prefix check first, then `match`** structure as
 `sink_for`:

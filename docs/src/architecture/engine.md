@@ -205,7 +205,7 @@ flowchart LR
 - **The database is async.** SurrealDB writes are `.await`ed by the single
   `scan()` task after workers produce results. I/O-bound DB work belongs on the
   async runtime.
-- **They meet at an `mpsc` channel** ([`lib.rs:161`](../../crates/exfil-engine/src/lib.rs#L161)):
+- **They meet at an `mpsc` channel** ([`lib.rs:15`](../../crates/exfil-engine/src/lib.rs#L15)):
   *multi-producer* (every worker gets a clone of the sender `tx`),
   *single-consumer* (only `scan()` reads `rx`).
 
@@ -290,7 +290,7 @@ test that sets a file to `0o000` and asserts the scan still completes with
 
 ## 6. What actually gets scanned: `run_pipeline`
 
-`run_pipeline` ([`lib.rs:445`](../../crates/exfil-engine/src/lib.rs#L445)) decides
+`run_pipeline` ([`lib.rs:870`](../../crates/exfil-engine/src/lib.rs#L870)) decides
 *how* a file's bytes are handled before handing them to the [plugin DAG](./pipeline.md):
 
 ```mermaid
@@ -418,7 +418,7 @@ Because files are **content-addressed** (the record id *is* the blake3 hash),
 editing a file produces a *new* record at the new hash; the old content's record
 lingers, orphaned, until [garbage collection](./store.md#gc) prunes it.
 
-Finally, `commit_scan` ([`lib.rs:245`](../../crates/exfil-engine/src/lib.rs#L245))
+Finally, `commit_scan` ([`lib.rs:302`](../../crates/exfil-engine/src/lib.rs#L302))
 writes a `scan` record with an `includes` edge to every file hash this scan saw —
 whether freshly scanned or reused via the fast-path. That is what ties a scan
 together and lets `gc` later keep "the latest scan and everything it reaches."
@@ -467,7 +467,7 @@ pub trait RemoteFs: Send + Sync {
 }
 ```
 
-`scan_remote` ([`lib.rs:288`](../../crates/exfil-engine/src/lib.rs#L288)) lists
+`scan_remote` ([`lib.rs:636`](../../crates/exfil-engine/src/lib.rs#L636)) lists
 files, reads each one's bytes, and runs the **exact same** `run_pipeline` +
 `expand_into` + persistence. The scanners never know the bytes came from
 somewhere other than a local disk:

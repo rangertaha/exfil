@@ -260,14 +260,14 @@ whole name to tell `child_process.exec` from a bare `exec`
 
 Real grammars have irregularities. Two small helpers keep the walk uniform:
 
-**`first_identifier`** ([`ast.rs:317`](../../crates/exfil-scan/src/ast.rs#L317)) —
+**`first_identifier`** ([`ast.rs:403`](../../crates/exfil-scan/src/ast.rs#L403)) —
 some assignment targets aren't a bare identifier but *wrap* one. Go's
 `c := r.FormValue(...)` has an `expression_list` target; a Rust `let` has a
 pattern. This helper returns the node's text if it *is* an identifier, else
 recurses to find the first identifier inside — so a wrapped target still yields a
 variable name.
 
-**`assignment_parts`** ([`ast.rs:241`](../../crates/exfil-scan/src/ast.rs#L241)) —
+**`assignment_parts`** ([`ast.rs:317`](../../crates/exfil-scan/src/ast.rs#L317)) —
 splits an assignment into `(target, rhs)`, trying field names in order: `left` /
 `name` / `pattern` for the target, `right` / `value` for the RHS. It ends with a
 **positional fallback** for C#, whose `var x = expr` declarator holds the
@@ -326,7 +326,7 @@ The design uses **cross-language prefix checks first, then a `match`** on the fu
 name and its last component. This ordering matters:
 
 - Full-name checks come first so `child_process.exec` is a child-process sink, not
-  a bare `exec` ([`ast.rs:516`](../../crates/exfil-scan/src/ast.rs#L516)).
+  a bare `exec` ([`ast.rs:9`](../../crates/exfil-scan/src/ast.rs#L9)).
 - The last-component fallback lets both `system` and `os.system` resolve
   ([`ast.rs:441`](../../crates/exfil-scan/src/ast.rs#L441)).
 

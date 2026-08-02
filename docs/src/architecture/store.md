@@ -147,7 +147,7 @@ Two idioms recur, and both are documented workarounds for SurrealDB specifics:
 ## 5. Traversal: `neighbors`
 
 The core method for walking the graph is
-`neighbors` ([`lib.rs:629`](../../crates/exfil-store/src/lib.rs#L629)): given a
+`neighbors` ([`lib.rs:1187`](../../crates/exfil-store/src/lib.rs#L1187)): given a
 node id, return every directly connected node, tagged with the relationship and
 direction.
 
@@ -203,7 +203,7 @@ scans and pick the wrong "latest."
 
 ## 7. Export snapshots {#export}
 
-`export_snapshot` ([`lib.rs:268`](../../crates/exfil-store/src/lib.rs#L268))
+`export_snapshot` ([`lib.rs:353`](../../crates/exfil-store/src/lib.rs#L353))
 serializes the entire graph — all record and edge tables — into portable JSON
 (which the CLI can also emit as [CBOR](./integrations.md)). Because ids are
 content-addressed, snapshots from different machines diff meaningfully.
@@ -231,7 +231,7 @@ Grouped by what they do (all `async`, all on `Store`):
 | **Datasets (catalog)** | `upsert_dataset`, `list_datasets`, `get_dataset`, `all_rules`, `remove_dataset` |
 | **Maintenance** | `gc`, `export_snapshot` |
 
-`search_findings` ([`lib.rs:236`](../../crates/exfil-store/src/lib.rs#L236)) is the
+`search_findings` ([`lib.rs:317`](../../crates/exfil-store/src/lib.rs#L317)) is the
 one you'll use most: empty string returns all findings; `field=value` filters on a
 whitelisted field (`rule`/`cwe`/`severity`/`path`); anything else matches against
 rule names. It's the same filter syntax the [CLI `search`](./cli.md) and the

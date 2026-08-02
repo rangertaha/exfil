@@ -270,7 +270,7 @@ let finding =
         .flatten();
 ```
 
-`cmd_check_whois` ([`main.rs:723`](../../crates/exfil-cli/src/main.rs#L723)) does the
+`cmd_check_whois` ([`main.rs:840`](../../crates/exfil-cli/src/main.rs#L840)) does the
 same for the blocking WHOIS lookup. The async task stays free to run other work
 while the blocking call proceeds on its own thread; `.await` picks the result back
 up once it finishes.

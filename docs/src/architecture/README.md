@@ -5,8 +5,8 @@ Every page explains *what* a component does, *why* it is shaped that way, and
 *how* the Rust works, with links straight into the source (`crate/file.rs:line`).
 
 exfil is an **offline, cross-platform, plugin-based filesystem-analysis and
-SAST engine**. It walks a directory tree (or a remote host over SSH), reads each
-file once, runs a set of analysis plugins over it, and stores every result in an
+SAST engine**. It walks a directory tree — or a host's processes, a service's banners, a
+crawled site — reads each file once, runs a set of analysis plugins over it, and stores every result in an
 embedded graph database you can then query, navigate, and report on.
 
 ## How to read this guide

@@ -26,39 +26,43 @@ flowchart TD
     EXF --> DATA["sources / pull / datasets / feeds / rules — manage rules"]
     EXF --> MAINT["store export/gc/clean — maintenance"]
     EXF --> ENR["enrich / cwe — MITRE CWE annotation & lookup"]
+    EXF --> RANK["hmm train/score/status/eval — the path model"]
     EXF --> SERVE["mcp / server — serve results to AI agents or over HTTP"]
     EXF --> MISC["config / completions"]
 ```
 
 | Command | Does | Handler |
 |---------|------|---------|
-| `scan [target]` | Scan a local path (default), `processes`, `host:port` (banner grab), a host/CIDR with `--ports`, or an `http(s)://` URL; persists findings with live progress | [`main.rs:571`](../../crates/exfil-cli/src/main.rs#L571) (`cmd_scan`) |
-| `check dns` | Resolve observed domains, flag reserved/private resolutions | [`main.rs:756`](../../crates/exfil-cli/src/main.rs#L756) (`cmd_check_dns`) |
-| `check whois` | WHOIS-check observed domains, flag newly-registered ones | [`main.rs:699`](../../crates/exfil-cli/src/main.rs#L699) (`cmd_check_whois`) |
-| `normalize` | Normalize stored findings into CIM events for cross-source correlation | [`main.rs:735`](../../crates/exfil-cli/src/main.rs#L735) (`cmd_normalize`) |
-| `search [query]` | Query stored findings (`field=value` or free text) | [`main.rs:1020`](../../crates/exfil-cli/src/main.rs#L1020) (`cmd_search`) |
-| `analyze [query] -f <fmt>` | Render a report (`text`/`json`/`markdown`/`junit`/`sarif`) | [`main.rs:1052`](../../crates/exfil-cli/src/main.rs#L1052) (`cmd_analyze`) |
-| `graph [query] -f <fmt>` | Emit the findings graph as JSON or DOT | [`main.rs:1064`](../../crates/exfil-cli/src/main.rs#L1064) (`cmd_graph`) |
-| `get <id>` | Print one record by id as JSON | [`main.rs:1199`](../../crates/exfil-cli/src/main.rs#L1199) (`cmd_get`) |
-| `sources` | List the available dataset source plugins | [`main.rs:787`](../../crates/exfil-cli/src/main.rs#L787) (`cmd_sources`) |
-| `pull [ref]` | Fetch datasets: a specific reference, or every configured `[[update]]` | [`main.rs:802`](../../crates/exfil-cli/src/main.rs#L802) (`cmd_pull`) |
-| `datasets [list/show/add/rm]` | Manage the catalog dataset rule sets | [`main.rs:857`](../../crates/exfil-cli/src/main.rs#L857) (`cmd_datasets`) |
-| `feeds [list/add/rm/show/pull]` | Manage the URL feed catalog and fetch feeds into rule datasets | [`main.rs:914`](../../crates/exfil-cli/src/main.rs#L914) (`cmd_feeds`) |
-| `rules [filter]` | Show the built-in rules a scan would apply | [`main.rs:1243`](../../crates/exfil-cli/src/main.rs#L1243) (`cmd_rules`) |
-| `enrich` | Annotate findings with authoritative MITRE CWE names | [`main.rs:1098`](../../crates/exfil-cli/src/main.rs#L1098) (`cmd_enrich`) |
-| `cwe <id>` | Look up a weakness in the local MITRE CWE catalog | [`main.rs:1132`](../../crates/exfil-cli/src/main.rs#L1132) (`cmd_cwe`) |
-| `config` | Show the resolved config path and contents | [`main.rs:421`](../../crates/exfil-cli/src/main.rs#L421) (`cmd_config`) |
-| `store export -o -f` | Snapshot the store (CBOR or JSON) | [`main.rs:1150`](../../crates/exfil-cli/src/main.rs#L1150) (`cmd_export`) |
-| `store gc` | Garbage-collect unreachable records | [`main.rs:1188`](../../crates/exfil-cli/src/main.rs#L1188) (`cmd_gc`) |
-| `store clean` | Delete the findings store (keeps downloaded datasets) | [`main.rs:1284`](../../crates/exfil-cli/src/main.rs#L1284) (`cmd_clean`) |
-| `mcp` | Serve exfil's whole tool surface over MCP/stdio for AI agents | [`main.rs:400`](../../crates/exfil-cli/src/main.rs#L400) |
-| `server` | Run a long-lived HTTP API over the findings graph until interrupted | [`main.rs:1215`](../../crates/exfil-cli/src/main.rs#L1215) (`cmd_server`) |
-| `completions <shell>` | Print a shell completion script | [`main.rs:1235`](../../crates/exfil-cli/src/main.rs#L1235) (`cmd_completions`) |
+| `scan [target]` | Scan a local path (default), `processes`, `host:port` (banner grab), a host/CIDR with `--ports`, or an `http(s)://` URL; persists findings with live progress | [`main.rs:653`](../../crates/exfil-cli/src/main.rs#L653) (`cmd_scan`) |
+| `check dns` | Resolve observed domains, flag reserved/private resolutions | [`main.rs:897`](../../crates/exfil-cli/src/main.rs#L897) (`cmd_check_dns`) |
+| `check whois` | WHOIS-check observed domains, flag newly-registered ones | [`main.rs:840`](../../crates/exfil-cli/src/main.rs#L840) (`cmd_check_whois`) |
+| `normalize` | Normalize stored findings into CIM events for cross-source correlation | [`main.rs:876`](../../crates/exfil-cli/src/main.rs#L876) (`cmd_normalize`) |
+| `search [query]` | Query stored findings (`field=value` or free text) | [`main.rs:1161`](../../crates/exfil-cli/src/main.rs#L1161) (`cmd_search`) |
+| `analyze [query] -f <fmt>` | Render a report (`text`/`json`/`markdown`/`junit`/`sarif`) | [`main.rs:1193`](../../crates/exfil-cli/src/main.rs#L1193) (`cmd_analyze`) |
+| `graph [query] -f <fmt>` | Emit the findings graph as JSON or DOT | [`main.rs:1205`](../../crates/exfil-cli/src/main.rs#L1205) (`cmd_graph`) |
+| `get <id>` | Print one record by id as JSON | [`main.rs:1567`](../../crates/exfil-cli/src/main.rs#L1567) (`cmd_get`) |
+| `sources` | List the available dataset source plugins | [`main.rs:928`](../../crates/exfil-cli/src/main.rs#L928) (`cmd_sources`) |
+| `pull [ref]` | Fetch datasets: a specific reference, or every configured `[[update]]` | [`main.rs:943`](../../crates/exfil-cli/src/main.rs#L943) (`cmd_pull`) |
+| `datasets [list/show/add/rm]` | Manage the catalog dataset rule sets | [`main.rs:998`](../../crates/exfil-cli/src/main.rs#L998) (`cmd_datasets`) |
+| `feeds [list/add/rm/show/pull]` | Manage the URL feed catalog and fetch feeds into rule datasets | [`main.rs:1055`](../../crates/exfil-cli/src/main.rs#L1055) (`cmd_feeds`) |
+| `rules [filter]` | Show the built-in rules a scan would apply | [`main.rs:1611`](../../crates/exfil-cli/src/main.rs#L1611) (`cmd_rules`) |
+| `enrich` | Annotate findings with authoritative MITRE CWE names | [`main.rs:1466`](../../crates/exfil-cli/src/main.rs#L1466) (`cmd_enrich`) |
+| `hmm train\|score\|status\|eval` | Train, inspect and evaluate the path model that ranks what a scan looks at first | [`main.rs:1243`](../../crates/exfil-cli/src/main.rs#L1243) (`cmd_hmm_train`) |
+| `cwe <id>` | Look up a weakness in the local MITRE CWE catalog | [`main.rs:1500`](../../crates/exfil-cli/src/main.rs#L1500) (`cmd_cwe`) |
+| `config` | Show the resolved config path and contents | [`main.rs:503`](../../crates/exfil-cli/src/main.rs#L503) (`cmd_config`) |
+| `store export -o -f` | Snapshot the store (CBOR or JSON) | [`main.rs:1518`](../../crates/exfil-cli/src/main.rs#L1518) (`cmd_export`) |
+| `store gc` | Garbage-collect unreachable records | [`main.rs:1556`](../../crates/exfil-cli/src/main.rs#L1556) (`cmd_gc`) |
+| `store clean` | Delete the findings store (keeps downloaded datasets) | [`main.rs:1652`](../../crates/exfil-cli/src/main.rs#L1652) (`cmd_clean`) |
+| `mcp` | Serve exfil's whole tool surface over MCP/stdio for AI agents | [`main.rs:482`](../../crates/exfil-cli/src/main.rs#L482) |
+| `server` | Run a long-lived HTTP API over the findings graph until interrupted | [`main.rs:1583`](../../crates/exfil-cli/src/main.rs#L1583) (`cmd_server`) |
+| `completions <shell>` | Print a shell completion script | [`main.rs:1603`](../../crates/exfil-cli/src/main.rs#L1603) (`cmd_completions`) |
 
-`main` is `#[tokio::main]` ([`main.rs:356`](../../crates/exfil-cli/src/main.rs#L356))
-— async, because the store and network are async. `build_pipeline`
-([`main.rs:798`](../../crates/exfil-cli/src/main.rs#L798)) assembles the scanners
-from built-in rules + catalog datasets + ClamAV/YARA files.
+`main` is `#[tokio::main]` ([`main.rs:406`](../../crates/exfil-cli/src/main.rs#L406))
+— async, because the store and network are async. Assembling the scanners from
+built-in rules + catalog datasets + ClamAV/YARA files is *not* done here:
+`build_pipeline` ([`engine/setup.rs:72`](../../crates/exfil-engine/src/setup.rs#L72))
+lives in the engine so the CLI and the [MCP server](./integrations.md) build
+identical pipelines.
 
 ---
 
