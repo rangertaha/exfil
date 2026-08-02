@@ -269,6 +269,22 @@ const TOOLS: &[Tool] = &[
         params: &[("path", "string", "path to score")],
     },
     Tool {
+        name: "hmm_eval",
+        access: Access::Read,
+        description: "Measure whether the path model actually helps: fit on part of the stored \
+                      scans and report how much of the findings a budgeted scan recovers on the \
+                      rest, against a directory-frequency baseline and blind selection. Use this \
+                      before trusting a budgeted scan.",
+        params: &[
+            (
+                "holdout",
+                "number",
+                "fraction held out for measurement (default 0.3)",
+            ),
+            ("states", "integer", "latent states per chain (default 8)"),
+        ],
+    },
+    Tool {
         name: "hmm_status",
         access: Access::Read,
         description: "Summarize the trained path model, and warn when it was trained under a \
@@ -398,6 +414,10 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
             .await
         }
         "hmm_score" => ops::hmm_score(ctx, &text("path")).await,
+        "hmm_eval" => {
+            let holdout = args.get("holdout").and_then(Value::as_f64).unwrap_or(0.3);
+            ops::hmm_eval(ctx, holdout, number("states").unwrap_or(8)).await
+        }
         "hmm_status" => ops::hmm_status(ctx).await,
 
         // Store maintenance.

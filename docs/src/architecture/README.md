@@ -25,7 +25,7 @@ every page links into it when it uses an idiom for the first time.
 | 5 | [The other scanners](./scanners.md) | regex secrets, archive expand, IOC, supply-chain, ClamAV, YARA |
 | 6 | [The graph store](./store.md) | SurrealDB, content-addressed records, graph edges, garbage collection |
 | 7 | [The CLI](./cli.md) | The command surface, and the interactive progress gauge |
-| 8 | [Integrations](./integrations.md) | The MCP server's 29 agent tools, process/TCP/web scan sources, reporting |
+| 8 | [Integrations](./integrations.md) | The MCP server's 30 agent tools, process/TCP/web scan sources, reporting |
 | 9 | [Ranked scanning](./ranking.md) | The path model, work budgets, and the ruleset fingerprint |
 | 10 | [Rust primer](./rust-primer.md) | Every Rust concept the codebase uses, explained from scratch |
 

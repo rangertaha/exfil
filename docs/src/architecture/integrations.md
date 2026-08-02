@@ -34,7 +34,7 @@ sequenceDiagram
     A->>S: {"method":"initialize"}
     S-->>A: { protocolVersion, capabilities, serverInfo }
     A->>S: {"method":"tools/list"}
-    S-->>A: 29 tools, each tagged by access class
+    S-->>A: 30 tools, each tagged by access class
     A->>S: {"method":"tools/call", "name":"scan", "target":"./src"}
     S->>DB: build pipeline · walk · persist findings
     DB-->>S: summary
@@ -60,7 +60,7 @@ costs a little per call and buys two things a long-lived handle can't give you:
 `clean` can delete the store directory without a live handle writing into unlinked
 files, and a `pull` is visible to the very next `scan` with no cache to invalidate.
 
-### The 29 tools
+### The 30 tools
 
 Tools are grouped by **access class**, which is prefixed to every advertised
 description ([`mcp/tools.rs:21`](../../crates/exfil-mcp/src/tools.rs#L21)) so an
@@ -88,7 +88,7 @@ call, not after:
 
 **Post-scan passes** — `normalize`, `annotate_cwe`, `check_dns`, `check_whois`.
 
-**The path model** — `hmm_train`, `hmm_score`, `hmm_status` (see
+**The path model** — `hmm_train`, `hmm_score`, `hmm_status`, `hmm_eval` (see
 [Ranked scanning](./ranking.md)).
 
 **Store maintenance** — `gc`, `clean`.

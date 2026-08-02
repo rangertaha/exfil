@@ -406,6 +406,55 @@ pub async fn hmm_score(ctx: &Ctx, path: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Measure the model out of sample: recall-at-budget against a
+/// directory-frequency baseline and against blind selection.
+pub async fn hmm_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String> {
+    let samples = ctx.findings().await?.training_paths().await?;
+    if samples.is_empty() {
+        return Ok("nothing to evaluate — run a scan first".into());
+    }
+    let cfg = exfil_hmm::TrainConfig {
+        states: states.max(1),
+        ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
+        ..exfil_hmm::TrainConfig::default()
+    };
+    let Some(report) = exfil_hmm::eval::evaluate(&samples, &cfg, holdout) else {
+        return Ok(format!(
+            "{} path(s), but the split leaves nothing to measure — a corpus needs \
+             findings on both sides of it",
+            samples.len()
+        ));
+    };
+    let mut out = format!(
+        "trained on {} path(s), measured on {} held out ({} with findings)\n\n\
+         budget  model  baseline  random  lift\n",
+        report.train, report.test, report.test_positives
+    );
+    for p in &report.points {
+        out.push_str(&format!(
+            "{:>5.0}%  {:>4.0}%  {:>7.0}%  {:>5.0}%  {:>4.1}x\n",
+            p.budget * 100.0,
+            p.model * 100.0,
+            p.baseline * 100.0,
+            p.random * 100.0,
+            p.lift()
+        ));
+    }
+    out.push_str(&format!(
+        "\nmean lift over blind selection: {:.1}x\n{}",
+        report.mean_lift(),
+        if report.mean_lift() <= 1.1 {
+            "VERDICT: not beating blind selection — do not rely on budgeted scans here."
+        } else if !report.beats_baseline() {
+            "VERDICT: a plain directory-frequency prior does as well; the sequence model \
+             is not earning its complexity on this corpus."
+        } else {
+            "VERDICT: beats both blind selection and the directory baseline."
+        }
+    ));
+    Ok(out)
+}
+
 /// Summarize the trained path model.
 pub async fn hmm_status(ctx: &Ctx) -> Result<String> {
     let Some(model) = load_model(ctx).await else {

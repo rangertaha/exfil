@@ -47,7 +47,7 @@ exfil/
     exfil-report/   ✅ Reporter trait: text, json, markdown, junit, sarif + directory hotspots
     exfil-hmm/      ✅ path model (two-chain HMM) ranking what a scan looks at first
     exfil-config/   ✅ TOML config with embedded default + per-plugin decode
-    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 29 tools over the whole CLI surface
+    exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 30 tools over the whole CLI surface
     exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report);
                        setup.rs = shared store opening + pipeline building
     exfil-remote/   ✅ non-local sources (processes/TCP/web) + target.rs = shared scan-target dispatch

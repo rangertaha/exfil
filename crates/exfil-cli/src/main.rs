@@ -338,6 +338,18 @@ enum HmmCmd {
         #[arg(long, default_value = "default")]
         name: String,
     },
+    /// Measure whether the model actually helps: fit on part of the stored
+    /// scans, then report how much of the findings a budgeted scan would
+    /// recover on the rest — against a directory-frequency baseline and
+    /// against blind selection.
+    Eval {
+        /// Fraction of paths held out for measurement.
+        #[arg(long, default_value_t = 0.3)]
+        holdout: f64,
+        /// Number of latent states to fit.
+        #[arg(long, default_value_t = 8)]
+        states: usize,
+    },
 }
 
 /// Findings-store maintenance actions.
@@ -462,6 +474,9 @@ async fn main() -> Result<()> {
             } => cmd_hmm_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
             HmmCmd::Score { path, name } => cmd_hmm_score(cfg, &path, &name).await?,
             HmmCmd::Status { name } => cmd_hmm_status(cfg, &name).await?,
+            HmmCmd::Eval { holdout, states } => {
+                cmd_hmm_eval(&store_dir, cfg, holdout, states).await?
+            }
         },
         Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
         Command::Mcp => {
@@ -1341,6 +1356,72 @@ async fn cmd_hmm_status(config: Option<&std::path::Path>, name: &str) -> Result<
             &model.ruleset
         }
     );
+    Ok(())
+}
+
+/// Measure the model out of sample: recall-at-budget against a
+/// directory-frequency baseline and against blind selection.
+///
+/// This is the number that decides whether ranked scanning earns its
+/// complexity. Scoring the paths a model was fitted on would flatter it, so the
+/// corpus is split and the model only ever sees the training half.
+async fn cmd_hmm_eval(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    holdout: f64,
+    states: usize,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
+    let samples = store.training_paths().await?;
+    if samples.is_empty() {
+        println!("nothing to evaluate — run `exfil scan` first");
+        return Ok(());
+    }
+    let cfg = exfil_hmm::TrainConfig {
+        states: states.max(1),
+        ruleset: exfil_engine::setup::ruleset_fingerprint(config).await,
+        ..exfil_hmm::TrainConfig::default()
+    };
+    let Some(report) = exfil_hmm::eval::evaluate(&samples, &cfg, holdout) else {
+        println!(
+            "{} path(s), but the split leaves nothing to measure — a corpus needs \
+             findings on both sides of it. Scan a wider tree.",
+            samples.len()
+        );
+        return Ok(());
+    };
+
+    println!(
+        "trained on {} path(s), measured on {} held out ({} with findings)\n",
+        report.train, report.test, report.test_positives
+    );
+    println!(
+        "  {:>7}  {:>7}  {:>8}  {:>6}  {:>5}",
+        "budget", "model", "baseline", "random", "lift"
+    );
+    for p in &report.points {
+        println!(
+            "  {:>6.0}%  {:>6.0}%  {:>7.0}%  {:>5.0}%  {:>4.1}x",
+            p.budget * 100.0,
+            p.model * 100.0,
+            p.baseline * 100.0,
+            p.random * 100.0,
+            p.lift()
+        );
+    }
+    println!();
+    println!("mean lift over blind selection: {:.1}x", report.mean_lift());
+    // The honest verdict, stated rather than left for the reader to infer.
+    if report.mean_lift() <= 1.1 {
+        println!("VERDICT: the model is not beating blind selection — do not rely on --budget.");
+    } else if !report.beats_baseline() {
+        println!(
+            "VERDICT: a plain directory-frequency prior does as well. The sequence \
+             model is not earning its complexity on this corpus."
+        );
+    } else {
+        println!("VERDICT: the model beats both blind selection and the directory baseline.");
+    }
     Ok(())
 }
 

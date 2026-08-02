@@ -10,8 +10,23 @@ and this project adheres to
 
 ### Added
 
+- `exfil hmm eval` (and the MCP `hmm_eval` tool): measure whether the path model
+  actually helps, before trusting a budgeted scan. Fits on part of the stored
+  scans and reports how much of the findings a budgeted scan recovers on the
+  held-out rest, at 5/10/20/30/50/75% budgets, against **two** references — a
+  plain parent-directory frequency prior, and blind selection. It prints a
+  verdict rather than leaving you to infer one.
+  - Out of sample, split by a deterministic hash of the path: scoring the paths
+    a model was fitted on measures memorisation, and an RNG split would let a
+    lucky draw pass for an improvement.
+  - The directory prior is the reference that matters. On a corpus where the
+    directory name alone explains the label — `secrets/` always has findings,
+    `docs/` never does — it **ties the HMM exactly**, and `eval` says so. The
+    sequence model only earns its complexity where context disambiguates
+    (`/srv/deploy/config` vs `/var/cache/config`, same name, opposite labels).
+    Tests pin both outcomes.
 - The path model reaches AI agents: `hmm_train`, `hmm_score` and `hmm_status`
-  join the MCP surface (29 tools), so an agent can fit the model on a store,
+  join the MCP surface (30 tools with `hmm_eval`), so an agent can fit the model on a store,
   ask what a path scores and why, and be told when the model is stale relative
   to the ruleset now in force. `exfil hmm` was previously CLI-only, which
   contradicted the server's claim to expose everything the CLI does.

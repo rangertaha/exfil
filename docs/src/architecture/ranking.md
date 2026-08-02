@@ -262,14 +262,64 @@ worse than no probability at all:
   they should not yet be read as "there is a 90% chance of a finding here". A
   `--confidence` stop condition — scan until the expected yield flattens — is
   the natural next feature and is blocked on fixing this.
-- **No recall-at-budget backtest.** The metric that decides whether this feature
-  earns its complexity is: *at 20% coverage, what fraction of a full scan's
-  findings do you recover?* 20% would mean the model does nothing; a small
-  synthetic tree currently gives 18 of 20. Every full scan in your graph is a
-  ready-made test set for this, so it's measurable without new machinery.
-- **No baseline comparison.** A frequency prior over directory basenames is
-  ~30 lines. If it ranks as well as the HMM, the sequence modelling isn't paying
-  for itself.
+- **The sequence model does not always earn its complexity.** `exfil hmm eval`
+  measures this and says so out loud — see below.
+
+---
+
+## 10. Measuring it: `exfil hmm eval` {#eval}
+
+The claim is "at N% of the work you recover far more than N% of the findings".
+[`hmm/eval.rs`](../../crates/exfil-hmm/src/eval.rs) checks it, and is built to
+avoid the three ways you can fool yourself:
+
+- **Out of sample.** Paths are split train/test by a deterministic hash of the
+  path — no RNG, so re-running gives the same answer and a lucky split can't
+  masquerade as an improvement. Scoring the paths the model was fitted on would
+  measure memorisation, not prediction.
+- **Against a real baseline.** "Beats random" is a low bar. The bar that matters
+  is a **frequency prior over the parent directory** — thirty lines, no sequence
+  modelling at all.
+- **Against random.** At budget *b*, blind selection recovers *b*. That's the
+  floor.
+
+```text
+$ exfil hmm eval
+trained on 109 path(s), measured on 51 held out (14 with findings)
+
+   budget    model  baseline  random   lift
+       5%      21%       21%      5%   4.3x
+      10%      43%       43%     10%   4.3x
+      20%      79%       79%     20%   3.9x
+      30%     100%      100%     30%   3.3x
+
+mean lift over blind selection: 3.2x
+VERDICT: a plain directory-frequency prior does as well. The sequence model is
+not earning its complexity on this corpus.
+```
+
+**Read that verdict carefully — it is the common case.** On a corpus where the
+directory name alone explains the label (`secrets/` always has findings,
+`docs/` never does), a frequency table matches the HMM exactly. The 3.2× lift
+over blind selection is real and useful; the *sequence modelling* contributes
+nothing.
+
+The sequence model earns its keep only where **context disambiguates**:
+
+```text
+  /srv/deploy/config/*.env   → findings        same directory name,
+  /var/cache/config/*.env    → none            opposite labels
+```
+
+A prior keyed on `config` sees half positives and half negatives and cannot do
+better than chance. A model that conditions on the prefix separates them. A test
+(`context_dependent_corpus_is_where_the_sequence_model_wins`) pins exactly that,
+and the complementary test pins the case where the baseline ties.
+
+So the honest position: **run `hmm eval` on your own corpus before trusting
+`--budget`.** If it reports the baseline tying, ranked scanning still helps a
+great deal over scanning in walk order — but a much simpler model would do the
+same job, and that is worth knowing.
 
 ---
 

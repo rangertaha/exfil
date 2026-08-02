@@ -159,7 +159,7 @@ flowchart TD
             MITRE["mitre CWE"]
         end
         REPORT["exfil-report<br/>text·json·md·junit·sarif"]
-        MCP["exfil-mcp<br/>29 agent tools"]
+        MCP["exfil-mcp<br/>30 agent tools"]
     end
     subgraph L3["⑤ Storage · exfil-store"]
         subgraph RECORDS["records"]

@@ -42,6 +42,8 @@
 //!   the sizes here are tiny (states² and states × vocab) and the clarity is
 //!   worth more than the cache locality.
 
+pub mod eval;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
