@@ -278,7 +278,7 @@ fn specs() -> &'static [LangSpec] {
 /// The language spec for a path, by file extension — or by filename for the
 /// extension-less `Jenkinsfile` (a Groovy pipeline).
 pub(crate) fn spec_for(path: &Path) -> Option<&'static LangSpec> {
-    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+    if let Some(name) = exfil_core::leaf_name(path) {
         if name.eq_ignore_ascii_case("Jenkinsfile") {
             return specs().iter().find(|s| s.lang == "groovy");
         }

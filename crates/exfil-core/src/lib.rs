@@ -163,6 +163,20 @@ pub struct VirtualFile {
     pub content: Vec<u8>,
 }
 
+/// The final component of a path, treating the container marker `!` as a
+/// separator alongside `/` and `\`.
+///
+/// Files expanded from a container carry a display path like
+/// `archive.zip!inner/app.py`, and `Path::file_name` knows nothing about `!`.
+/// For a file at a container's *root* — `archive.zip!package.json` — it
+/// therefore returns the whole string, so a scanner gating on
+/// `name == "package.json"` silently skips it while finding the identical file
+/// one directory deeper. Every filename gate should use this instead.
+pub fn leaf_name(path: &std::path::Path) -> Option<&str> {
+    let s = path.to_str()?;
+    Some(s.rsplit(['/', '\\', '!']).next().unwrap_or(s))
+}
+
 /// One element of a file's AST: a declaration, import, or call site.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
@@ -238,5 +252,21 @@ mod tests {
         // None fields are omitted on the way back out.
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("cwe") && !json.contains("severity"));
+    }
+    #[test]
+    fn leaf_name_treats_the_container_marker_as_a_separator() {
+        use std::path::Path;
+        let leaf = |p: &str| leaf_name(Path::new(p)).unwrap().to_string();
+        // The bug this exists for: a manifest at a container's root.
+        assert_eq!(leaf("archive.zip!package.json"), "package.json");
+        assert_eq!(leaf("disc.iso!Cargo.toml"), "Cargo.toml");
+        // …and the case that already worked, unchanged.
+        assert_eq!(leaf("archive.zip!inner/package.json"), "package.json");
+        // Ordinary paths behave exactly as before.
+        assert_eq!(leaf("/home/u/proj/package.json"), "package.json");
+        assert_eq!(leaf("package.json"), "package.json");
+        assert_eq!(leaf(r"C:\\proj\\package.json"), "package.json");
+        // Nested containers resolve to the innermost entry.
+        assert_eq!(leaf("a.zip!b.iso!requirements.txt"), "requirements.txt");
     }
 }

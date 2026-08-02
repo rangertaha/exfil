@@ -29,6 +29,14 @@
   that flow through the same scanners (depth- and size-capped against bombs),
   each linked to its container in the graph, so a secret inside `dist.zip →
   app/.env` is found exactly as if it sat on disk.
+- **Disc-image aware** — `.iso`/`.img` disc images are expanded into the files
+  they contain (`appliance.iso!etc/shadow`), so a secret on installer media or
+  an appliance image is found by the ordinary scanners. Reads the **Joliet**
+  tree when present, which preserves real filenames — plain ISO 9660 folds them
+  to uppercase 8.3, turning `package.json` into `PACKAGE.JSO` and hiding it from
+  the supply-chain scanner. Pure-Rust reader, bounds-checked, depth- and
+  cycle-capped.
+
 - **SQLite-aware** — `.db`/`.sqlite`/`.sqlite3` files (sniffed by magic header)
   have every table's rows flattened into a virtual file, row/table-count
   capped, so the same scanners catch a secret or PII value sitting in a

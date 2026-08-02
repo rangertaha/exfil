@@ -10,6 +10,19 @@ and this project adheres to
 
 ### Added
 
+- ISO 9660 disc-image expansion (`IsoExpander`, `Bytes → Files`): `.iso`/`.img`
+  images are expanded into the files they contain (`appliance.iso!etc/shadow`),
+  so a secret on installer media, an appliance image or a forensic capture is
+  found by the ordinary scanners — the same seam `ArchiveExpander` uses for
+  zip/tar. Reads the **Joliet** tree in preference to the primary one: plain
+  ISO 9660 folds names to uppercase 8.3, which turns `package.json` into
+  `PACKAGE.JSO` and hides it from the supply-chain scanner, so this is a
+  correctness matter rather than cosmetics. The reader is written here rather
+  than pulled in — the available crates are C bindings (against the pure-Rust
+  rule) or carry licences needing reconciliation with GPL-3.0. Sniffed by magic
+  rather than trusted by extension, every offset bounds-checked, recursion
+  depth- and cycle-capped, output bounded by `Limits`. Validated against images
+  produced by `genisoimage`, not only against a hand-built fixture.
 - `--budget 90c` — a **confidence** stop condition. Every other budget caps
   cost; this one caps uncertainty: scan in ranked order until the files examined
   account for 90% of the total *expected* findings. It is the only budget that
@@ -444,6 +457,15 @@ and this project adheres to
   SSH", removed several commits ago; the crate count said 13 (it is 12); and
   the layer table still listed `exfil-llm`/`exfil-script`. `exfil-hmm` joins the
   layer diagram and the `hmm` commands join the CLI table.
+- **A manifest at the root of any archive or disc image was silently skipped.**
+  Expanded files carry a path like `archive.zip!package.json`, where `!` — not
+  `/` — separates the container from the entry, so `Path::file_name` returned
+  the whole string and a scanner gating on `name == "package.json"` never
+  matched. The identical file one directory deeper (`archive.zip!x/package.json`)
+  was found, which is what made it easy to miss. New `exfil_core::leaf_name`
+  treats `!` as a separator alongside `/` and `\\`; the supply-chain, AST, log
+  and gzip paths all route through it. Pre-existing, and it affected every
+  container type.
 - Removed two dead public items left behind by the two-chain rewrite:
   `Chain::posteriors` (the state posteriors the abandoned single-chain read-out
   needed; the classifier scores by likelihood ratio and never computes γ) and

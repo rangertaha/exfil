@@ -107,9 +107,9 @@ impl Scanner for LogScanner {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("log"));
-        let known_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
+        // `leaf_name` so `archive.tar!secure` is recognised the same as a
+        // `secure` sitting in a directory.
+        let known_name = exfil_core::leaf_name(path)
             .is_some_and(|n| matches!(n, "auth.log" | "secure" | "syslog" | "messages"));
         is_log_ext || known_name
     }

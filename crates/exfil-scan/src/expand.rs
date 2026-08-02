@@ -59,7 +59,7 @@ impl ArchiveExpander {
 
     /// The archive flavor a filename implies, if any.
     fn kind_of(path: &Path) -> Option<Kind> {
-        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        let name = exfil_core::leaf_name(path)?.to_ascii_lowercase();
         if name.ends_with(".zip") || name.ends_with(".jar") || name.ends_with(".war") {
             Some(Kind::Zip)
         } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
@@ -225,9 +225,7 @@ fn expand_gz(path: &Path, container: &str, bytes: &[u8], limits: &Limits) -> Vec
         return Vec::new();
     }
     // Drop the trailing `.gz` for the inner name.
-    let inner = path
-        .file_name()
-        .and_then(|n| n.to_str())
+    let inner = exfil_core::leaf_name(path)
         .map(|n| n.trim_end_matches(".gz").to_string())
         .unwrap_or_else(|| "content".into());
     vec![VirtualFile {

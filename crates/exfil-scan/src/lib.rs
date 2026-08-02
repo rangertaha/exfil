@@ -31,6 +31,7 @@ pub mod dns;
 pub mod expand;
 pub mod indicator;
 pub mod ioc;
+pub mod iso;
 pub mod leak;
 pub mod log;
 pub mod netioc;
@@ -47,6 +48,7 @@ pub use clamav::ClamavScanner;
 pub use expand::ArchiveExpander;
 pub use indicator::IndicatorExtractor;
 pub use ioc::HashIocScanner;
+pub use iso::IsoExpander;
 pub use leak::LeakScanner;
 pub use log::LogScanner;
 pub use netioc::NetworkIocScanner;
@@ -129,6 +131,7 @@ pub fn default_pipeline() -> Result<Pipeline> {
     Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(SqliteExpander::default()),
+        Box::new(IsoExpander::default()),
         Box::new(ScanTask(RegexScanner::new(builtin_rules())?)),
         Box::new(ScanTask(SupplyChainScanner)),
         Box::new(ScanTask(PiiScanner::new())),
@@ -164,6 +167,7 @@ pub fn pipeline_with_rules(
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(SqliteExpander::default()),
+        Box::new(IsoExpander::default()),
         Box::new(ScanTask(regex)),
         Box::new(ScanTask(ioc)),
         Box::new(ScanTask(clamav)),

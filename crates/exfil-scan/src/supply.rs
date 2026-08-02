@@ -306,7 +306,9 @@ impl Scanner for SupplyChainScanner {
     }
 
     fn applies(&self, path: &Path) -> bool {
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        // `leaf_name`, not `file_name`: a manifest at a container's root has
+        // a path like `archive.zip!package.json`, where `!` is the separator.
+        let Some(name) = exfil_core::leaf_name(path) else {
             return false;
         };
         name == "package.json"
@@ -316,10 +318,7 @@ impl Scanner for SupplyChainScanner {
 
     fn scan(&self, path: &Path, content: &[u8]) -> Result<Vec<Match>> {
         let content = String::from_utf8_lossy(content);
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
+        let name = exfil_core::leaf_name(path).unwrap_or_default();
         let mut out = Vec::new();
         match name {
             "package.json" => self.scan_package_json(path, &content, &mut out),
@@ -440,5 +439,45 @@ mod tests {
         assert_eq!(typosquat_of("serde"), None, "popular names never flag");
         assert_eq!(typosquat_of("serd"), Some("serde"));
         assert_eq!(typosquat_of("tokoi"), Some("tokio"));
+    }
+    /// Regression: a manifest at a *container's root* has a path like
+    /// `archive.zip!package.json`, where `!` — not `/` — is the separator, so
+    /// `Path::file_name` returns the whole string. This scanner used to skip
+    /// those while finding the identical file one directory deeper.
+    #[test]
+    fn a_manifest_at_a_container_root_is_still_recognised() {
+        let s = SupplyChainScanner;
+        for p in [
+            "package.json",
+            "/home/u/proj/package.json",
+            "archive.zip!package.json",
+            "archive.zip!inner/package.json",
+            "disc.iso!Cargo.toml",
+            "backup.tar!requirements.txt",
+            "a.zip!b.iso!package.json",
+        ] {
+            assert!(s.applies(Path::new(p)), "should apply to {p}");
+        }
+        for p in ["notes.txt", "archive.zip!notes.txt", "src/main.rs"] {
+            assert!(!s.applies(Path::new(p)), "should not apply to {p}");
+        }
+    }
+
+    /// …and it must actually produce the finding, not merely accept the path:
+    /// the scan path reads the manifest's name a second time.
+    #[test]
+    fn a_container_root_manifest_yields_its_findings() {
+        let s = SupplyChainScanner;
+        let json = br#"{"dependencies": {"flatmap-stream": "0.1.1"}}"#;
+        let at_root = s.scan(Path::new("archive.zip!package.json"), json).unwrap();
+        let nested = s
+            .scan(Path::new("archive.zip!inner/package.json"), json)
+            .unwrap();
+        assert!(!at_root.is_empty(), "root-level manifest produced nothing");
+        assert_eq!(
+            at_root.len(),
+            nested.len(),
+            "depth must not change findings"
+        );
     }
 }
