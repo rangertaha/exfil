@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/Rangertaha/exfil/actions/workflows/ci.yml)
 [![Docs](https://github.com/Rangertaha/exfil/actions/workflows/docs.yml/badge.svg)](https://rangertaha.github.io/exfil/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 exfil is an offline, plugin-based DevSecOps engine that scans your whole
 delivery surface for security problems and files every finding into a queryable
@@ -146,7 +146,7 @@ Rust.
 
 ## License
 
-[MIT](LICENSE)
+[GNU General Public License v3.0 or later](LICENSE)
 
 
 

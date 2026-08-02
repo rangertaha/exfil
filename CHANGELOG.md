@@ -8,6 +8,31 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Relicensed from MIT to GPL-3.0-or-later.** `LICENSE` carries the full GPLv3
+  text; the workspace manifest (inherited by every crate) and the standalone
+  desktop app declare `GPL-3.0-or-later`. The Rust dependency tree is
+  unaffected — the MIT/Apache-2.0 mix common on crates.io is one-way compatible
+  into GPLv3.
+
+### Removed
+
+- `crates/exfil-remote/top-ports.txt`, the port ranking derived from nmap's
+  `nmap-services` data. It was retained under MIT with an in-file notice, but
+  the Nmap Public Source License is a modified GPLv2 with added restrictions
+  and is **not GPL-compatible**, so it could not be carried into a GPLv3 work.
+  `--ports common` now reads `netscan::COMMON_PORTS`, written for this project:
+  IANA service assignments — facts, not authorship — ordered by our own
+  judgement of what a security scan cares about (web and remote access first,
+  then file shares, databases, directory/auth, orchestration, industrial
+  control, then the long tail). Deliberately *not* a frequency ranking, since
+  an observed-frequency ordering is someone's measurement and carries their
+  licence with it. 768 unique ports, deduplicated at startup because the
+  grouped literal repeats a few for readability; the `top-ports` setting's
+  maximum drops 2000 → 750 so it can never advertise more ports than exist.
+  exfil now ships no third-party data.
+
 ### Fixed
 
 - **New rules were never applied to unchanged files.** The stat fast-path skips

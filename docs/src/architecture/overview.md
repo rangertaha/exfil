@@ -56,7 +56,7 @@ anywhere in exfil's own code.
 exfil/
 ├── Cargo.toml            ← workspace manifest: members, shared deps, lint rules
 ├── Cargo.lock            ← exact resolved dependency versions (committed)
-├── LICENSE               ← MIT
+├── LICENSE               ← GPL-3.0-or-later
 ├── README.md             ← project front page
 ├── CHANGELOG.md          ← human-written history of notable changes
 │
@@ -135,7 +135,7 @@ flowchart TD
         end
     end
     subgraph L6["② Remote & web · exfil-remote"]
-        SSH["ssh RemoteFs"]
+        PROC["processes"]
         WEB["web crawl"]
         WD["webdriver<br/>dynamic sites"]
         NET["tcp · netscan · proc"]
@@ -175,16 +175,14 @@ flowchart TD
         CORE["Match · Rule · CweEntry · Severity"]
     end
 
-    CLI_MAIN --> SSH & RUN & REGEX & DS & MCP & LLM & SCRIPT & CONFIG & ANY
+    CLI_MAIN --> PROC & RUN & REGEX & DS & MCP & CONFIG & ANY
     SERVER --> ANY
-    SSH & WEB & WD & NET --> RUN
+    PROC & WEB & WD & NET --> RUN
     RUN --> EXPAND & WALK & REGEX & REPORT & ANY & TASK
     REGEX & ASTG & IOCG & PIIG --> TASK
     DS --> REGEX
     MITRE --> T_REF
-    SCRIPT --> LLM
     MCP --> REPORT & ANY
-    LLM --> ANY
     REPORT & ANY & TASK --> CORE
 ```
 

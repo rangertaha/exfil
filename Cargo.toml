@@ -7,7 +7,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/Rangertaha/exfil"
 
 # Lint levels shared by every crate (each opts in with `[lints] workspace = true`).

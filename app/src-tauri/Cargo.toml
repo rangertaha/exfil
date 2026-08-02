@@ -3,7 +3,7 @@ name = "exfil-desktop"
 version = "0.1.0"
 edition = "2021"
 description = "exfil desktop app — runs the exfil server and shows the findings dashboard"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 # Standalone workspace: keep this out of the parent Cargo workspace so
 # `cargo build --workspace` / CI never tries to build the desktop app (which
