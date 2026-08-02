@@ -66,6 +66,7 @@ DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS plugin_setting SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS hmm_model SCHEMALESS;
 
 -- graph edges connecting the records
 DEFINE TABLE IF NOT EXISTS has_ast TYPE RELATION FROM file TO ast;
@@ -912,6 +913,110 @@ impl Store {
             .context("list plugin settings")?;
         let rows: Vec<Row> = res.take(0)?;
         Ok(rows.into_iter().map(|r| (r.key, r.setting_value)).collect())
+    }
+
+    /// Store (or replace) a trained path model under `name`.
+    ///
+    /// The model is a JSON blob rather than a decomposed record: its matrices
+    /// mean nothing to SurrealQL, nothing queries into them, and keeping them
+    /// opaque means the model's own shape can change without a store
+    /// migration. Lives in the catalog, so it survives `store clean` like every
+    /// other trained/downloaded artifact.
+    pub async fn upsert_hmm(&self, name: &str, model: &serde_json::Value) -> Result<()> {
+        self.db
+            .query("UPSERT type::thing('hmm_model', $k) CONTENT { model: $m }")
+            .bind(("k", name.to_string()))
+            .bind(("m", model.clone()))
+            .await
+            .with_context(|| format!("upsert hmm model {name:?}"))?
+            .check()
+            .context("hmm model upsert failed")?;
+        Ok(())
+    }
+
+    /// Load a trained path model by name, or `None` when none has been trained.
+    pub async fn load_hmm(&self, name: &str) -> Result<Option<serde_json::Value>> {
+        #[derive(Deserialize)]
+        struct Row {
+            model: serde_json::Value,
+        }
+        let mut res = self
+            .db
+            .query("SELECT model FROM type::thing('hmm_model', $k)")
+            .bind(("k", name.to_string()))
+            .await
+            .context("load hmm model")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().next().map(|r| r.model))
+    }
+
+    /// The names of every stored path model.
+    pub async fn list_hmm(&self) -> Result<Vec<String>> {
+        let mut res = self
+            .db
+            .query("SELECT type::string(id) AS rid FROM hmm_model")
+            .await
+            .context("list hmm models")?;
+        #[derive(Deserialize)]
+        struct Row {
+            rid: String,
+        }
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                r.rid
+                    .split_once(':')
+                    .map(|(_, k)| k.trim_matches('⟨').trim_matches('⟩').to_string())
+                    .unwrap_or(r.rid)
+            })
+            .collect())
+    }
+
+    /// Training samples for the path model: every recorded file's path, paired
+    /// with whether any finding was ever attached to it.
+    ///
+    /// This is the whole supervision signal — every scan already in the graph
+    /// is labelled data, so training needs no new scanning and no human
+    /// labelling. Note the labels are only as good as the ruleset that
+    /// produced them, which is why a model records the ruleset it was trained
+    /// under.
+    pub async fn training_paths(&self) -> Result<Vec<(String, bool)>> {
+        #[derive(Deserialize)]
+        struct FileRow {
+            abs: String,
+            hash: String,
+        }
+        #[derive(Deserialize)]
+        struct EdgeRow {
+            f: String,
+        }
+        let mut res = self
+            .db
+            .query("SELECT abs, hash FROM file")
+            .query("SELECT type::string(out) AS f FROM in_file")
+            .await
+            .context("load training paths")?;
+        let files: Vec<FileRow> = res.take(0)?;
+        let edges: Vec<EdgeRow> = res.take(1)?;
+
+        // Edge targets arrive as `file:<hash>` (sometimes bracket-quoted);
+        // reduce to the bare hash so it matches the file rows.
+        let flagged: std::collections::HashSet<String> = edges
+            .into_iter()
+            .filter_map(|e| {
+                e.f.split_once(':')
+                    .map(|(_, k)| k.trim_matches('⟨').trim_matches('⟩').to_string())
+            })
+            .collect();
+
+        Ok(files
+            .into_iter()
+            .map(|f| {
+                let found = flagged.contains(&f.hash);
+                (f.abs, found)
+            })
+            .collect())
     }
 
     /// Remove a dataset and its rule edges. Orphaned rule records are left for

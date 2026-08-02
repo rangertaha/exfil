@@ -259,7 +259,16 @@ pub async fn plugin_settings(ctx: &Ctx, plugin: &str) -> Result<String> {
 
 /// Scan a target: a local path, `processes`, `host:port` banners, a host/CIDR
 /// swept across ports, or an `http(s)://` URL to crawl.
-pub async fn scan(ctx: &Ctx, spec: &str, opts: &Options) -> Result<String> {
+///
+/// `budget` caps the work, scanning the most promising files first when a
+/// trained path model exists. A budgeted result always states its coverage —
+/// an agent must not be able to mistake a partial scan for a clean tree.
+pub async fn scan(
+    ctx: &Ctx,
+    spec: &str,
+    opts: &Options,
+    budget: Option<exfil_engine::Budget>,
+) -> Result<String> {
     let target = target::parse(Some(spec), opts)?;
     let built = build_pipeline(ctx.config()).await?;
     let store = ctx.findings().await?;
@@ -267,7 +276,16 @@ pub async fn scan(ctx: &Ctx, spec: &str, opts: &Options) -> Result<String> {
     // directory to skip.
     let skip = matches!(target, Target::Path(_)).then_some(ctx.store_dir.as_path());
 
-    let outcome = target::run(target, &built.pipeline, &store, skip, None, None).await?;
+    let plan = if budget.is_some() {
+        exfil_engine::ScanPlan {
+            model: load_model(ctx).await,
+            budget,
+        }
+    } else {
+        exfil_engine::ScanPlan::default()
+    };
+
+    let outcome = target::run(target, &built.pipeline, &store, skip, None, None, &plan).await?;
     let s = &outcome.summary;
     let mut out = format!(
         "scanned {} {} ({} unchanged): {} matches, {} unreadable ({})",
@@ -278,6 +296,22 @@ pub async fn scan(ctx: &Ctx, spec: &str, opts: &Options) -> Result<String> {
         s.errors,
         outcome.mode
     );
+    if s.is_partial() {
+        out.push_str(&format!(
+            "\nCOVERAGE: {} of {} files ({:.0}%, {}) — {} NOT examined. \
+             This scan did not look at the whole target; absence of findings \
+             does not mean the target is clean.",
+            s.candidates - s.skipped,
+            s.candidates,
+            s.coverage() * 100.0,
+            if plan.model.is_some() {
+                "probability-ranked"
+            } else {
+                "walk order"
+            },
+            s.skipped,
+        ));
+    }
     if !built.skipped.is_empty() {
         out.push_str(&format!(
             "\nskipped {} rule(s) with unsupported patterns",
@@ -285,6 +319,14 @@ pub async fn scan(ctx: &Ctx, spec: &str, opts: &Options) -> Result<String> {
         ));
     }
     Ok(out)
+}
+
+/// The trained path model from the catalog, if any. A missing or undecodable
+/// model is not an error: ranking degrades to walk order.
+async fn load_model(ctx: &Ctx) -> Option<exfil_hmm::Hmm> {
+    let catalog = ctx.catalog().await.ok()?;
+    let value = catalog.load_hmm("default").await.ok()??;
+    serde_json::from_value(value).ok()
 }
 
 // ── Catalog maintenance ──────────────────────────────────────────────────────

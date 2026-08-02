@@ -166,6 +166,13 @@ const TOOLS: &[Tool] = &[
             ("max_pages", "integer", "max pages to fetch when crawling"),
             ("max_depth", "integer", "max link depth when crawling"),
             ("driver", "string", "WebDriver URL to render JS-heavy pages"),
+            (
+                "budget",
+                "string",
+                "cap the work, most-promising files first: '30s', '20%', '500mb', \
+                 or a file count. A budgeted result states its coverage and is NOT \
+                 evidence the target is clean.",
+            ),
         ],
     },
     // ── Catalog maintenance ──
@@ -323,7 +330,13 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
                 driver: (!driver.is_empty()).then_some(driver),
                 top_ports: 100,
             };
-            ops::scan(ctx, &text("target"), &opts).await
+            let raw = text("budget");
+            let budget = if raw.is_empty() {
+                None
+            } else {
+                Some(raw.parse().map_err(|e| anyhow::anyhow!("{e}"))?)
+            };
+            ops::scan(ctx, &text("target"), &opts, budget).await
         }
 
         // Catalog maintenance.

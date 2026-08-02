@@ -172,8 +172,20 @@ enum Command {
         passive: bool,
         /// Exit non-zero if any finding is at or above this severity
         /// (info|low|medium|high|critical). Useful as a CI gate.
-        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity)]
+        #[arg(long, value_name = "SEVERITY", value_parser = parse_severity,
+              conflicts_with = "budget")]
         fail_on: Option<exfil_core::Severity>,
+        /// Stop once this much work is done, scanning the most promising files
+        /// first: `30s`/`5m` time, `20%` of files, `500mb` read, or a bare
+        /// file count. Ranking uses the trained path model when one exists
+        /// (`exfil hmm train`). Cannot be combined with `--fail-on`: a partial
+        /// scan cannot certify that a tree is clean.
+        #[arg(long, value_name = "BUDGET")]
+        budget: Option<exfil_engine::Budget>,
+        /// Scan worst-first using the trained path model, without stopping
+        /// early. Same results as an ordinary scan, reached sooner.
+        #[arg(long)]
+        ranked: bool,
     },
     /// Check observed indicators against live network sources (online;
     /// authorized use). `check dns` resolves domains; `check whois` ages them.
@@ -216,6 +228,11 @@ enum Command {
     /// Annotate stored findings with authoritative MITRE CWE names (run
     /// `exfil pull mitre://cwe` first to download the catalog).
     Enrich,
+    /// Train and inspect the path model that ranks what a scan looks at first.
+    Hmm {
+        #[command(subcommand)]
+        action: HmmCmd,
+    },
     /// Look up a weakness in the local MITRE CWE catalog (`exfil pull
     /// mitre://cwe` downloads it).
     Cwe {
@@ -284,6 +301,42 @@ enum CheckCmd {
         /// Flag domains registered within this many days.
         #[arg(long, default_value_t = exfil_scan::whois::DEFAULT_RECENT_DAYS)]
         recent_days: i64,
+    },
+}
+
+/// Path-model actions.
+#[derive(Subcommand)]
+enum HmmCmd {
+    /// Train the path model on the scans already in the store and save it to
+    /// the catalog. Every file recorded is a training sample; whether a
+    /// finding was attached to it is the label.
+    Train {
+        /// Number of latent states to fit.
+        #[arg(long, default_value_t = 12)]
+        states: usize,
+        /// Maximum Baum-Welch iterations.
+        #[arg(long, default_value_t = 30)]
+        iterations: usize,
+        /// Keep at most this many distinct path tokens.
+        #[arg(long, default_value_t = 4096)]
+        vocab: usize,
+        /// Name to save the model under.
+        #[arg(long, default_value = "default")]
+        name: String,
+    },
+    /// Show what the trained model would give a path, and why.
+    Score {
+        /// Path to score (need not exist).
+        path: String,
+        /// Model name.
+        #[arg(long, default_value = "default")]
+        name: String,
+    },
+    /// Summarize the trained model.
+    Status {
+        /// Model name.
+        #[arg(long, default_value = "default")]
+        name: String,
     },
 }
 
@@ -365,6 +418,8 @@ async fn main() -> Result<()> {
             active,
             passive,
             fail_on,
+            budget,
+            ranked,
         } => {
             cmd_scan(
                 &store_dir,
@@ -376,6 +431,8 @@ async fn main() -> Result<()> {
                 driver.as_deref(),
                 explicit_scan_mode(active, passive),
                 fail_on,
+                budget,
+                ranked,
             )
             .await?
         }
@@ -396,6 +453,16 @@ async fn main() -> Result<()> {
             StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
         },
         Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
+        Command::Hmm { action } => match action {
+            HmmCmd::Train {
+                states,
+                iterations,
+                vocab,
+                name,
+            } => cmd_hmm_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
+            HmmCmd::Score { path, name } => cmd_hmm_score(cfg, &path, &name).await?,
+            HmmCmd::Status { name } => cmd_hmm_status(cfg, &name).await?,
+        },
         Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
         Command::Mcp => {
             exfil_mcp::serve(exfil_mcp::Ctx {
@@ -578,6 +645,8 @@ async fn cmd_scan(
     driver: Option<&str>,
     mode: Option<ScanMode>,
     fail_on: Option<exfil_core::Severity>,
+    budget: Option<exfil_engine::Budget>,
+    ranked: bool,
 ) -> Result<()> {
     // `common` expands to this many ports; configurable per the scan plugin's
     // published schema.
@@ -610,9 +679,25 @@ async fn cmd_scan(
     // directory to skip.
     let skip = matches!(target, Target::Path(_)).then_some(store_dir);
 
+    // Load the path model when ranking or budgeting was asked for. A budget
+    // without a model still works — it just cuts in walk order rather than
+    // value order — so a missing model is a note, not an error.
+    let plan = if budget.is_some() || ranked {
+        let model = load_model(config, "default").await.unwrap_or(None);
+        if model.is_none() {
+            eprintln!(
+                "no trained path model; scanning in walk order \
+                 (run `exfil hmm train` to rank by probability)"
+            );
+        }
+        exfil_engine::ScanPlan { model, budget }
+    } else {
+        exfil_engine::ScanPlan::default()
+    };
+
     let (tx, rx) = std::sync::mpsc::channel();
     let renderer = progress::spawn(rx);
-    let result = target::run(target, &built.pipeline, &store, skip, Some(tx), mode).await;
+    let result = target::run(target, &built.pipeline, &store, skip, Some(tx), mode, &plan).await;
     // The scan dropped its sender, so the renderer is finishing; wait for it
     // before printing the summary under the (now final) progress bar. Joining
     // yields the per-severity counts of the matches it just streamed.
@@ -620,6 +705,24 @@ async fn cmd_scan(
     let outcome = result?;
     println!("{}", summary_line(&outcome));
     print_tally(&counts);
+    // A budgeted scan looked at part of the tree. Say so on its own line, in
+    // the same breath as the result — a partial run that reads like a clean
+    // one is the whole risk of this feature.
+    if outcome.summary.is_partial() {
+        println!(
+            "coverage: {} of {} files ({:.0}%, {}) — {} not examined",
+            outcome.summary.candidates - outcome.summary.skipped,
+            outcome.summary.candidates,
+            outcome.summary.coverage() * 100.0,
+            if plan.model.is_some() {
+                "probability-ranked"
+            } else {
+                "walk order"
+            },
+            outcome.summary.skipped,
+        );
+        hint("Run without `--budget` for full coverage.");
+    }
     scan_hints(&outcome);
 
     // CI gate: exit non-zero when the store holds a finding at or above the
@@ -1090,6 +1193,157 @@ async fn cmd_graph(
         other => anyhow::bail!("unknown graph format {other:?} (use json or dot)"),
     }
     Ok(())
+}
+
+/// Train the path model on everything the store already knows and save it to
+/// the catalog.
+///
+/// No new scanning and no hand-labelling: every recorded file is a sample, and
+/// whether a finding hangs off it is the label. That also means the model is
+/// only as good as the ruleset that produced those findings, which is why the
+/// ruleset fingerprint is recorded alongside it.
+async fn cmd_hmm_train(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    states: usize,
+    iterations: usize,
+    vocab: usize,
+    name: &str,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
+    let samples = store.training_paths().await?;
+    if samples.is_empty() {
+        println!("nothing to train on — run `exfil scan` first");
+        return Ok(());
+    }
+    let positives = samples.iter().filter(|(_, found)| *found).count();
+    if positives == 0 {
+        println!(
+            "{} file(s) recorded but none carry a finding — the model would have \
+             no signal to learn from",
+            samples.len()
+        );
+        return Ok(());
+    }
+
+    let cfg = exfil_hmm::TrainConfig {
+        states,
+        iterations,
+        vocab_cap: vocab,
+        ruleset: ruleset_fingerprint(config).await,
+        ..exfil_hmm::TrainConfig::default()
+    };
+    println!(
+        "training on {} path(s), {positives} with findings ({:.1}% base rate)…",
+        samples.len(),
+        100.0 * positives as f64 / samples.len() as f64
+    );
+    let model = exfil_hmm::train(&samples, &cfg);
+
+    let catalog = open_catalog(config).await?;
+    catalog
+        .upsert_hmm(name, &serde_json::to_value(&model)?)
+        .await?;
+    println!(
+        "trained {name:?}: {} states/chain, {} tokens, mean log-likelihood {:.3}",
+        model.states(),
+        model.vocab.len(),
+        model.log_likelihood
+    );
+    hint("\nNext: `exfil scan --ranked` to scan worst-first, or `--budget 20%` to cap the work");
+    Ok(())
+}
+
+/// Score one path and show which components drove the number.
+async fn cmd_hmm_score(config: Option<&std::path::Path>, path: &str, name: &str) -> Result<()> {
+    let Some(model) = load_model(config, name).await? else {
+        println!("no model {name:?} — run `exfil hmm train`");
+        return Ok(());
+    };
+    println!("{path}");
+    println!(
+        "  P(finding) = {:.4}   (base rate {:.4})",
+        model.score(path),
+        model.base_rate()
+    );
+    // Per-token log-odds: what each path component contributed, so the number
+    // is inspectable rather than oracular.
+    let obs = model.observe(path);
+    println!("\n  {:<28} {:>9}", "component", "log-odds");
+    for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
+        let unseen = if obs.get(i) == Some(&exfil_hmm::UNK) {
+            "  (unseen)"
+        } else {
+            ""
+        };
+        println!("  {token:<28} {delta:>+9.3}{unseen}");
+    }
+    Ok(())
+}
+
+/// Summarize a trained model.
+async fn cmd_hmm_status(config: Option<&std::path::Path>, name: &str) -> Result<()> {
+    let catalog = open_catalog(config).await?;
+    let names = catalog.list_hmm().await.unwrap_or_default();
+    let Some(model) = load_model(config, name).await? else {
+        println!("no model {name:?} — run `exfil hmm train`");
+        if !names.is_empty() {
+            println!("stored models: {}", names.join(", "));
+        }
+        return Ok(());
+    };
+    println!("model         {name}");
+    println!(
+        "states        {} per chain (positive + negative)",
+        model.states()
+    );
+    println!("vocabulary    {} token(s)", model.vocab.len());
+    println!("trained on    {} path(s)", model.observations);
+    println!("log-likelihood {:.4} per path", model.log_likelihood);
+    println!("base rate     {:.4}", model.base_rate());
+    println!(
+        "ruleset       {}",
+        if model.ruleset.is_empty() {
+            "(unrecorded)"
+        } else {
+            &model.ruleset
+        }
+    );
+    Ok(())
+}
+
+/// Load a trained model from the catalog, if one exists under `name`.
+async fn load_model(
+    config: Option<&std::path::Path>,
+    name: &str,
+) -> Result<Option<exfil_hmm::Hmm>> {
+    let catalog = open_catalog(config).await?;
+    match catalog.load_hmm(name).await? {
+        Some(value) => Ok(Some(
+            serde_json::from_value(value).context("decode stored path model")?,
+        )),
+        None => Ok(None),
+    }
+}
+
+/// A stable fingerprint of the ruleset a scan (or a training run) used.
+///
+/// Findings are whatever the active rules happened to fire on, so a model's
+/// labels — and an incremental scan's "unchanged, skip it" decision — are only
+/// meaningful relative to the rules in force. Recording the fingerprint is what
+/// makes a stale model detectable instead of silently wrong.
+async fn ruleset_fingerprint(config: Option<&std::path::Path>) -> String {
+    let mut names: Vec<String> = exfil_scan::builtin_rules()
+        .iter()
+        .map(|r| format!("{}={}", r.name, r.pattern))
+        .collect();
+    if let Ok(catalog) = open_catalog(config).await {
+        for rule in catalog.all_rules().await.unwrap_or_default() {
+            names.push(format!("{}={}", rule.name, rule.pattern));
+        }
+    }
+    names.sort();
+    blake3::hash(names.join("\n").as_bytes()).to_hex()[..16].to_string()
 }
 
 /// Enrich stored findings from the local MITRE catalog: attach the

@@ -174,6 +174,11 @@ pub struct Outcome {
 /// Run `target` through `pipeline`, persisting into `store`. `store_dir` is
 /// excluded from a local walk (so the store never scans itself) and is unused
 /// for remote targets. Progress streams over `events` when provided.
+///
+/// `plan` (ranking model + budget) applies only to a local tree walk. The
+/// remote sources enumerate a bounded set they have already fetched — a crawl's
+/// pages, a sweep's banners — so there is nothing to rank or cut short; their
+/// equivalent knobs are `--max-pages` and `--ports`.
 pub async fn run(
     target: Target,
     pipeline: &Pipeline,
@@ -181,10 +186,13 @@ pub async fn run(
     store_dir: Option<&Path>,
     events: Option<Sender<ScanEvent>>,
     mode: Option<Mode>,
+    plan: &exfil_engine::ScanPlan,
 ) -> Result<Outcome> {
     let mode = mode.unwrap_or_else(|| target.default_mode());
     let summary = match &target {
-        Target::Path(path) => exfil_engine::scan(path, pipeline, store, store_dir, events).await?,
+        Target::Path(path) => {
+            exfil_engine::scan_with_plan(path, pipeline, store, store_dir, events, plan).await?
+        }
         Target::Processes => {
             let fs = crate::ProcessFs::new();
             exfil_engine::scan_remote(&fs, "proc://", pipeline, store, events).await?

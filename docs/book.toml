@@ -6,8 +6,8 @@ language = "en"
 src = "src"
 
 [output.html]
-git-repository-url = "https://github.com/Rangertaha/exfil"
-edit-url-template = "https://github.com/Rangertaha/exfil/edit/main/docs/{path}"
+git-repository-url = "https://github.com/rangertaha/exfil"
+edit-url-template = "https://github.com/rangertaha/exfil/edit/main/docs/{path}"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]

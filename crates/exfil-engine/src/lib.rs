@@ -25,8 +25,11 @@
 //! `tx`/`host` into that closure, so each thread owns its handles outright —
 //! the compiler will not let one thread borrow another's locals.
 
+pub mod plan;
 pub mod run;
 pub mod setup;
+
+pub use plan::{Budget, ScanPlan};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -73,6 +76,29 @@ pub struct Summary {
     pub unchanged: u64,
     /// Files that could not be read (permission, races); they are skipped.
     pub errors: u64,
+    /// Files a [`Budget`](plan::Budget) stopped the scan before reaching.
+    ///
+    /// Non-zero means **this scan did not look at everything** — the caller
+    /// must say so rather than letting a partial run read as a clean one.
+    pub skipped: u64,
+    /// Candidate files the walk found, whether or not they were examined.
+    /// Equals `files + skipped` for a ranked scan.
+    pub candidates: u64,
+}
+
+impl Summary {
+    /// Whether a budget stopped this scan short of the whole tree.
+    pub fn is_partial(&self) -> bool {
+        self.skipped > 0
+    }
+
+    /// Fraction of candidate files actually examined, in `0.0..=1.0`.
+    pub fn coverage(&self) -> f64 {
+        if self.candidates == 0 {
+            return 1.0;
+        }
+        (self.candidates - self.skipped) as f64 / self.candidates as f64
+    }
 }
 
 /// One processed file: its metadata, any matches, an optional parsed AST, and —
@@ -159,6 +185,45 @@ pub async fn scan(
     skip_dir: Option<&Path>,
     events: Option<mpsc::Sender<ScanEvent>>,
 ) -> Result<Summary> {
+    scan_with_plan(
+        root,
+        pipeline,
+        store,
+        skip_dir,
+        events,
+        &ScanPlan::default(),
+    )
+    .await
+}
+
+/// Walk `root` under a [`ScanPlan`]: rank candidates worst-first with the
+/// plan's model, and stop when its budget is spent.
+///
+/// A plan with neither a model nor a budget falls through to the plain
+/// streaming walk, which is both simpler and faster — there is nothing to
+/// order and nothing to stop.
+pub async fn scan_with_plan(
+    root: &Path,
+    pipeline: &Pipeline,
+    store: &Store,
+    skip_dir: Option<&Path>,
+    events: Option<mpsc::Sender<ScanEvent>>,
+    plan: &ScanPlan,
+) -> Result<Summary> {
+    if plan.is_ranked() {
+        return scan_ranked(root, pipeline, store, skip_dir, events, plan).await;
+    }
+    scan_streaming(root, pipeline, store, skip_dir, events).await
+}
+
+/// The original streaming walk: process every file as the walker reaches it.
+async fn scan_streaming(
+    root: &Path,
+    pipeline: &Pipeline,
+    store: &Store,
+    skip_dir: Option<&Path>,
+    events: Option<mpsc::Sender<ScanEvent>>,
+) -> Result<Summary> {
     if let Some(ev) = &events {
         let _ = ev.send(ScanEvent::Total(count_files(root, skip_dir)));
     }
@@ -225,44 +290,9 @@ pub async fn scan(
     let mut summary = Summary::default();
     let mut hashes = Vec::new();
     while let Ok(res) = rx.recv() {
-        match res {
-            WalkOutcome::Scanned(results) => {
-                for fr in results {
-                    summary.files += 1;
-                    summary.matches += fr.matches.len() as u64;
-                    store.upsert_file(&fr.meta).await?;
-                    // Replace, don't append: stale findings from earlier scans
-                    // of this content are removed before the fresh ones go in.
-                    store.clear_findings(&fr.meta.hash).await?;
-                    for m in &fr.matches {
-                        store.add_finding(m, &fr.meta.hash).await?;
-                    }
-                    if let Some(ast) = &fr.ast {
-                        if !ast.symbols.is_empty() {
-                            let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
-                            store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
-                        }
-                    }
-                    if let Some(ind) = &fr.indicators {
-                        if !ind.is_empty() {
-                            let value = serde_json::to_value(ind).unwrap_or_default();
-                            store.upsert_indicators(&fr.meta.hash, &value).await?;
-                        }
-                    }
-                    if let Some(container) = &fr.contained_in {
-                        store.relate_contained_in(&fr.meta.hash, container).await?;
-                    }
-                    hashes.push(fr.meta.hash);
-                }
-            }
-            WalkOutcome::Unchanged { hash } => {
-                summary.files += 1;
-                summary.unchanged += 1;
-                hashes.push(hash);
-            }
-            WalkOutcome::Error => summary.errors += 1,
-        }
+        persist_outcome(store, res, &mut summary, &mut hashes).await?;
     }
+    summary.candidates = summary.files;
 
     store
         .commit_scan(
@@ -277,6 +307,268 @@ pub async fn scan(
         )
         .await?;
     Ok(summary)
+}
+
+/// One file the walk found, with everything needed to decide whether it is
+/// worth opening.
+struct Candidate {
+    path: PathBuf,
+    size: u64,
+    /// Whether the stat fast-path says this file changed since the last scan.
+    changed: bool,
+    /// Model value: probability of a finding per unit of work.
+    value: f64,
+}
+
+/// Ranked, budgeted scan: enumerate and score first, then scan in value order
+/// until the budget is spent.
+///
+/// The enumeration pass replaces `count_files` rather than adding to it — the
+/// progress total falls out of the same traversal that produces the ranking, so
+/// ranking costs no extra walk.
+async fn scan_ranked(
+    root: &Path,
+    pipeline: &Pipeline,
+    store: &Store,
+    skip_dir: Option<&Path>,
+    events: Option<mpsc::Sender<ScanEvent>>,
+    plan: &ScanPlan,
+) -> Result<Summary> {
+    let index = std::sync::Arc::new(store.file_index().await.unwrap_or_default());
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    // ── Phase 1: enumerate and score (stat only, no reads) ──────────────────
+    let mut candidates: Vec<Candidate> = walk_builder(root, skip_dir)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+        .map(|e| {
+            let path = e.path().to_path_buf();
+            let md = e.metadata().ok();
+            let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+            let changed = is_changed(&path, md.as_ref(), &index);
+            let score = plan
+                .model
+                .as_ref()
+                .map(|m| m.score(&path.display().to_string()))
+                .unwrap_or(0.5);
+            Candidate {
+                path,
+                size,
+                changed,
+                value: plan::value(score, size),
+            }
+        })
+        .collect();
+
+    // Changed files outrank everything: only they can produce *new* findings,
+    // and the stat index knows which they are with certainty. No prior beats a
+    // fact. Within each group, order by model value, then by path so an equal
+    // score never depends on directory iteration order.
+    candidates.sort_by(|a, b| {
+        b.changed
+            .cmp(&a.changed)
+            .then_with(|| {
+                b.value
+                    .partial_cmp(&a.value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    let total = candidates.len() as u64;
+    if let Some(ev) = &events {
+        let _ = ev.send(ScanEvent::Total(total));
+    }
+
+    // A file-count budget can be applied up front; time and byte budgets can
+    // only be enforced as the scan runs.
+    let limit = plan
+        .budget
+        .and_then(|b| b.file_limit(total))
+        .map(|n| n.min(total) as usize)
+        .unwrap_or(candidates.len());
+
+    // ── Phase 2: scan in order until the budget is spent ────────────────────
+    let (tx, rx) = mpsc::channel::<WalkOutcome>();
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let bytes_read = std::sync::atomic::AtomicU64::new(0);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let host = host.clone();
+            let index = index.clone();
+            let events = events.clone();
+            let candidates = &candidates;
+            let cursor = &cursor;
+            let bytes_read = &bytes_read;
+            let stop = &stop;
+            let budget = plan.budget;
+            scope.spawn(move || {
+                use std::sync::atomic::Ordering::Relaxed;
+                loop {
+                    if stop.load(Relaxed) {
+                        break;
+                    }
+                    let i = cursor.fetch_add(1, Relaxed);
+                    if i >= limit {
+                        break;
+                    }
+                    let cand = &candidates[i];
+
+                    // Enforce the budgets that can only be known mid-run. The
+                    // check is before the work, so the budget is a ceiling on
+                    // what is *started*, never exceeded by a late arrival.
+                    match budget {
+                        Some(plan::Budget::Time(limit)) if started.elapsed() >= limit => {
+                            stop.store(true, Relaxed);
+                            break;
+                        }
+                        Some(plan::Budget::Bytes(cap))
+                            if bytes_read.fetch_add(cand.size, Relaxed) + cand.size > cap =>
+                        {
+                            stop.store(true, Relaxed);
+                            break;
+                        }
+                        _ => {}
+                    }
+
+                    let outcome = match process_file(&cand.path, &host, pipeline, &index) {
+                        Ok(outcome) => outcome,
+                        Err(_) => WalkOutcome::Error,
+                    };
+                    if let Some(ev) = &events {
+                        if let WalkOutcome::Scanned(results) = &outcome {
+                            for res in results {
+                                for m in &res.matches {
+                                    let _ = ev.send(ScanEvent::Match(m.clone()));
+                                }
+                            }
+                        }
+                        if !matches!(outcome, WalkOutcome::Error) {
+                            let _ = ev.send(ScanEvent::FileDone);
+                        }
+                    }
+                    let _ = tx.send(outcome);
+                }
+            });
+        }
+        drop(tx);
+    });
+
+    let mut summary = Summary {
+        candidates: total,
+        ..Summary::default()
+    };
+    let mut hashes = Vec::new();
+    let mut attempted = 0u64;
+    while let Ok(res) = rx.recv() {
+        attempted += 1;
+        persist_outcome(store, res, &mut summary, &mut hashes).await?;
+    }
+    summary.skipped = total.saturating_sub(attempted);
+
+    store
+        .commit_scan(
+            &ScanRecord {
+                root: root.display().to_string(),
+                host,
+                started_at,
+                files: summary.files,
+                matches: summary.matches,
+            },
+            &hashes,
+        )
+        .await?;
+    Ok(summary)
+}
+
+/// Whether a file differs from what the last scan recorded, by the same
+/// size+mtime test the streaming walk uses. A file the store has never seen
+/// counts as changed.
+fn is_changed(
+    path: &Path,
+    md: Option<&std::fs::Metadata>,
+    index: &HashMap<String, FileStat>,
+) -> bool {
+    let Some(md) = md else {
+        return true;
+    };
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default();
+    if mtime.is_empty() {
+        return true;
+    }
+    let abs = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string();
+    match index.get(&abs) {
+        Some(prev) => prev.size != md.len() || prev.mtime != mtime,
+        None => true,
+    }
+}
+
+/// Write one walk outcome into the store, accumulating counters. Shared by the
+/// streaming and ranked walks so both persist identically.
+async fn persist_outcome(
+    store: &Store,
+    outcome: WalkOutcome,
+    summary: &mut Summary,
+    hashes: &mut Vec<String>,
+) -> Result<()> {
+    match outcome {
+        WalkOutcome::Scanned(results) => {
+            for fr in results {
+                summary.files += 1;
+                summary.matches += fr.matches.len() as u64;
+                store.upsert_file(&fr.meta).await?;
+                // Replace, don't append: stale findings from earlier scans of
+                // this content are removed before the fresh ones go in.
+                store.clear_findings(&fr.meta.hash).await?;
+                for m in &fr.matches {
+                    store.add_finding(m, &fr.meta.hash).await?;
+                }
+                if let Some(ast) = &fr.ast {
+                    if !ast.symbols.is_empty() {
+                        let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
+                        store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
+                    }
+                }
+                if let Some(ind) = &fr.indicators {
+                    if !ind.is_empty() {
+                        let value = serde_json::to_value(ind).unwrap_or_default();
+                        store.upsert_indicators(&fr.meta.hash, &value).await?;
+                    }
+                }
+                if let Some(container) = &fr.contained_in {
+                    store.relate_contained_in(&fr.meta.hash, container).await?;
+                }
+                hashes.push(fr.meta.hash);
+            }
+        }
+        WalkOutcome::Unchanged { hash } => {
+            summary.files += 1;
+            summary.unchanged += 1;
+            hashes.push(hash);
+        }
+        WalkOutcome::Error => summary.errors += 1,
+    }
+    Ok(())
 }
 
 /// A remote filesystem the engine can scan: enumerate files under a root and
@@ -596,6 +888,170 @@ fn expand_into(
 mod tests {
     use super::*;
     use exfil_scan::default_pipeline;
+
+    /// A tree of `n` files, half of them carrying a secret, plus a store dir.
+    fn ranked_tree(name: &str, n: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("exfil-ranked-{}-{name}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(tree.join("secrets")).unwrap();
+        std::fs::create_dir_all(tree.join("docs")).unwrap();
+        for i in 0..n {
+            std::fs::write(
+                tree.join("secrets").join(format!("k{i}.env")),
+                format!("AWS_KEY=AKIA0123456789ABCDE{}\n", i % 10),
+            )
+            .unwrap();
+            std::fs::write(
+                tree.join("docs").join(format!("d{i}.md")),
+                "just some prose\n",
+            )
+            .unwrap();
+        }
+        (base.join("store"), tree)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn budget_stops_early_and_reports_partial_coverage() {
+        let (store_dir, tree) = ranked_tree("budget", 10);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        let plan = ScanPlan {
+            model: None,
+            budget: Some(Budget::Fraction(0.5)),
+        };
+        let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.candidates, 20, "the walk found every file");
+        assert_eq!(summary.files, 10, "but only half were examined");
+        assert_eq!(summary.skipped, 10);
+        assert!(summary.is_partial(), "a half scan must know it is partial");
+        assert!((summary.coverage() - 0.5).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_budget_is_not_a_partial_scan() {
+        let (store_dir, tree) = ranked_tree("full", 5);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        let plan = ScanPlan {
+            model: None,
+            budget: Some(Budget::Fraction(1.0)),
+        };
+        let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
+            .await
+            .unwrap();
+        assert_eq!(summary.skipped, 0);
+        assert!(!summary.is_partial());
+        assert_eq!(summary.coverage(), 1.0);
+        assert_eq!(summary.files, 10);
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
+
+    /// The payoff: with a model that knows `secrets/` is risky, a half-budget
+    /// scan should find substantially more than half of the findings.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_model_makes_a_partial_scan_find_more_than_its_share() {
+        let (store_dir, tree) = ranked_tree("model", 12);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        // Train on labelled paths of the same shape as the tree.
+        let mut samples = Vec::new();
+        for i in 0..60 {
+            samples.push((format!("/t/secrets/k{i}.env"), true));
+            samples.push((format!("/t/docs/d{i}.md"), false));
+        }
+        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+
+        let plan = ScanPlan {
+            model: Some(model),
+            budget: Some(Budget::Fraction(0.5)),
+        };
+        let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.skipped, 12, "half of 24 files left unexamined");
+        // A blind half-scan would average 6 of the 12 secrets. Ranking should
+        // do far better than chance.
+        assert!(
+            summary.matches >= 10,
+            "ranked half-scan found only {} of 12 secrets",
+            summary.matches
+        );
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ranked_and_streaming_walks_agree_when_nothing_is_capped() {
+        let (store_a, tree) = ranked_tree("agree", 6);
+        let store_b = store_a.parent().unwrap().join("store-b");
+        let pipeline = default_pipeline().unwrap();
+
+        let a = Store::open_findings(&store_a).await.unwrap();
+        let streamed = scan(&tree, &pipeline, &a, Some(&store_a), None)
+            .await
+            .unwrap();
+
+        let b = Store::open_findings(&store_b).await.unwrap();
+        let plan = ScanPlan {
+            model: None,
+            budget: Some(Budget::Fraction(1.0)),
+        };
+        let ranked = scan_with_plan(&tree, &pipeline, &b, Some(&store_b), None, &plan)
+            .await
+            .unwrap();
+
+        assert_eq!(streamed.files, ranked.files);
+        assert_eq!(streamed.matches, ranked.matches);
+        assert_eq!(streamed.errors, ranked.errors);
+
+        let _ = std::fs::remove_dir_all(store_a.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn changed_files_outrank_unchanged_ones_on_a_rescan() {
+        let (store_dir, tree) = ranked_tree("rescan", 8);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        // Full first scan, so everything is in the index.
+        scan(&tree, &pipeline, &store, Some(&store_dir), None)
+            .await
+            .unwrap();
+
+        // Touch one doc so it is the only changed file, then rescan with a
+        // budget that only allows a couple of files.
+        let touched = tree.join("docs/d0.md");
+        std::fs::write(&touched, "prose plus AWS_KEY=AKIA0123456789ABCDEF\n").unwrap();
+
+        let plan = ScanPlan {
+            model: None,
+            budget: Some(Budget::Files(2)),
+        };
+        let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
+            .await
+            .unwrap();
+
+        // The changed file must be one of the two examined — a fact from the
+        // stat index outranks any model score.
+        assert_eq!(
+            summary.matches, 1,
+            "the touched file's new secret was found"
+        );
+        assert_eq!(summary.skipped, 14);
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn scans_a_tree_and_persists_findings() {

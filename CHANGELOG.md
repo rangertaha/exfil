@@ -10,6 +10,37 @@ and this project adheres to
 
 ### Added
 
+- Probability-ranked scanning (`exfil-hmm`, `exfil hmm`, `scan --budget`). A
+  hidden Markov model over path components learns which parts of a filesystem
+  are worth looking at, so a capped scan spends its budget where findings
+  actually are. `exfil hmm train` fits it on the scans already in the store —
+  every recorded file is a sample, and whether a finding hangs off it is the
+  label, so there is no new scanning and no hand-labelling. `exfil hmm score`
+  shows a path's probability with per-component log-odds; `exfil hmm status`
+  summarizes the model. The model is stored in the catalog (`hmm_model`), so it
+  survives `store clean`. Pure Rust: scaled forward-backward, Baum-Welch and
+  Viterbi in ~400 lines with no dependency beyond serde.
+  - `scan --budget` caps the work — `30s`/`5m` wall time, `20%` of files,
+    `500mb` read, or a bare file count — scanning the most promising files
+    first. `--ranked` orders worst-first without stopping early (same results,
+    reached sooner). A budgeted scan **states its coverage** and refuses to
+    combine with `--fail-on`: a partial scan cannot certify a tree is clean.
+    The MCP `scan` tool takes the same `budget`, and its partial results carry
+    an explicit "this is not evidence the target is clean" warning.
+  - Ranking is lexicographic, not one score: changed files always outrank
+    unchanged ones, because only they can produce new findings and the stat
+    index knows which they are with certainty. Model value ranks within each
+    group, as `P(finding) / cost(bytes)` — a 2 GB image at p=0.9 is worse value
+    than five hundred dotfiles at p=0.3.
+  - The scoring pass replaces the old `count_files` pre-walk rather than adding
+    to it, so ranking costs no extra traversal.
+  - Two chains are fitted, one per class, and scored by likelihood ratio.
+    Fitting one chain and reading a per-state risk off it does not work:
+    Baum-Welch maximises likelihood and the labels take no part in it, so a
+    single state that emits `secrets`, `docs` and `vendor` uniformly models the
+    corpus perfectly well — after which no read-out can separate those
+    families. Making the label pick the chain is what gives training a reason
+    to tell them apart. On a 60-file tree a 30% budget found 18 of 20 findings.
 - The MCP server now exposes **exfil's whole surface**, not just the findings
   graph: 26 tools covering reads (`search`, `graph`, `neighbors`, `get`,
   `analyze` in any reporter format, `stats`, `export`, `rules`, `cwe`,
