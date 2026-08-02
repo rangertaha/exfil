@@ -5,3 +5,6 @@ files/
 
 # Scan output from running exfil against the fixtures.
 store/
+
+# Bytecode cache from running generate.py.
+__pycache__/
