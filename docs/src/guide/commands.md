@@ -70,10 +70,13 @@ exfil scan ./project --ranked        # worst-first; still scans everything
 exfil scan ./project --budget 20%    # worst-first, stop at 20% of files
 exfil scan ./project --budget 30s    # …or after 30 seconds
 exfil scan ./project --budget 500mb  # …or after reading 500 MB
+exfil scan ./project --budget 90c    # …or once 90% of the *expected* findings
+                                     #    are accounted for (adapts to the tree)
 ```
 
 `--budget` takes a suffix: `%` of files, `s`/`m`/`h` wall time, `kb`/`mb`/`gb`
-read, or a bare file count. Percentages and counts are reproducible; a time
+read, a bare file count, or `c` for a share of the *expected findings* rather
+than of the work — the one that adapts to how concentrated a tree's risk is. Percentages and counts are reproducible; a time
 budget is not, so the file set it produced is recorded in the scan record.
 
 > **A budgeted scan does not certify anything.** It prints its coverage, and it

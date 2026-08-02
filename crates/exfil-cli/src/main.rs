@@ -176,8 +176,10 @@ enum Command {
               conflicts_with = "budget")]
         fail_on: Option<exfil_core::Severity>,
         /// Stop once this much work is done, scanning the most promising files
-        /// first: `30s`/`5m` time, `20%` of files, `500mb` read, or a bare
-        /// file count. Ranking uses the trained path model when one exists
+        /// first: `30s`/`5m` time, `20%` of files, `500mb` read, a bare file
+        /// count, or `90c` for 90% of the *expected findings* (which adapts to
+        /// the tree instead of assuming a shape, and needs a calibrated model).
+        /// Ranking uses the trained path model when one exists
         /// (`exfil hmm train`). Cannot be combined with `--fail-on`: a partial
         /// scan cannot certify that a tree is clean.
         #[arg(long, value_name = "BUDGET")]

@@ -130,6 +130,7 @@ a suffixed string, so one flag covers every unit:
 | `2000` | file count | yes |
 | `500mb` | bytes read | yes |
 | `30s`, `5m`, `1h` | wall-clock | **no** |
+| `90c`, `90%c` | share of the *expected findings* | yes |
 
 Percentages and counts are deterministic and safe for CI. A time budget isn't —
 two runs on the same commit scan different sets — which is why the resulting
@@ -146,6 +147,30 @@ Ranking is by **expected value, not probability**:
 
 A 2 GB disk image at p=0.9 is worse value than five hundred dotfiles at p=0.3.
 It's a greedy knapsack by ratio.
+
+### Confidence, the budget that adapts {#confidence}
+
+Every other budget caps **cost**. `90c` caps **uncertainty**: scan in ranked
+order until the files examined account for 90% of the total expected findings,
+where "expected" is the sum of the calibrated probabilities.
+
+```text
+expected  │      ╭─────────────  ← the knee: nearly everything of value found
+ findings │    ╭─╯
+    found │  ╭─╯
+          │╭─╯
+          └──────────────────── files scanned, ranked
+               ▲
+               90c stops here — wherever that happens to be
+```
+
+That is the one budget that adapts to the tree. Risk concentrated in a handful
+of files stops almost immediately; risk spread thin keeps going. No fixed
+percentage can do that, because it has to assume a shape in advance.
+
+It only means anything with a **calibrated** model — it sums probabilities, so
+if those aren't probabilities the target isn't either. That is why this arrived
+after [calibration](#calibration) rather than alongside `--budget`.
 
 ---
 
@@ -366,9 +391,6 @@ same job, and that is worth knowing.
 Stated plainly, because a probability that looks authoritative and isn't is
 worse than no probability at all:
 
-- **A `--confidence` stop condition** — scan until the expected yield flattens,
-  rather than to a fixed budget. Now unblocked (the scores are calibrated), but
-  not built.
 - **The sequence model does not always earn its complexity.** `exfil hmm eval`
   measures this and says so out loud — see below.
 

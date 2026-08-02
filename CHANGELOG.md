@@ -10,6 +10,15 @@ and this project adheres to
 
 ### Added
 
+- `--budget 90c` — a **confidence** stop condition. Every other budget caps
+  cost; this one caps uncertainty: scan in ranked order until the files examined
+  account for 90% of the total *expected* findings. It is the only budget that
+  adapts to the tree — risk concentrated in a handful of files stops almost
+  immediately, risk spread thin keeps going — because no fixed percentage can
+  do that without assuming a shape in advance. On a sample tree it settled at
+  24% of the files and recovered 39 of 40 findings. It only means anything with
+  a calibrated model, since it sums probabilities, which is why it arrives now
+  rather than alongside `--budget`.
 - **Calibrated probabilities.** The raw likelihood ratio between the two chains
   is enormously confident — on a separable corpus scores piled up at exactly
   1.0 and 0.0, which ranks fine but is not a probability anyone should act on.
@@ -240,6 +249,18 @@ and this project adheres to
   scheduled refresh surfaces a broken feed instead of hiding it in the stream.
 
 ### Changed
+
+- Dropped the `is-root` dependency for `rustix` (already in the tree, safe,
+  maintained). `is-root`'s entire unix implementation was one call into
+  `users`, an unmaintained crate carrying three RUSTSEC advisories
+  (RUSTSEC-2025-0040 root appended to group listings, RUSTSEC-2023-0059
+  unaligned read, RUSTSEC-2023-0040 unmaintained). Both crates are now absent
+  from the lockfile: the advisory count drops from 3 vulnerabilities and 6
+  warnings to 2 and 5, with everything remaining transitive through `yara-x`
+  and `surrealdb`. On Windows, where there is no uid and the token API would
+  need `unsafe` (which this workspace denies), elevation is now decided by
+  probing whether the system data directory is writable — which is the question
+  that actually matters, rather than the one that approximates it.
 
 - **Relicensed from MIT to GPL-3.0-or-later.** `LICENSE` carries the full GPLv3
   text; the workspace manifest (inherited by every crate) and the standalone

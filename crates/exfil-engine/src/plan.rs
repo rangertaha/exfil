@@ -33,13 +33,27 @@ pub enum Budget {
     Bytes(u64),
     /// A number of files.
     Files(u64),
+    /// Stop once the scanned files account for this share of the *expected*
+    /// findings, as a fraction in `0.0..=1.0`.
+    ///
+    /// The other budgets cap cost; this one caps uncertainty. It self-adjusts
+    /// to the tree — a repository whose risk is concentrated in a few files
+    /// stops early, one where it is spread thin keeps going — which no fixed
+    /// percentage can do. Only meaningful with a calibrated model: it sums
+    /// probabilities, so if those are not probabilities the target is not
+    /// either.
+    Confidence(f64),
 }
 
 impl Budget {
     /// Whether this budget could stop a scan short of the whole tree. A 100%
     /// fraction is a full scan expressed awkwardly, not a partial one.
     pub fn is_partial(&self) -> bool {
-        !matches!(self, Budget::Fraction(f) if *f >= 1.0)
+        match self {
+            Budget::Fraction(f) => *f < 1.0,
+            Budget::Confidence(c) => *c < 1.0,
+            _ => true,
+        }
     }
 
     /// How many of `total` files this budget allows, when it can be expressed
@@ -49,7 +63,9 @@ impl Budget {
         match self {
             Budget::Fraction(f) => Some((total as f64 * f).ceil() as u64),
             Budget::Files(n) => Some(*n),
-            Budget::Time(_) | Budget::Bytes(_) => None,
+            // Confidence depends on the scores, so it is resolved by the
+            // engine once candidates are ranked, not from a count alone.
+            Budget::Time(_) | Budget::Bytes(_) | Budget::Confidence(_) => None,
         }
     }
 }
@@ -61,6 +77,7 @@ impl std::fmt::Display for Budget {
             Budget::Fraction(x) => write!(f, "{:.0}%", x * 100.0),
             Budget::Bytes(b) => write!(f, "{b} bytes"),
             Budget::Files(n) => write!(f, "{n} files"),
+            Budget::Confidence(c) => write!(f, "{:.0}% confidence", c * 100.0),
         }
     }
 }
@@ -80,6 +97,15 @@ impl FromStr for Budget {
             })
         };
 
+        // `90%c` / `90c` — confidence, distinguished from a plain `90%` file
+        // fraction because the two mean very different things.
+        if let Some(v) = raw.strip_suffix("%c").or_else(|| raw.strip_suffix('c')) {
+            let pct = num(v.trim_end_matches('%'))?;
+            if !(0.0..=100.0).contains(&pct) {
+                return Err(format!("{pct}% is outside 0–100"));
+            }
+            return Ok(Budget::Confidence(pct / 100.0));
+        }
         if let Some(v) = raw.strip_suffix('%') {
             let pct = num(v)?;
             if !(0.0..=100.0).contains(&pct) {
@@ -143,6 +169,28 @@ impl std::fmt::Debug for ScanPlan {
             .field("ruleset", &self.ruleset)
             .finish()
     }
+}
+
+/// How many of the ranked candidates are needed to account for `confidence` of
+/// the total expected findings.
+///
+/// `scores` must already be in scan order. Sums the per-file probabilities
+/// until the running total reaches the requested share of the whole, which is
+/// where the curve of expected yield flattens.
+pub fn confidence_limit(scores: &[f64], confidence: f64) -> usize {
+    let total: f64 = scores.iter().sum();
+    if total <= 0.0 {
+        return scores.len();
+    }
+    let target = total * confidence.clamp(0.0, 1.0);
+    let mut acc = 0.0;
+    for (i, s) in scores.iter().enumerate() {
+        acc += s;
+        if acc >= target {
+            return i + 1;
+        }
+    }
+    scores.len()
 }
 
 /// The value of scanning one candidate file: how likely it is to yield a
@@ -219,5 +267,36 @@ mod tests {
             ..Default::default()
         }
         .is_ranked());
+    }
+    #[test]
+    fn confidence_parses_and_is_distinct_from_a_file_fraction() {
+        assert_eq!("90c".parse(), Ok(Budget::Confidence(0.9)));
+        assert_eq!("90%c".parse(), Ok(Budget::Confidence(0.9)));
+        // A bare percentage still means a share of *files*, not of findings.
+        assert_eq!("90%".parse(), Ok(Budget::Fraction(0.9)));
+        assert!("150c".parse::<Budget>().is_err());
+        assert!(Budget::Confidence(0.9).is_partial());
+        assert!(!Budget::Confidence(1.0).is_partial());
+        // It cannot be resolved from a file count alone.
+        assert_eq!(Budget::Confidence(0.9).file_limit(100), None);
+    }
+
+    #[test]
+    fn confidence_stops_where_the_expected_yield_flattens() {
+        // Risk concentrated in the first few files: 90% of the expected
+        // findings sit in three of ten.
+        let scores = vec![0.9, 0.8, 0.7, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02];
+        let n = confidence_limit(&scores, 0.9);
+        assert!(n <= 4, "took {n} of 10 for 90% of the expected findings");
+
+        // Risk spread evenly: 90% needs nearly everything, which is the point —
+        // the stop adapts to the tree instead of assuming a shape.
+        let flat = vec![0.3; 10];
+        assert!(confidence_limit(&flat, 0.9) >= 9);
+
+        // Degenerate inputs must not divide by zero or run off the end.
+        assert_eq!(confidence_limit(&[], 0.9), 0);
+        assert_eq!(confidence_limit(&[0.0, 0.0], 0.9), 2);
+        assert_eq!(confidence_limit(&scores, 1.0), scores.len());
     }
 }

@@ -81,11 +81,40 @@ fn default_store() -> String {
 }
 
 /// True when exfil should use system-wide paths instead of the per-user
-/// dirs: root (uid 0) on Linux, or an elevated/Administrator process on
-/// Windows. Any other platform (e.g. macOS) always keeps per-user dirs, even
-/// as root, since it has no equivalent system convention for this.
+/// dirs: root (uid 0) on Linux, or a process that can write the system data
+/// directory on Windows. Any other platform (e.g. macOS) always keeps per-user
+/// dirs, even as root, since it has no equivalent system convention for this.
 fn use_system_dirs() -> bool {
-    cfg!(any(target_os = "linux", windows)) && is_root::is_root()
+    cfg!(any(target_os = "linux", windows)) && elevated()
+}
+
+/// Whether this process is running with the privileges that make the
+/// system-wide locations usable.
+///
+/// On unix this is the effective uid, read through `rustix` — a safe, current
+/// syscall wrapper. It replaced the `is-root` crate, whose only unix
+/// implementation was one call into `users`, a crate that is unmaintained and
+/// carries three RUSTSEC advisories.
+#[cfg(unix)]
+fn elevated() -> bool {
+    rustix::process::geteuid().is_root()
+}
+
+/// On Windows there is no uid to read, and the token API would require
+/// `unsafe`, which this workspace denies. So ask the question that actually
+/// matters instead of the one that approximates it: *can this process use the
+/// system location?* Probing writability answers that directly, and is correct
+/// for the cases an "am I Administrator" check would only predict.
+#[cfg(windows)]
+fn elevated() -> bool {
+    let dir = system_data_dir().join("exfil");
+    std::fs::create_dir_all(&dir).is_ok()
+}
+
+/// Other platforms never use system-wide dirs, so the question never arises.
+#[cfg(not(any(unix, windows)))]
+fn elevated() -> bool {
+    false
 }
 
 /// The system-wide config directory: `/etc` on Linux, `%ProgramData%` on

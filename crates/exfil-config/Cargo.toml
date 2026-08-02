@@ -9,7 +9,11 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 toml = "0.8"
 dirs = "5"
-is-root = "0.1"
+# Root/elevation detection. rustix is a safe, maintained syscall wrapper and
+# is already in the tree; the previous `is-root` crate pulled in `users`, which
+# is unmaintained and carries three RUSTSEC advisories.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
 
 [lints]
 workspace = true

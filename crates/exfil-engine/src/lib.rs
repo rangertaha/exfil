@@ -358,6 +358,9 @@ struct Candidate {
     changed: bool,
     /// Model value: probability of a finding per unit of work.
     value: f64,
+    /// The model's `P(finding)` for this path, kept separately from `value`
+    /// because a confidence budget sums probabilities, not value-per-byte.
+    score: f64,
 }
 
 /// Ranked, budgeted scan: enumerate and score first, then scan in value order
@@ -401,6 +404,7 @@ async fn scan_ranked(
                 size,
                 changed,
                 value: plan::value(score, size),
+                score,
             }
         })
         .collect();
@@ -427,11 +431,19 @@ async fn scan_ranked(
 
     // A file-count budget can be applied up front; time and byte budgets can
     // only be enforced as the scan runs.
-    let limit = plan
-        .budget
-        .and_then(|b| b.file_limit(total))
-        .map(|n| n.min(total) as usize)
-        .unwrap_or(candidates.len());
+    let limit = match plan.budget {
+        // Confidence needs the ranked scores, so it resolves here rather than
+        // from a count: take candidates until they account for the requested
+        // share of the total expected findings.
+        Some(plan::Budget::Confidence(c)) => {
+            let scores: Vec<f64> = candidates.iter().map(|c| c.score).collect();
+            plan::confidence_limit(&scores, c)
+        }
+        other => other
+            .and_then(|b| b.file_limit(total))
+            .map(|n| n.min(total) as usize)
+            .unwrap_or(candidates.len()),
+    };
 
     // ── Phase 2: scan in order until the budget is spent ────────────────────
     let (tx, rx) = mpsc::channel::<WalkOutcome>();
@@ -1822,5 +1834,38 @@ rule Detect_Evil {
         assert!(!store.list_records("ast", 10).await.unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confidence_budget_adapts_to_where_the_risk_is() {
+        let (store_dir, tree) = ranked_tree("confidence", 10);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        let mut samples = Vec::new();
+        for i in 0..60 {
+            samples.push((format!("/t/secrets/k{i}.env"), true));
+            samples.push((format!("/t/docs/d{i}.md"), false));
+        }
+        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+
+        let plan = ScanPlan {
+            model: Some(model),
+            budget: Some(Budget::Confidence(0.9)),
+            ..Default::default()
+        };
+        let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
+            .await
+            .unwrap();
+
+        // Risk sits in secrets/; 90% of the expected findings should be
+        // reachable well short of the whole tree.
+        assert!(summary.is_partial(), "should have stopped early");
+        assert!(
+            summary.matches >= 8,
+            "found only {} of 10 secrets at 90% confidence",
+            summary.matches
+        );
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
     }
 }
