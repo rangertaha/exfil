@@ -345,10 +345,18 @@ impl Hmm {
     }
 
     /// Map a path to observation indices, with unknown tokens folded to [`UNK`].
+    ///
+    /// Indices are clamped to the emission matrix's width. A stored model whose
+    /// vocabulary and matrices disagree — a truncated write, a hand edit, a
+    /// version skew — would otherwise index out of bounds and panic the scanner
+    /// mid-walk. A model that cannot be trusted should degrade to "I know
+    /// nothing about this token", never take the process down.
     pub fn observe(&self, path: &str) -> Vec<usize> {
+        let width = self.vocab_len();
         tokenize(path)
             .into_iter()
             .map(|t| self.vocab.get(&t).copied().unwrap_or(UNK))
+            .map(|i| if i < width { i } else { UNK })
             .collect()
     }
 
@@ -365,7 +373,9 @@ impl Hmm {
     /// ratio is meaningful.
     pub fn score(&self, path: &str) -> f64 {
         let obs = self.observe(path);
-        if obs.is_empty() || self.states() == 0 {
+        // An empty vocabulary leaves the emission rows empty, so there is no
+        // index that could be read: say nothing rather than reach into them.
+        if obs.is_empty() || self.states() == 0 || self.vocab_len() == 0 {
             return self.prior;
         }
         let pos = self.positive.log_likelihood(&obs) + self.prior.max(FLOOR).ln();
@@ -723,5 +733,24 @@ mod tests {
         let back: Hmm = serde_json::from_str(&json).unwrap();
         let p = "/home/u/secrets/app3/creds.env";
         assert!((hmm.score(p) - back.score(p)).abs() < 1e-12);
+    }
+    /// A stored model whose vocabulary outruns its matrices must not panic the
+    /// scanner mid-walk — a corrupt or version-skewed model should degrade to
+    /// "I know nothing", not take the process down.
+    #[test]
+    fn a_model_with_an_oversized_vocab_degrades_instead_of_panicking() {
+        let mut hmm = train(&corpus(), &TrainConfig::default());
+        // Simulate skew: a token indexed past the emission matrix's width.
+        let width = hmm.vocab_len();
+        hmm.vocab.insert("bogus".into(), width + 50);
+        assert!(hmm.observe("/bogus/x.pem").iter().all(|i| *i < width));
+        let s = hmm.score("/bogus/thing/x.pem");
+        assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score={s}");
+
+        // An empty vocabulary leaves nothing to index at all.
+        hmm.vocab.clear();
+        hmm.positive.emit = vec![Vec::new(); hmm.positive.states];
+        hmm.negative.emit = vec![Vec::new(); hmm.negative.states];
+        assert_eq!(hmm.score("/anything/at/all.rs"), hmm.prior);
     }
 }

@@ -666,6 +666,14 @@ async fn cmd_scan(
     };
     let target = target::parse(spec.as_deref(), &opts)?;
     announce(&target, opts.ports.is_some());
+    // Ranking and budgets only apply to a local tree walk. Say so rather than
+    // accepting the flag and quietly ignoring it.
+    if (budget.is_some() || ranked) && !target.honors_plan() {
+        eprintln!(
+            "warning: --budget/--ranked apply only to a local path scan; \
+             ignored for this target (use --max-pages or --ports to bound it)"
+        );
+    }
 
     let built = build_pipeline(config).await?;
     if !built.skipped.is_empty() {
@@ -675,6 +683,7 @@ async fn cmd_scan(
         );
     }
     let store = open_findings(store_dir, config).await?;
+    let fingerprint = exfil_engine::setup::ruleset_fingerprint(config).await;
     // A local walk must exclude the store itself; remote targets have no
     // directory to skip.
     let skip = matches!(target, Target::Path(_)).then_some(store_dir);
@@ -682,17 +691,31 @@ async fn cmd_scan(
     // Load the path model when ranking or budgeting was asked for. A budget
     // without a model still works — it just cuts in walk order rather than
     // value order — so a missing model is a note, not an error.
-    let plan = if budget.is_some() || ranked {
-        let model = load_model(config, "default").await.unwrap_or(None);
-        if model.is_none() {
-            eprintln!(
+    let model = if budget.is_some() || ranked {
+        let m = load_model(config, "default").await.unwrap_or(None);
+        match &m {
+            None => eprintln!(
                 "no trained path model; scanning in walk order \
                  (run `exfil hmm train` to rank by probability)"
-            );
+            ),
+            Some(m) if !m.ruleset.is_empty() && m.ruleset != fingerprint => eprintln!(
+                "warning: the path model was trained under ruleset {} but this \
+                 scan applies {fingerprint}; its ranking may be stale — re-run \
+                 `exfil hmm train`",
+                m.ruleset
+            ),
+            Some(_) => {}
         }
-        exfil_engine::ScanPlan { model, budget }
+        m
     } else {
-        exfil_engine::ScanPlan::default()
+        None
+    };
+    // The fingerprint rides on every scan, ranked or not: it is what lets the
+    // next scan notice the ruleset moved and stop trusting "unchanged".
+    let plan = exfil_engine::ScanPlan {
+        model,
+        budget,
+        ruleset: fingerprint,
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1230,7 +1253,7 @@ async fn cmd_hmm_train(
         states,
         iterations,
         vocab_cap: vocab,
-        ruleset: ruleset_fingerprint(config).await,
+        ruleset: exfil_engine::setup::ruleset_fingerprint(config).await,
         ..exfil_hmm::TrainConfig::default()
     };
     println!(
@@ -1324,26 +1347,6 @@ async fn load_model(
         )),
         None => Ok(None),
     }
-}
-
-/// A stable fingerprint of the ruleset a scan (or a training run) used.
-///
-/// Findings are whatever the active rules happened to fire on, so a model's
-/// labels — and an incremental scan's "unchanged, skip it" decision — are only
-/// meaningful relative to the rules in force. Recording the fingerprint is what
-/// makes a stale model detectable instead of silently wrong.
-async fn ruleset_fingerprint(config: Option<&std::path::Path>) -> String {
-    let mut names: Vec<String> = exfil_scan::builtin_rules()
-        .iter()
-        .map(|r| format!("{}={}", r.name, r.pattern))
-        .collect();
-    if let Ok(catalog) = open_catalog(config).await {
-        for rule in catalog.all_rules().await.unwrap_or_default() {
-            names.push(format!("{}={}", rule.name, rule.pattern));
-        }
-    }
-    names.sort();
-    blake3::hash(names.join("\n").as_bytes()).to_hex()[..16].to_string()
 }
 
 /// Enrich stored findings from the local MITRE catalog: attach the

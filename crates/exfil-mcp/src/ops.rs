@@ -276,15 +276,19 @@ pub async fn scan(
     // directory to skip.
     let skip = matches!(target, Target::Path(_)).then_some(ctx.store_dir.as_path());
 
-    let plan = if budget.is_some() {
-        exfil_engine::ScanPlan {
-            model: load_model(ctx).await,
-            budget,
-        }
-    } else {
-        exfil_engine::ScanPlan::default()
+    // The fingerprint rides on every scan, budgeted or not: it is what lets the
+    // next scan notice the ruleset moved and stop trusting "unchanged".
+    let plan = exfil_engine::ScanPlan {
+        model: if budget.is_some() {
+            load_model(ctx).await
+        } else {
+            None
+        },
+        budget,
+        ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
     };
 
+    let ignored_budget = budget.is_some() && !target.honors_plan();
     let outcome = target::run(target, &built.pipeline, &store, skip, None, None, &plan).await?;
     let s = &outcome.summary;
     let mut out = format!(
@@ -311,6 +315,12 @@ pub async fn scan(
             },
             s.skipped,
         ));
+    }
+    if ignored_budget {
+        out.push_str(
+            "\nNOTE: budget ignored — it applies only to a local path scan. \
+             This target was scanned in full.",
+        );
     }
     if !built.skipped.is_empty() {
         out.push_str(&format!(

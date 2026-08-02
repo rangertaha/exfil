@@ -84,6 +84,9 @@ pub struct Summary {
     /// Candidate files the walk found, whether or not they were examined.
     /// Equals `files + skipped` for a ranked scan.
     pub candidates: u64,
+    /// The ruleset changed since the last scan, so the stat fast-path was
+    /// bypassed and every file was re-examined under the new rules.
+    pub ruleset_changed: bool,
 }
 
 impl Summary {
@@ -213,7 +216,7 @@ pub async fn scan_with_plan(
     if plan.is_ranked() {
         return scan_ranked(root, pipeline, store, skip_dir, events, plan).await;
     }
-    scan_streaming(root, pipeline, store, skip_dir, events).await
+    scan_streaming(root, pipeline, store, skip_dir, events, plan).await
 }
 
 /// The original streaming walk: process every file as the walker reaches it.
@@ -223,14 +226,12 @@ async fn scan_streaming(
     store: &Store,
     skip_dir: Option<&Path>,
     events: Option<mpsc::Sender<ScanEvent>>,
+    plan: &ScanPlan,
 ) -> Result<Summary> {
     if let Some(ev) = &events {
         let _ = ev.send(ScanEvent::Total(count_files(root, skip_dir)));
     }
-    // Stat cache from previous scans: files whose size+mtime still match are
-    // skipped without reading. Wrapped in Arc so every walker thread can
-    // share one read-only copy instead of cloning the whole map.
-    let index = std::sync::Arc::new(store.file_index().await.unwrap_or_default());
+    let (index, ruleset_changed) = stat_index(store, plan).await;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -287,7 +288,10 @@ async fn scan_streaming(
     // Persist as results arrive (the walk has finished threads once the
     // channel drains; recv() on a std channel is fine to call here because the
     // senders live on rayon-style walker threads, not this async task).
-    let mut summary = Summary::default();
+    let mut summary = Summary {
+        ruleset_changed,
+        ..Summary::default()
+    };
     let mut hashes = Vec::new();
     while let Ok(res) = rx.recv() {
         persist_outcome(store, res, &mut summary, &mut hashes).await?;
@@ -302,11 +306,47 @@ async fn scan_streaming(
                 started_at,
                 files: summary.files,
                 matches: summary.matches,
+                ruleset: plan.ruleset.clone(),
             },
             &hashes,
         )
         .await?;
     Ok(summary)
+}
+
+/// The stat cache to scan against — unless the ruleset moved since the last
+/// scan, in which case there isn't one.
+///
+/// The fast-path's promise is "this file is unchanged, so its stored findings
+/// still stand". That promise is only true for the rules that produced them:
+/// pull a new dataset and every unchanged file becomes a file those rules have
+/// never seen. Returning an empty index makes the next scan re-examine
+/// everything exactly once, after which the recorded fingerprint matches again.
+async fn stat_index(
+    store: &Store,
+    plan: &ScanPlan,
+) -> (std::sync::Arc<HashMap<String, FileStat>>, bool) {
+    let changed = if plan.ruleset.is_empty() {
+        false // caller didn't say; don't invalidate on a guess
+    } else {
+        match store.last_ruleset().await {
+            Ok(Some(prev)) => prev != plan.ruleset,
+            Ok(None) => false, // nothing recorded yet, so nothing to contradict
+            // A store that cannot answer must not be assumed to agree: skipping
+            // files is a claim we can no longer support, so re-examine instead.
+            Err(e) => {
+                eprintln!("warning: could not read the last scan's ruleset ({e:#}); re-scanning everything");
+                true
+            }
+        }
+    };
+    if changed {
+        return (std::sync::Arc::new(HashMap::new()), true);
+    }
+    (
+        std::sync::Arc::new(store.file_index().await.unwrap_or_default()),
+        false,
+    )
 }
 
 /// One file the walk found, with everything needed to decide whether it is
@@ -334,7 +374,7 @@ async fn scan_ranked(
     events: Option<mpsc::Sender<ScanEvent>>,
     plan: &ScanPlan,
 ) -> Result<Summary> {
-    let index = std::sync::Arc::new(store.file_index().await.unwrap_or_default());
+    let (index, ruleset_changed) = stat_index(store, plan).await;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -468,6 +508,7 @@ async fn scan_ranked(
 
     let mut summary = Summary {
         candidates: total,
+        ruleset_changed,
         ..Summary::default()
     };
     let mut hashes = Vec::new();
@@ -486,6 +527,7 @@ async fn scan_ranked(
                 started_at,
                 files: summary.files,
                 matches: summary.matches,
+                ruleset: plan.ruleset.clone(),
             },
             &hashes,
         )
@@ -699,6 +741,9 @@ pub async fn scan_remote(
                 started_at,
                 files: summary.files,
                 matches: summary.matches,
+                // Remote scans have no stat fast-path to invalidate, so they
+                // record no fingerprint.
+                ruleset: String::new(),
             },
             &hashes,
         )
@@ -902,13 +947,93 @@ mod tests {
                 format!("AWS_KEY=AKIA0123456789ABCDE{}\n", i % 10),
             )
             .unwrap();
+            // Content must differ per file: `file` records are keyed by
+            // content hash, so identical files collapse to one record and the
+            // stat index would only know one of their paths.
             std::fs::write(
                 tree.join("docs").join(format!("d{i}.md")),
-                "just some prose\n",
+                format!("just some prose, document {i}\n"),
             )
             .unwrap();
         }
         (base.join("store"), tree)
+    }
+
+    /// The staleness bug: without a fingerprint, `pull` a new ruleset and
+    /// rescan, and every unchanged file keeps its stat fast-path — so the new
+    /// rules never see them. The fingerprint is what makes the next scan
+    /// distrust "unchanged".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_changed_ruleset_bypasses_the_stat_fast_path() {
+        let (store_dir, tree) = ranked_tree("ruleset", 4);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        let plan_a = ScanPlan {
+            ruleset: "ruleset-aaaa".into(),
+            ..Default::default()
+        };
+        let first = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan_a)
+            .await
+            .unwrap();
+        assert_eq!(first.unchanged, 0, "nothing is unchanged on a first scan");
+        assert!(!first.ruleset_changed);
+
+        // Same rules, nothing touched: the fast-path does its job.
+        let second = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan_a)
+            .await
+            .unwrap();
+        assert_eq!(second.unchanged, second.files, "all files unchanged");
+        assert!(!second.ruleset_changed);
+
+        // New ruleset, nothing touched: every file must be re-examined.
+        let plan_b = ScanPlan {
+            ruleset: "ruleset-bbbb".into(),
+            ..Default::default()
+        };
+        let third = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan_b)
+            .await
+            .unwrap();
+        assert!(third.ruleset_changed, "the ruleset moved");
+        assert_eq!(
+            third.unchanged, 0,
+            "new rules have never seen these files, so none may be skipped"
+        );
+
+        // And once re-scanned under the new rules, the fast-path returns.
+        let fourth = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan_b)
+            .await
+            .unwrap();
+        assert!(!fourth.ruleset_changed);
+        assert_eq!(fourth.unchanged, fourth.files);
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
+
+    /// An empty fingerprint means "the caller didn't say", which must never be
+    /// read as a mismatch — otherwise every scan would invalidate everything.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unknown_fingerprint_never_invalidates() {
+        let (store_dir, tree) = ranked_tree("nofp", 3);
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&store_dir).await.unwrap();
+
+        let known = ScanPlan {
+            ruleset: "ruleset-aaaa".into(),
+            ..Default::default()
+        };
+        scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &known)
+            .await
+            .unwrap();
+
+        let unknown = ScanPlan::default();
+        let out = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &unknown)
+            .await
+            .unwrap();
+        assert!(!out.ruleset_changed);
+        assert_eq!(out.unchanged, out.files, "fast-path still applies");
+
+        let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -920,6 +1045,7 @@ mod tests {
         let plan = ScanPlan {
             model: None,
             budget: Some(Budget::Fraction(0.5)),
+            ..Default::default()
         };
         let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
             .await
@@ -943,6 +1069,7 @@ mod tests {
         let plan = ScanPlan {
             model: None,
             budget: Some(Budget::Fraction(1.0)),
+            ..Default::default()
         };
         let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
             .await
@@ -974,6 +1101,7 @@ mod tests {
         let plan = ScanPlan {
             model: Some(model),
             budget: Some(Budget::Fraction(0.5)),
+            ..Default::default()
         };
         let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
             .await
@@ -1006,6 +1134,7 @@ mod tests {
         let plan = ScanPlan {
             model: None,
             budget: Some(Budget::Fraction(1.0)),
+            ..Default::default()
         };
         let ranked = scan_with_plan(&tree, &pipeline, &b, Some(&store_b), None, &plan)
             .await
@@ -1037,6 +1166,7 @@ mod tests {
         let plan = ScanPlan {
             model: None,
             budget: Some(Budget::Files(2)),
+            ..Default::default()
         };
         let summary = scan_with_plan(&tree, &pipeline, &store, Some(&store_dir), None, &plan)
             .await

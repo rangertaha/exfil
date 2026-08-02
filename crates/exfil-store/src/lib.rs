@@ -973,6 +973,29 @@ impl Store {
             .collect())
     }
 
+    /// The ruleset fingerprint the most recent scan applied, if it recorded
+    /// one. `None` on an empty store, or one written before fingerprints
+    /// existed — in which case the caller must not treat it as a mismatch.
+    pub async fn last_ruleset(&self) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Row {
+            ruleset: Option<String>,
+        }
+        // `started_at` must appear in the projection: SurrealDB rejects an
+        // ORDER BY over a field the selection doesn't include.
+        let mut res = self
+            .db
+            .query("SELECT started_at, ruleset FROM scan ORDER BY started_at DESC LIMIT 1")
+            .await
+            .context("read last scan ruleset")?;
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|r| r.ruleset)
+            .filter(|s| !s.is_empty()))
+    }
+
     /// Training samples for the path model: every recorded file's path, paired
     /// with whether any finding was ever attached to it.
     ///
@@ -1382,6 +1405,14 @@ pub struct ScanRecord {
     pub files: u64,
     /// Total matches found.
     pub matches: u64,
+    /// Fingerprint of the ruleset this scan applied.
+    ///
+    /// Without it, "unchanged since last scan" silently means "unchanged, and
+    /// also never re-examined under whatever rules you have pulled since".
+    /// Recording what each scan actually applied is what lets the next one
+    /// notice the rules moved.
+    #[serde(default)]
+    pub ruleset: String,
 }
 
 #[cfg(test)]
@@ -1489,6 +1520,7 @@ mod tests {
                     started_at: 1700000000,
                     files: 2,
                     matches: 2,
+                    ruleset: String::new(),
                 },
                 &["aaa".to_string(), "bbb".to_string()],
             )
@@ -2036,6 +2068,37 @@ mod tests {
             .unwrap();
         let rec = store.get_record(&fid).await.unwrap().unwrap();
         assert_eq!(rec["cwe_name"], "Use of Hard-coded Credentials");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[tokio::test]
+    async fn scan_ruleset_round_trips_and_reports_the_newest() {
+        let dir = std::env::temp_dir().join(format!("exfil-last-ruleset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open_findings(&dir).await.unwrap();
+
+        // No scans yet: nothing to compare against.
+        assert_eq!(store.last_ruleset().await.unwrap(), None);
+
+        let rec = |started_at: u64, ruleset: &str| ScanRecord {
+            root: "/t".into(),
+            host: "h".into(),
+            started_at,
+            files: 0,
+            matches: 0,
+            ruleset: ruleset.into(),
+        };
+        store.commit_scan(&rec(1, "aaaa"), &[]).await.unwrap();
+        assert_eq!(store.last_ruleset().await.unwrap().as_deref(), Some("aaaa"));
+
+        // The newest scan wins, not merely the last inserted.
+        store.commit_scan(&rec(9, "bbbb"), &[]).await.unwrap();
+        store.commit_scan(&rec(5, "cccc"), &[]).await.unwrap();
+        assert_eq!(store.last_ruleset().await.unwrap().as_deref(), Some("bbbb"));
+
+        // An empty fingerprint reads as "unrecorded", not as a mismatch.
+        store.commit_scan(&rec(20, ""), &[]).await.unwrap();
+        assert_eq!(store.last_ruleset().await.unwrap(), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

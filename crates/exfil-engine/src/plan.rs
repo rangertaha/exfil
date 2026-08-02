@@ -117,6 +117,13 @@ pub struct ScanPlan {
     pub model: Option<Hmm>,
     /// Work limit. `None` scans everything.
     pub budget: Option<Budget>,
+    /// Fingerprint of the ruleset this scan applies (see
+    /// [`setup::ruleset_fingerprint`](crate::setup::ruleset_fingerprint)).
+    ///
+    /// When it differs from what the last scan recorded, the stat fast-path is
+    /// bypassed: an unchanged file has still never been examined by rules that
+    /// were pulled since. Empty means "unknown", which never invalidates.
+    pub ruleset: String,
 }
 
 impl ScanPlan {
@@ -133,6 +140,7 @@ impl std::fmt::Debug for ScanPlan {
         f.debug_struct("ScanPlan")
             .field("model", &self.model.as_ref().map(|m| m.states()))
             .field("budget", &self.budget)
+            .field("ruleset", &self.ruleset)
             .finish()
     }
 }
@@ -208,6 +216,7 @@ mod tests {
         assert!(ScanPlan {
             model: None,
             budget: Some(Budget::Fraction(0.5)),
+            ..Default::default()
         }
         .is_ranked());
     }

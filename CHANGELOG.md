@@ -8,6 +8,30 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **New rules were never applied to unchanged files.** The stat fast-path skips
+  a file whose size and mtime match the last scan — but that promise only holds
+  for the rules that produced the stored findings. `exfil pull` a new dataset,
+  rescan, and every unchanged file stayed unexamined by rules that had never
+  seen it. Each scan now records a fingerprint of the ruleset it applied
+  (`exfil_engine::setup::ruleset_fingerprint`, hashed over built-in plus
+  catalog rule names and patterns, order-independent); when the next scan's
+  fingerprint differs, the fast-path is bypassed and everything is re-examined
+  exactly once, after which it resumes. `Summary::ruleset_changed` reports it,
+  and a path model trained under different rules now warns instead of silently
+  ranking on stale assumptions.
+- A stored path model whose vocabulary outran its emission matrices — a
+  truncated write, a hand edit, a version skew — indexed out of bounds and
+  panicked the scanner mid-walk. Indices are now clamped to the matrix width
+  and an empty vocabulary returns the base rate: a model that cannot be trusted
+  degrades to "I know nothing", it does not take the process down.
+- `--budget`/`--ranked` were accepted and silently ignored for non-path targets
+  (`processes`, `host:port`, URLs), so a request to scan 10% quietly ran a full
+  scan. `Target::honors_plan()` now gates it: the CLI warns and the MCP `scan`
+  tool appends an explicit note. Being misled about coverage is the exact
+  failure this feature exists to prevent.
+
 ### Added
 
 - Probability-ranked scanning (`exfil-hmm`, `exfil hmm`, `scan --budget`). A

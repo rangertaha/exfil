@@ -77,6 +77,18 @@ impl Target {
         }
     }
 
+    /// Whether a [`ScanPlan`](exfil_engine::ScanPlan) means anything for this
+    /// target.
+    ///
+    /// Only a local tree walk can be ranked or cut short: the remote sources
+    /// enumerate a bounded set they have already fetched. Callers must check
+    /// this and say so, rather than accepting a `--budget` and quietly
+    /// ignoring it — a user who asked for a 10% scan and got a full one has
+    /// been misled about both the cost and the coverage.
+    pub fn honors_plan(&self) -> bool {
+        matches!(self, Target::Path(_))
+    }
+
     /// A short noun for what this target yields, for summary lines: `files`,
     /// `processes`, `banner(s)`, `page(s)`.
     pub fn unit(&self) -> &'static str {
@@ -324,5 +336,20 @@ mod tests {
         assert_eq!(Target::Tcp(vec![]).default_mode(), Mode::Active);
         assert_eq!(Mode::Active.to_string(), "active");
         assert_eq!(Target::Processes.unit(), "processes");
+    }
+    #[test]
+    fn only_a_local_walk_honors_a_plan() {
+        assert!(Target::Path(".".into()).honors_plan());
+        // Everything else enumerates a set it already fetched, so a budget or
+        // a ranking has nothing to act on — callers must report that.
+        assert!(!Target::Processes.honors_plan());
+        assert!(!Target::Tcp(vec!["h:22".into()]).honors_plan());
+        assert!(!Target::Web {
+            url: "http://e.test".into(),
+            max_pages: 1,
+            max_depth: 1,
+            driver: None,
+        }
+        .honors_plan());
     }
 }

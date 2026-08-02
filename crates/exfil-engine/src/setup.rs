@@ -94,6 +94,29 @@ pub async fn build_pipeline(config: Option<&Path>) -> Result<BuiltPipeline> {
     Ok(BuiltPipeline { pipeline, skipped })
 }
 
+/// A stable fingerprint of the ruleset a scan would apply: the built-in rules
+/// plus everything in the catalog, hashed by name and pattern.
+///
+/// Findings are whatever the active rules happened to fire on. That makes the
+/// fingerprint the thing that decides whether "unchanged since last scan" is
+/// still a safe reason to skip a file — pull a new dataset and it isn't, because
+/// those rules have never seen that file. Order-independent, so merely
+/// reordering a dataset doesn't force a full rescan.
+pub async fn ruleset_fingerprint(config: Option<&Path>) -> String {
+    let mut entries: Vec<String> = exfil_scan::builtin_rules()
+        .iter()
+        .map(|r| format!("{}={}", r.name, r.pattern))
+        .collect();
+    if let Ok(catalog) = open_catalog(config).await {
+        for rule in catalog.all_rules().await.unwrap_or_default() {
+            entries.push(format!("{}={}", rule.name, rule.pattern));
+        }
+    }
+    entries.sort();
+    entries.dedup();
+    blake3::hash(entries.join("\n").as_bytes()).to_hex()[..16].to_string()
+}
+
 /// Read and concatenate the files listed in a plugin's string-array field
 /// (e.g. `[plugins.clamav] signatures = [...]`). Missing files are skipped
 /// silently; a missing/unreadable config or absent field yields an empty
