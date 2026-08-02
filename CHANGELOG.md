@@ -462,6 +462,13 @@ and this project adheres to
   SSH", removed several commits ago; the crate count said 13 (it is 12); and
   the layer table still listed `exfil-llm`/`exfil-script`. `exfil-hmm` joins the
   layer diagram and the `hmm` commands join the CLI table.
+- **A ranked scan could rank differently depending on how the root was typed.**
+  The path model is trained on the store's canonical `abs` paths, but the walk
+  scored whatever the user passed — so `exfil scan ./tree` fed the model a
+  different token sequence than `exfil scan /abs/path/tree` for the very same
+  file, and a budget then cut somewhere else. The walk now canonicalises once
+  and uses that for both the stat lookup and the model, which also removes a
+  duplicated `canonicalize` call per candidate.
 - **A manifest at the root of any archive or disc image was silently skipped.**
   Expanded files carry a path like `archive.zip!package.json`, where `!` — not
   `/` — separates the container from the entry, so `Path::file_name` returned

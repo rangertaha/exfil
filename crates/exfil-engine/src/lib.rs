@@ -393,11 +393,18 @@ async fn scan_ranked(
             let path = e.path().to_path_buf();
             let md = e.metadata().ok();
             let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-            let changed = is_changed(&path, md.as_ref(), &index);
+            // Canonicalize once and use it for both the stat lookup and the
+            // model. The store keys files by `abs` and the model is trained on
+            // it, so scoring the walk path instead would feed the model a
+            // different token sequence for the same file — and `exfil scan
+            // ./tree` would then rank differently from `exfil scan /abs/tree`,
+            // which is behaviour changing on an input that should not matter.
+            let abs = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let changed = is_changed(&abs, md.as_ref(), &index);
             let score = plan
                 .model
                 .as_ref()
-                .map(|m| m.score(&path.display().to_string()))
+                .map(|m| m.score(&abs.display().to_string()))
                 .unwrap_or(0.5);
             Candidate {
                 path,
@@ -548,10 +555,11 @@ async fn scan_ranked(
 }
 
 /// Whether a file differs from what the last scan recorded, by the same
-/// size+mtime test the streaming walk uses. A file the store has never seen
+/// size+mtime test the streaming walk uses. `abs` must already be canonical —
+/// the store keys its index by canonical path. A file the store has never seen
 /// counts as changed.
 fn is_changed(
-    path: &Path,
+    abs: &Path,
     md: Option<&std::fs::Metadata>,
     index: &HashMap<String, FileStat>,
 ) -> bool {
@@ -567,11 +575,7 @@ fn is_changed(
     if mtime.is_empty() {
         return true;
     }
-    let abs = std::fs::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .display()
-        .to_string();
-    match index.get(&abs) {
+    match index.get(&abs.display().to_string()) {
         Some(prev) => prev.size != md.len() || prev.mtime != mtime,
         None => true,
     }
@@ -1867,5 +1871,53 @@ rule Detect_Evil {
         );
 
         let _ = std::fs::remove_dir_all(store_dir.parent().unwrap());
+    }
+    /// A scan must rank the same way whether the user typed a relative or an
+    /// absolute root. The model is trained on the store's canonical `abs`
+    /// paths, so scoring the walk path instead fed it a different token
+    /// sequence for the same file — and the budget then cut somewhere else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ranking_does_not_depend_on_how_the_root_was_typed() {
+        let (store_dir, tree) = ranked_tree("relpath", 8);
+        let pipeline = default_pipeline().unwrap();
+
+        let mut samples = Vec::new();
+        for i in 0..60 {
+            samples.push((format!("/t/secrets/k{i}.env"), true));
+            samples.push((format!("/t/docs/d{i}.md"), false));
+        }
+        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+
+        // Same tree, reached two ways: canonical, and via a `.` indirection
+        // that makes the walk yield non-canonical paths.
+        let indirect = tree.join(".");
+        let run = |root: std::path::PathBuf, dir: std::path::PathBuf| {
+            let model = model.clone();
+            let pipeline = &pipeline;
+            async move {
+                let store = Store::open_findings(&dir).await.unwrap();
+                let plan = ScanPlan {
+                    model: Some(model),
+                    budget: Some(Budget::Fraction(0.5)),
+                    ..Default::default()
+                };
+                scan_with_plan(&root, pipeline, &store, Some(&dir), None, &plan)
+                    .await
+                    .unwrap()
+            }
+        };
+        let base = store_dir.parent().unwrap().to_path_buf();
+        let a = run(tree.clone(), base.join("store-a")).await;
+        let b = run(indirect, base.join("store-b")).await;
+
+        assert_eq!(
+            a.matches, b.matches,
+            "a relative/indirect root ranked differently: {} vs {}",
+            a.matches, b.matches
+        );
+        assert_eq!(a.files, b.files);
+        assert_eq!(a.skipped, b.skipped);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
