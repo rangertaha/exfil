@@ -37,9 +37,9 @@ Examples:
   exfil scan ~/project             Scan a specific path
   exfil scan processes             Scan local running processes (passive)
   exfil scan example.com:22        Grab & scan a service banner (active)
-  exfil scan github.com:/../exfil  Scan 
-  exfil search -s critical         Show only the critical findings
-  exfil report --format markdown  Render a report of the findings graph
+  exfil scan --budget 20%          Scan the most promising fifth, worst first
+  exfil search severity=critical   Show only the critical findings
+  exfil analyze --format markdown  Render a report of the findings graph
 
 Docs: https://rangertaha.github.io/exfil/";
 
