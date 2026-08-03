@@ -20,7 +20,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use exfil_model::PathModel;
+use exfil_model::PathScorer;
 
 /// How much work a scan may do before it stops.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -138,9 +138,14 @@ impl FromStr for Budget {
 /// The model and budget a scan runs under.
 #[derive(Default)]
 pub struct ScanPlan {
-    /// Trained path model used to rank what to scan first. `None` keeps the
+    /// Path scorer used to rank what to scan first. `None` keeps the
     /// filesystem's own order.
-    pub model: Option<PathModel>,
+    ///
+    /// A trait object rather than the HMM concretely: which model ranks best
+    /// is a question about your corpus, not a property of the engine, and
+    /// `exfil model eval` exists precisely because the answer is sometimes
+    /// "the thirty-line one".
+    pub model: Option<Box<dyn PathScorer>>,
     /// Work limit. `None` scans everything.
     pub budget: Option<Budget>,
     /// Fingerprint of the ruleset this scan applies (see
@@ -218,7 +223,7 @@ pub fn generated_run_name(started_at: u64) -> String {
 impl std::fmt::Debug for ScanPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScanPlan")
-            .field("model", &self.model.as_ref().map(|m| m.states()))
+            .field("model", &self.model.as_ref().map(|m| m.name()))
             .field("budget", &self.budget)
             .field("ruleset", &self.ruleset)
             .finish()

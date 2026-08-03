@@ -27,6 +27,7 @@ use clap_complete::Shell;
 // Store opening and pipeline building live in the engine so the CLI and the MCP
 // server (which exposes the same operations to agents) cannot drift apart.
 use exfil_engine::setup::{build_pipeline, open_catalog, open_findings};
+use exfil_model::PathScorer;
 use exfil_remote::target::{self, Mode as ScanMode, Target};
 
 /// Worked examples shown at the bottom of `exfil --help`. Grouped so a new user
@@ -748,7 +749,10 @@ async fn cmd_scan(
     // The fingerprint rides on every scan, ranked or not: it is what lets the
     // next scan notice the ruleset moved and stop trusting "unchanged".
     let plan = exfil_engine::ScanPlan {
-        model,
+        // The concrete model is what the warnings above inspect — its ruleset,
+        // its calibration. The engine only needs something that scores a path,
+        // so it goes in behind the trait.
+        model: model.map(|m| Box::new(m) as Box<dyn PathScorer>),
         budget,
         ruleset: fingerprint,
         name: name.unwrap_or_default(),

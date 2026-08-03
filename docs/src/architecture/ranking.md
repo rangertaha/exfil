@@ -52,8 +52,8 @@ argument for a Markov chain over a simple frequency table — and it is worth
 measuring, because a bag-of-components baseline is thirty lines and will capture
 a surprising fraction.
 
-The tokenizer ([`model/lib.rs`](../../crates/exfil-model/src/lib.rs)) lowercases each
-path component and replaces the **filename with its extension**:
+The tokenizer ([`model/tokens.rs`](../../crates/exfil-model/src/tokens.rs)) lowercases
+each path component and replaces the **filename with its extension**:
 
 ```text
   /home/tsd/proj/secrets/report-2024-final.pem

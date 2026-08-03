@@ -317,6 +317,32 @@ and this project adheres to
 
 ### Changed
 
+- **`exfil-model` is a set of parts rather than one algorithm.** It was the only
+  crate in the workspace shipping a fixed implementation where the other six
+  ship a trait — `Scanner`, `FileTask`, `Reporter`, `Source`, `RunStage`,
+  `RemoteFs` — and it now ships one too.
+  - **`PathScorer`** is the seam: `name`, `score`, `base_rate`, and two questions
+    a caller must be able to ask before acting on an answer — `has_calibration`
+    (may this be read as a probability, or only as a rank?) and `explain` (what
+    drove it?). `ScanPlan.model` holds `Box<dyn PathScorer>`, so the engine is
+    no longer welded to the HMM.
+  - **`DirPrior` is a real scorer, not a benchmark fixture.** It was a private
+    struct inside the evaluation harness — a working path scorer that could only
+    ever be the *rival* in a comparison, never a model you could scan with.
+    That mattered because on some corpora it **ties** the HMM, and "then use the
+    thirty-line one" was a conclusion the architecture could not express. It is
+    public, tested on its own, and implements the trait.
+  - The harness now ranks `&dyn PathScorer` instead of closing over two concrete
+    types, so comparing a third scorer is passing it in rather than editing
+    `evaluate`.
+  - The crate splits along the lines it already had: `tokens` (what the model
+    observes), `hmm` (a scaled Markov chain that knows nothing about paths),
+    `calibrate` (ratio → probability), `model` (the classifier), `scorer`,
+    `dir_prior`, `eval`. Every item moved verbatim; `lib.rs` is now a facade, so
+    `exfil_model::PathModel` and friends still resolve. `hmm` in particular is a
+    general Baum-Welch/forward-backward/Viterbi implementation that was sitting
+    inside a file about filesystems.
+
 - **`exfil train` is a top-level command**, no longer `exfil model train`.
   Exactly two commands in this tool do work and write a result — `scan`
   produces findings, `train` produces a model — and everything else reads one

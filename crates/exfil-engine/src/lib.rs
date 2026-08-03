@@ -1118,7 +1118,7 @@ mod tests {
         let model = exfil_model::train(&samples, &exfil_model::TrainConfig::default());
 
         let plan = ScanPlan {
-            model: Some(model),
+            model: Some(Box::new(model)),
             budget: Some(Budget::Fraction(0.5)),
             ..Default::default()
         };
@@ -1856,7 +1856,7 @@ rule Detect_Evil {
         let model = exfil_model::train(&samples, &exfil_model::TrainConfig::default());
 
         let plan = ScanPlan {
-            model: Some(model),
+            model: Some(Box::new(model)),
             budget: Some(Budget::Confidence(0.9)),
             ..Default::default()
         };
@@ -1900,7 +1900,7 @@ rule Detect_Evil {
             async move {
                 let store = Store::open_findings(&dir).await.unwrap();
                 let plan = ScanPlan {
-                    model: Some(model),
+                    model: Some(Box::new(model)),
                     budget: Some(Budget::Fraction(0.5)),
                     ..Default::default()
                 };

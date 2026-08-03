@@ -26,11 +26,9 @@
 //! Re-running an evaluation must give the same answer, otherwise you cannot
 //! tell a real improvement from a lucky split.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-use crate::{tokenize, train, PathModel, TrainConfig};
+use crate::{train, DirPrior, PathScorer, TrainConfig};
 
 /// Budgets the curve is measured at, as fractions of the files.
 pub const BUDGETS: &[f64] = &[0.05, 0.10, 0.20, 0.30, 0.50, 0.75];
@@ -148,63 +146,6 @@ fn expected_calibration_error(preds: &[(f64, bool)]) -> f64 {
         .sum()
 }
 
-/// A finding-rate prior over the parent directory — the baseline the sequence
-/// model has to beat.
-///
-/// Deliberately the simplest thing that could work: no sequence, no states,
-/// just "how often did files in a directory of this name carry a finding".
-/// Laplace-smoothed, and falls back to the corpus base rate for a directory it
-/// has never seen.
-struct DirPrior {
-    rate: BTreeMap<String, f64>,
-    base: f64,
-}
-
-impl DirPrior {
-    fn fit(samples: &[(String, bool)]) -> Self {
-        let mut hits: BTreeMap<String, f64> = BTreeMap::new();
-        let mut totals: BTreeMap<String, f64> = BTreeMap::new();
-        let mut found = 0.0;
-        for (path, is_hit) in samples {
-            let key = parent(path);
-            *totals.entry(key.clone()).or_insert(2.0) += 1.0; // Laplace
-            let h = hits.entry(key).or_insert(1.0);
-            if *is_hit {
-                *h += 1.0;
-                found += 1.0;
-            }
-        }
-        let rate = totals
-            .iter()
-            .map(|(k, t)| (k.clone(), hits.get(k).copied().unwrap_or(1.0) / t))
-            .collect();
-        Self {
-            rate,
-            base: if samples.is_empty() {
-                0.5
-            } else {
-                found / samples.len() as f64
-            },
-        }
-    }
-
-    fn score(&self, path: &str) -> f64 {
-        self.rate.get(&parent(path)).copied().unwrap_or(self.base)
-    }
-}
-
-/// The last directory component of a path — what the baseline keys on.
-fn parent(path: &str) -> String {
-    let t = tokenize(path);
-    // tokenize replaces the leaf with its extension, so the component before it
-    // is the parent directory.
-    if t.len() >= 2 {
-        t[t.len() - 2].clone()
-    } else {
-        ".".to_string()
-    }
-}
-
 /// Deterministically assign a path to the test set.
 ///
 /// A hash rather than an RNG so the same corpus always splits the same way:
@@ -254,18 +195,21 @@ pub fn evaluate(samples: &[(String, bool)], cfg: &TrainConfig, holdout: f64) -> 
         return None;
     }
 
-    let model: PathModel = train(&train_set, cfg);
+    // Both contenders are just `PathScorer`s, so the harness compares
+    // implementations rather than one implementation against a rival wired in
+    // by hand. A third scorer joins by being passed here.
+    let model = train(&train_set, cfg);
     let prior = DirPrior::fit(&train_set);
 
-    let rank = |score: &dyn Fn(&str) -> f64| -> Vec<(f64, bool)> {
-        let mut v: Vec<(f64, bool)> = test.iter().map(|(p, f)| (score(p), *f)).collect();
+    let rank = |scorer: &dyn PathScorer| -> Vec<(f64, bool)> {
+        let mut v: Vec<(f64, bool)> = test.iter().map(|(p, f)| (scorer.score(p), *f)).collect();
         // Descending by score; ties by label-independent order so a tie can
         // never be silently resolved in the model's favour.
         v.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         v
     };
-    let by_model = rank(&|p| model.score(p));
-    let by_prior = rank(&|p| prior.score(p));
+    let by_model = rank(&model);
+    let by_prior = rank(&prior);
 
     let points = BUDGETS
         .iter()

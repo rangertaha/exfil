@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use exfil_engine::setup::{build_pipeline, open_catalog, open_findings};
+use exfil_model::PathScorer;
 use exfil_remote::target::{self, Options, Target};
 use exfil_report::{reporter_for, Analysis};
 use exfil_store::Store;
@@ -273,7 +274,9 @@ pub async fn scan(
     // next scan notice the ruleset moved and stop trusting "unchanged".
     let plan = exfil_engine::ScanPlan {
         model: if budget.is_some() {
-            load_model(ctx).await
+            load_model(ctx)
+                .await
+                .map(|m| Box::new(m) as Box<dyn PathScorer>)
         } else {
             None
         },
