@@ -150,6 +150,10 @@ pub struct ScanPlan {
     /// bypassed: an unchanged file has still never been examined by rules that
     /// were pulled since. Empty means "unknown", which never invalidates.
     pub ruleset: String,
+    /// What to call this run. Empty means "generate one from the start time",
+    /// which [`ScanPlan::run_name`] does — every run stays addressable by
+    /// `exfil run` and `search run=…` whether or not `--name` was given.
+    pub name: String,
 }
 
 impl ScanPlan {
@@ -158,6 +162,56 @@ impl ScanPlan {
     /// plain streaming walk is both simpler and faster.
     pub fn is_ranked(&self) -> bool {
         self.model.is_some() || self.budget.is_some()
+    }
+
+    /// The name to record this run under: the caller's, or one derived from
+    /// `started_at` (`2026-08-03T14-22-05`).
+    ///
+    /// Generated rather than left blank because an unnamed run would be
+    /// unreachable from `exfil run get` and `search run=…` — the name is how a
+    /// run is addressed, so there always has to be one. UTC, and second
+    /// resolution, since two scans starting in the same second would collide
+    /// and the newest-wins rule in [`Store::get_run`](exfil_store::Store::get_run)
+    /// resolves that the way a user would expect.
+    pub fn run_name(&self, started_at: u64) -> String {
+        if !self.name.trim().is_empty() {
+            return self.name.trim().to_string();
+        }
+        generated_run_name(started_at)
+    }
+}
+
+/// A run name derived from its start time, `2026-08-03T14-22-05`.
+///
+/// `started_at` is **milliseconds** since the epoch, matching
+/// [`ScanRecord::started_at`](exfil_store::ScanRecord::started_at).
+///
+/// Used whenever the caller named nothing. An unnamed run would be unreachable
+/// from `exfil run get` and `search run=…`, so there always has to be a name;
+/// the start time is the one fact every run has. UTC, at second resolution —
+/// two scans starting in the same second collide, and the newest-wins rule in
+/// [`Store::get_run`](exfil_store::Store::get_run) resolves that the way a
+/// reader would expect.
+pub fn generated_run_name(started_at: u64) -> String {
+    {
+        // Days since the epoch → civil date, by Howard Hinnant's algorithm.
+        let epoch_secs = started_at / 1_000;
+        let (days, secs) = ((epoch_secs / 86_400) as i64, epoch_secs % 86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}-{:02}-{:02}",
+            secs / 3_600,
+            (secs % 3_600) / 60,
+            secs % 60
+        )
     }
 }
 
@@ -298,5 +352,28 @@ mod tests {
         assert_eq!(confidence_limit(&[], 0.9), 0);
         assert_eq!(confidence_limit(&[0.0, 0.0], 0.9), 2);
         assert_eq!(confidence_limit(&scores, 1.0), scores.len());
+    }
+
+    #[test]
+    fn a_generated_run_name_is_the_utc_start_time() {
+        // 2026-08-03T14:22:05Z, in milliseconds — the unit ScanRecord stores.
+        assert_eq!(generated_run_name(1_785_766_925_000), "2026-08-03T14-22-05");
+        // The epoch itself, to pin the civil-date conversion at its boundary.
+        assert_eq!(generated_run_name(0), "1970-01-01T00-00-00");
+    }
+
+    #[test]
+    fn an_explicit_run_name_wins_and_is_trimmed() {
+        let named = ScanPlan {
+            name: "  nightly  ".into(),
+            ..Default::default()
+        };
+        assert_eq!(named.run_name(0), "nightly");
+        // Whitespace only is not a name, so the generated one still applies.
+        let blank = ScanPlan {
+            name: "   ".into(),
+            ..Default::default()
+        };
+        assert_eq!(blank.run_name(0), "1970-01-01T00-00-00");
     }
 }

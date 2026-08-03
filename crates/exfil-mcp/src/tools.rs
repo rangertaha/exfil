@@ -173,6 +173,12 @@ const TOOLS: &[Tool] = &[
                  or a file count. A budgeted result states its coverage and is NOT \
                  evidence the target is clean.",
             ),
+            (
+                "name",
+                "string",
+                "name this run, so later calls can ask for its findings with \
+                 'run=<name>'. Defaults to the start time.",
+            ),
         ],
     },
     // ── Catalog maintenance ──
@@ -382,7 +388,7 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
             } else {
                 Some(raw.parse().map_err(|e| anyhow::anyhow!("{e}"))?)
             };
-            ops::scan(ctx, &text("target"), &opts, budget).await
+            ops::scan(ctx, &text("target"), &opts, budget, &text("name")).await
         }
 
         // Catalog maintenance.

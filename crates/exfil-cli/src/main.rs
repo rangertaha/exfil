@@ -37,8 +37,9 @@ Examples:
   exfil scan ~/project             Scan a specific path
   exfil scan processes             Scan local running processes (passive)
   exfil scan example.com:22        Grab & scan a service banner (active)
-  exfil search severity=critical   Show only the critical findings
-  exfil analyze --format markdown  Render a report of the findings graph
+  exfil scan github.com:/../exfil  Scan 
+  exfil search -s critical         Show only the critical findings
+  exfil report --format markdown  Render a report of the findings graph
 
 Docs: https://rangertaha.github.io/exfil/";
 
@@ -105,6 +106,24 @@ struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+/// What `exfil run` can do with a recorded scan.
+#[derive(Subcommand)]
+enum RunCmd {
+    /// List the recorded runs, newest first (the default).
+    List,
+    /// Show one run's details.
+    Get {
+        /// Run name, as given to `scan --name` or generated from its start time.
+        name: String,
+    },
+    /// Forget a run. Its files and findings stay — another run may still stand
+    /// behind them — so reclaim those with `exfil store gc`.
+    Remove {
+        /// Run name.
+        name: String,
+    },
 }
 
 /// `--color` choices, mapped onto [`progress::ColorChoice`].
@@ -191,6 +210,16 @@ enum Command {
         /// early. Same results as an ordinary scan, reached sooner.
         #[arg(long)]
         ranked: bool,
+        /// Name this run, so `exfil run get <name>`, `exfil analyze -n <name>`
+        /// and `exfil search run=<name>` can address it later. Defaults to the
+        /// start time, so every run stays addressable either way.
+        #[arg(short, long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Inspect the named scan runs recorded in the store.
+    Run {
+        #[command(subcommand)]
+        action: Option<RunCmd>,
     },
     /// Check observed indicators against live network sources (online;
     /// authorized use). `check dns` resolves domains; `check whois` ages them.
@@ -229,6 +258,10 @@ enum Command {
         /// Report format: text, json, markdown, junit, or sarif.
         #[arg(short, long, default_value = "text")]
         format: String,
+        /// Report on one run's findings only. Sugar for the `run=<name>`
+        /// filter, so it composes with a query rather than replacing it.
+        #[arg(short, long, value_name = "RUN")]
+        name: Option<String>,
     },
     /// Annotate stored findings with authoritative MITRE CWE names (run
     /// `exfil pull mitre://cwe` first to download the catalog).
@@ -430,6 +463,7 @@ async fn main() -> Result<()> {
             fail_on,
             budget,
             ranked,
+            name,
         } => {
             cmd_scan(
                 &store_dir,
@@ -443,9 +477,11 @@ async fn main() -> Result<()> {
                 fail_on,
                 budget,
                 ranked,
+                name,
             )
             .await?
         }
+        Command::Run { action } => cmd_run(&store_dir, cfg, action).await?,
         Command::Check { action } => match action {
             CheckCmd::Dns => cmd_check_dns(&store_dir, cfg).await?,
             CheckCmd::Whois { recent_days } => {
@@ -454,7 +490,11 @@ async fn main() -> Result<()> {
         },
         Command::Normalize => cmd_normalize(&store_dir, cfg).await?,
         Command::Search { query, limit } => cmd_search(&store_dir, cfg, query, limit).await?,
-        Command::Analyze { query, format } => cmd_analyze(&store_dir, cfg, query, &format).await?,
+        Command::Analyze {
+            query,
+            format,
+            name,
+        } => cmd_analyze(&store_dir, cfg, run_query(query, name)?, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, cfg, &id).await?,
         Command::Graph { query, format } => cmd_graph(&store_dir, cfg, query, &format).await?,
         Command::Store { action } => match action {
@@ -659,6 +699,7 @@ async fn cmd_scan(
     fail_on: Option<exfil_core::Severity>,
     budget: Option<exfil_engine::Budget>,
     ranked: bool,
+    name: Option<String>,
 ) -> Result<()> {
     // `common` expands to this many ports; configurable per the scan plugin's
     // published schema.
@@ -728,6 +769,7 @@ async fn cmd_scan(
         model,
         budget,
         ruleset: fingerprint,
+        name: name.unwrap_or_default(),
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1577,6 +1619,81 @@ async fn cmd_get(
     match store.get_record(id).await? {
         Some(v) => println!("{}", serde_json::to_string_pretty(&v)?),
         None => println!("no record {id:?}"),
+    }
+    Ok(())
+}
+
+/// Combine an optional `--name <run>` with an optional free-form query into the
+/// single filter string the store understands.
+///
+/// `--name` is sugar for the `run=<name>` filter rather than a separate code
+/// path, so there is one query grammar to learn and one place it is parsed.
+/// The store takes a single filter, so asking for both a run and a query is
+/// rejected out loud instead of silently dropping one of them.
+fn run_query(query: Option<String>, name: Option<String>) -> Result<Option<String>> {
+    match (query, name) {
+        (Some(q), Some(n)) => anyhow::bail!(
+            "--name {n:?} and the query {q:?} cannot be combined \
+             (the store filters on one field at a time)"
+        ),
+        (None, Some(n)) => Ok(Some(format!("run={n}"))),
+        (q, None) => Ok(q),
+    }
+}
+
+/// `exfil run` — list, show, or forget the named scans in the store.
+///
+/// Runs are what `analyze -n` and `report -n` address, so they have to be
+/// discoverable; a name you can set but never enumerate is write-only.
+async fn cmd_run(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    action: Option<RunCmd>,
+) -> Result<()> {
+    let store = open_findings(store_dir, config).await?;
+    match action.unwrap_or(RunCmd::List) {
+        RunCmd::List => {
+            let runs = store.list_runs().await?;
+            if runs.is_empty() {
+                println!("no runs — `exfil scan` records one");
+                return Ok(());
+            }
+            for r in &runs {
+                println!(
+                    "{:<24} {:>6} files {:>6} matches  {}",
+                    exfil_report::fit::elide_right(&r.name, 24),
+                    r.files,
+                    r.matches,
+                    r.root
+                );
+            }
+            println!("{} run(s)", runs.len());
+        }
+        RunCmd::Get { name } => match store.get_run(&name).await? {
+            Some(r) => {
+                println!("name     {}", r.name);
+                println!("root     {}", r.root);
+                println!("host     {}", r.host);
+                println!("started  {}", r.started_at);
+                println!("files    {}", r.files);
+                println!("matches  {}", r.matches);
+                if !r.ruleset.is_empty() {
+                    println!("ruleset  {}", r.ruleset);
+                }
+            }
+            None => println!("no run {name:?}"),
+        },
+        RunCmd::Remove { name } => {
+            let n = store.remove_run(&name).await?;
+            if n == 0 {
+                println!("no run {name:?}");
+            } else {
+                // Say what was *not* deleted: the findings are still there, and
+                // a user who expected `remove` to reclaim space should learn
+                // that from the command rather than from a puzzling `search`.
+                println!("removed {n} run(s) named {name:?} — findings kept; `exfil store gc` reclaims unreferenced ones");
+            }
+        }
     }
     Ok(())
 }

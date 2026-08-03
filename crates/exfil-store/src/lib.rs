@@ -318,10 +318,23 @@ impl Store {
         // `match` can destructure: `split_once('=')` yields Some((key, value))
         // when a '=' exists, and the arms bind those pieces directly.
         let (sql, bind): (String, Option<(String, String)>) = match filter.split_once('=') {
+            // `run` is not a column: findings hang off file content, which
+            // outlives any one run. "Findings from run X" therefore means
+            // findings on a file that run included — a join across
+            // `finding->in_file->file` and `scan->includes->file`, resolved
+            // here so callers never have to know the graph shape.
+            Some((k, v)) if k.trim() == "run" => (
+                "LET $files = array::flatten((SELECT VALUE ->includes->file \
+                 FROM scan WHERE name = $v)); \
+                 SELECT * OMIT id FROM finding \
+                 WHERE ->in_file->file CONTAINSANY $files"
+                    .into(),
+                Some(("v".into(), v.trim().to_string())),
+            ),
             Some((k, v)) => {
                 let k = k.trim();
                 if !["rule", "cwe", "severity", "path"].contains(&k) {
-                    bail!("unknown search field {k:?} (use rule/cwe/severity/path)");
+                    bail!("unknown search field {k:?} (use rule/cwe/severity/path/run)");
                 }
                 (
                     format!("SELECT * OMIT id FROM finding WHERE {k} = $v"),
@@ -338,7 +351,10 @@ impl Store {
         if let Some((k, v)) = bind {
             q = q.bind((k, v));
         }
-        let mut rows: Vec<Match> = q.await.context("search findings")?.take(0)?;
+        // The `run` branch is two statements (a LET then the SELECT), so the
+        // rows come from the second result rather than the first.
+        let idx = usize::from(filter.trim_start().starts_with("run="));
+        let mut rows: Vec<Match> = q.await.context("search findings")?.take(idx)?;
         // Worst-first: highest severity leads so the most serious findings are
         // seen first; unrated findings sort last. Stable, so same-severity
         // findings keep their storage order.
@@ -478,6 +494,48 @@ impl Store {
         let n =
             |rows: Vec<serde_json::Value>| rows.first().and_then(|r| r["n"].as_u64()).unwrap_or(0);
         Ok((n(files), n(scans)))
+    }
+
+    /// Every recorded run, newest first. Backs `exfil run list`.
+    pub async fn list_runs(&self) -> Result<Vec<ScanRecord>> {
+        let mut res = self
+            .db
+            .query("SELECT * OMIT id FROM scan ORDER BY started_at DESC")
+            .await
+            .context("list runs")?;
+        Ok(res.take(0)?)
+    }
+
+    /// One run by name, or `None`. When two runs share a name — nothing stops
+    /// `--name nightly` twice — the most recent wins, which is what "the
+    /// nightly run" means in practice.
+    pub async fn get_run(&self, name: &str) -> Result<Option<ScanRecord>> {
+        let mut res = self
+            .db
+            .query("SELECT * OMIT id FROM scan WHERE name = $n ORDER BY started_at DESC LIMIT 1")
+            .bind(("n", name.to_string()))
+            .await
+            .context("get run")?;
+        let rows: Vec<ScanRecord> = res.take(0)?;
+        Ok(rows.into_iter().next())
+    }
+
+    /// Forget every run with this name, returning how many were removed.
+    ///
+    /// Only the run records and their `includes` edges go: the files and
+    /// findings they point at are shared with other runs and are left for
+    /// [`Store::gc`] to collect once nothing references them. Removing a run
+    /// must not silently delete findings another run still stands behind.
+    pub async fn remove_run(&self, name: &str) -> Result<u64> {
+        let mut res = self
+            .db
+            .query("SELECT count() AS n FROM scan WHERE name = $n GROUP ALL")
+            .query("DELETE scan WHERE name = $n")
+            .bind(("n", name.to_string()))
+            .await
+            .context("remove run")?;
+        let rows: Vec<serde_json::Value> = res.take(0)?;
+        Ok(rows.first().and_then(|r| r["n"].as_u64()).unwrap_or(0))
     }
 
     /// Store a dataset and its rules in the catalog: upsert the dataset record
@@ -1395,11 +1453,16 @@ pub struct Graph {
 /// One scan run: the root, host, and result counters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanRecord {
+    /// What this run is called. Set by `scan --name`, or generated from the
+    /// start time when the caller gives none, so every run is addressable —
+    /// a name you never chose is still better than no handle at all.
+    #[serde(default)]
+    pub name: String,
     /// The directory tree that was scanned.
     pub root: String,
     /// Hostname the scan ran on.
     pub host: String,
-    /// Seconds since the Unix epoch when the scan started.
+    /// **Milliseconds** since the Unix epoch when the scan started.
     pub started_at: u64,
     /// Regular files recorded.
     pub files: u64,
@@ -1515,6 +1578,42 @@ mod tests {
         store
             .commit_scan(
                 &ScanRecord {
+                    name: "t1".into(),
+                    root: "/tree".into(),
+                    host: "testhost".into(),
+                    started_at: 1700000000,
+                    files: 2,
+                    matches: 2,
+                    ruleset: String::new(),
+                },
+                &["aaa".to_string(), "bbb".to_string()],
+            )
+            .await
+            .unwrap();
+
+        // `run=` reaches findings through the graph, not a column.
+        assert_eq!(store.search_findings("run=t1").await.unwrap().len(), 2);
+        assert_eq!(store.search_findings("run=nope").await.unwrap().len(), 0);
+
+        // The run is listable and addressable by the name it was given.
+        let runs = store.list_runs().await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].name, "t1");
+        assert_eq!(store.get_run("t1").await.unwrap().unwrap().files, 2);
+        assert!(store.get_run("nope").await.unwrap().is_none());
+
+        // Removing a run drops the run record, not the findings behind it:
+        // another run may still stand behind the same files.
+        assert_eq!(store.remove_run("t1").await.unwrap(), 1);
+        assert!(store.list_runs().await.unwrap().is_empty());
+        assert_eq!(store.search_findings("").await.unwrap().len(), 2);
+        assert_eq!(store.remove_run("t1").await.unwrap(), 0);
+
+        // Put it back so the assertions below see the scan they expect.
+        store
+            .commit_scan(
+                &ScanRecord {
+                    name: "t1".into(),
                     root: "/tree".into(),
                     host: "testhost".into(),
                     started_at: 1700000000,
@@ -2081,6 +2180,7 @@ mod tests {
         assert_eq!(store.last_ruleset().await.unwrap(), None);
 
         let rec = |started_at: u64, ruleset: &str| ScanRecord {
+            name: format!("r{started_at}"),
             root: "/t".into(),
             host: "h".into(),
             started_at,

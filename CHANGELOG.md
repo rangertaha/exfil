@@ -10,6 +10,26 @@ and this project adheres to
 
 ### Added
 
+- **Named scan runs.** `exfil scan --name nightly` labels a run; `exfil run
+  list|get|remove` enumerates them, and `exfil analyze -n nightly` and
+  `exfil search run=nightly` ask for one run's findings. A run given no name is
+  still recorded under one generated from its start time
+  (`2026-08-03T14-22-05`), so every run stays addressable — a name you did not
+  choose beats no handle at all.
+  - `run=` is not a column. Findings hang off file *content*, which outlives
+    any single run, so "findings from run X" is a join across
+    `finding->in_file->file` and `scan->includes->file`. The store resolves it,
+    so no caller has to know the graph shape.
+  - `--name` is sugar for the `run=` filter rather than a second code path, so
+    there is one query grammar; combining it with a query is rejected out loud
+    instead of silently dropping one.
+  - `run remove` drops the run record and its `includes` edges only. The files
+    and findings stay, because another run may still stand behind them, and the
+    command says so rather than leaving a puzzling `search` result behind.
+    `exfil store gc` reclaims what nothing references.
+  - The MCP `scan` tool takes the same `name`, so an agent can scan and then
+    ask for exactly what that scan found.
+
 - The path model's tokenizer now treats `!` as a path separator, so a file
   expanded from a container contributes the container as its own observation
   (`archive.zip`, `inner`, `<ext:py>`) rather than one opaque token. "This came

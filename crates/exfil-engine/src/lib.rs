@@ -301,6 +301,7 @@ async fn scan_streaming(
     store
         .commit_scan(
             &ScanRecord {
+                name: plan.run_name(started_at),
                 root: root.display().to_string(),
                 host,
                 started_at,
@@ -541,6 +542,7 @@ async fn scan_ranked(
     store
         .commit_scan(
             &ScanRecord {
+                name: plan.run_name(started_at),
                 root: root.display().to_string(),
                 host,
                 started_at,
@@ -752,6 +754,7 @@ pub async fn scan_remote(
     store
         .commit_scan(
             &ScanRecord {
+                name: plan::generated_run_name(started_at),
                 root: format!("{host}:{root}"),
                 host,
                 started_at,

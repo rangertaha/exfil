@@ -260,6 +260,7 @@ pub async fn scan(
     spec: &str,
     opts: &Options,
     budget: Option<exfil_engine::Budget>,
+    name: &str,
 ) -> Result<String> {
     let target = target::parse(Some(spec), opts)?;
     let built = build_pipeline(ctx.config()).await?;
@@ -278,6 +279,7 @@ pub async fn scan(
         },
         budget,
         ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
+        name: name.to_string(),
     };
 
     let ignored_budget = budget.is_some() && !target.honors_plan();
