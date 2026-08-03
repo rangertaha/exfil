@@ -447,7 +447,8 @@ and this project adheres to
 ### Removed
 
 - `exfil server` and the HTTP/GraphQL API behind it (`crates/exfil-cli/src/
-  server.rs`, `graphql.rs`, and the `async-graphql` dependency). A long-lived
+  server.rs`, `graphql.rs`, and the direct `async-graphql` dependency — the
+  crate is still built, as `surrealdb-core` depends on it). A long-lived
   network listener is a standing attack surface and a second, drifting way to
   ask the same questions the CLI and MCP already answer; the CLI's tokio
   features narrow back to the workspace default with it. The desktop app was
