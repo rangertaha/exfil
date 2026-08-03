@@ -28,7 +28,7 @@ exfil-source = { path = "crates/exfil-source" }
 exfil-remote = { path = "crates/exfil-remote" }
 exfil-report = { path = "crates/exfil-report" }
 exfil-mcp = { path = "crates/exfil-mcp" }
-exfil-hmm = { path = "crates/exfil-hmm" }
+exfil-model = { path = "crates/exfil-model" }
 exfil-engine = { path = "crates/exfil-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

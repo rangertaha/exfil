@@ -45,7 +45,7 @@ exfil/
     exfil-scan/     ✅ Scanner trait + ScanTask: regex, supply-chain, archive-expand, tree-sitter AST, taint, IOC, ClamAV, YARA
     exfil-source/   Source trait + registry: builtin, file, http (reqwest)
     exfil-report/   ✅ Reporter trait: text, json, markdown, junit, sarif + directory hotspots
-    exfil-hmm/      ✅ path model (two-chain HMM) ranking what a scan looks at first
+    exfil-model/    ✅ path model (two-chain HMM) ranking what a scan looks at first
     exfil-config/   ✅ TOML config with embedded default + per-plugin decode
     exfil-mcp/      ✅ MCP server (stdio JSON-RPC, hand-rolled): 30 tools over the whole CLI surface
     exfil-engine/   ✅ orchestration: walk, incremental, expand, commit; run-level stages (fetch→scan→report);

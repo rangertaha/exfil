@@ -247,7 +247,7 @@ const TOOLS: &[Tool] = &[
     },
     // ── The path model ──
     Tool {
-        name: "hmm_train",
+        name: "model_train",
         access: Access::Write,
         description: "Train the path model that ranks what a scan looks at first, on the \
                       scans already in this store. Every recorded file is a sample; whether \
@@ -262,14 +262,14 @@ const TOOLS: &[Tool] = &[
         ],
     },
     Tool {
-        name: "hmm_score",
+        name: "model_score",
         access: Access::Read,
         description: "The trained model's P(finding) for a path, with each path component's \
                       contribution in log-odds. The path need not exist.",
         params: &[("path", "string", "path to score")],
     },
     Tool {
-        name: "hmm_eval",
+        name: "model_eval",
         access: Access::Read,
         description: "Measure whether the path model actually helps: fit on part of the stored \
                       scans and report how much of the findings a budgeted scan recovers on the \
@@ -285,7 +285,7 @@ const TOOLS: &[Tool] = &[
         ],
     },
     Tool {
-        name: "hmm_status",
+        name: "model_status",
         access: Access::Read,
         description: "Summarize the trained path model, and warn when it was trained under a \
                       different ruleset than this store now applies.",
@@ -405,20 +405,20 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
         }
 
         // The path model.
-        "hmm_train" => {
-            ops::hmm_train(
+        "model_train" => {
+            ops::model_train(
                 ctx,
                 number("states").unwrap_or(8),
                 number("iterations").unwrap_or(30),
             )
             .await
         }
-        "hmm_score" => ops::hmm_score(ctx, &text("path")).await,
-        "hmm_eval" => {
+        "model_score" => ops::model_score(ctx, &text("path")).await,
+        "model_eval" => {
             let holdout = args.get("holdout").and_then(Value::as_f64).unwrap_or(0.3);
-            ops::hmm_eval(ctx, holdout, number("states").unwrap_or(8)).await
+            ops::model_eval(ctx, holdout, number("states").unwrap_or(8)).await
         }
-        "hmm_status" => ops::hmm_status(ctx).await,
+        "model_status" => ops::model_status(ctx).await,
 
         // Store maintenance.
         "gc" => ops::gc(ctx).await,

@@ -197,7 +197,7 @@ flowchart TD
 | ① Binary | `exfil-cli` | The one executable. Parses arguments, wires every other crate together. Depends on all of them. |
 | ② Remote | `exfil-remote` | Non-local scan sources behind the engine's `RemoteFs` trait — running processes, TCP banners, web crawls — plus the shared target dispatch. |
 | ③ Orchestration | `exfil-engine` | Drives a whole scan: walk the tree, run the pipeline per file, persist results. The subject of [page 2](./engine.md). |
-| ④ Capabilities | `exfil-scan`, `-source`, `-report`, `-mcp`, `-hmm` | The actual features. Each is independent and plugs into the store or the pipeline. |
+| ④ Capabilities | `exfil-scan`, `-source`, `-report`, `-mcp`, `-model` | The actual features. Each is independent and plugs into the store or the pipeline. |
 | ⑤ Storage | `exfil-store` | The findings graph — SurrealDB. Everything that produces or reads results goes through here. [Page 6](./store.md). |
 | ⑥ Primitives | `exfil-task`, `exfil-config` | The plugin-DAG machinery and config loading. `exfil-task` is [page 1](./pipeline.md). |
 | ⑦ Foundation | `exfil-core` | The shared types every layer speaks: `Match`, `Rule`, `Severity`, `FileMeta`, `Symbol`, `VirtualFile`. Depends on nothing. |

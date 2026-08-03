@@ -58,10 +58,10 @@ are.
 
 | Command | What it does |
 |---|---|
-| `exfil hmm train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
-| `exfil hmm score <path>` | The model's `P(finding)` for a path, with each component's contribution |
-| `exfil hmm status` | States, vocabulary, base rate, and the ruleset it was trained under |
-| `exfil hmm eval` | Measure whether the model actually helps — recall at each budget, against a directory-frequency baseline and blind selection |
+| `exfil model train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
+| `exfil model score <path>` | The model's `P(finding)` for a path, with each component's contribution |
+| `exfil model status` | States, vocabulary, base rate, and the ruleset it was trained under |
+| `exfil model eval` | Measure whether the model actually helps — recall at each budget, against a directory-frequency baseline and blind selection |
 
 Then bound the work:
 
@@ -84,7 +84,7 @@ budget is not, so the file set it produced is recorded in the scan record.
 > evidence a tree is clean. `--ranked` on its own has no such caveat: it scans
 > everything, just worst-first, so `--fail-on` trips sooner.
 
-> **Check before you trust it.** `exfil hmm eval` holds out part of your stored
+> **Check before you trust it.** `exfil model eval` holds out part of your stored
 > scans, ranks them with a model fitted on the rest, and reports how much it
 > recovers at each budget — next to a plain directory-frequency prior. If the
 > baseline ties, ranked scanning still beats walk order, but the sequence model

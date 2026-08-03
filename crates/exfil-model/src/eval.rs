@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{tokenize, train, Hmm, TrainConfig};
+use crate::{tokenize, train, PathModel, TrainConfig};
 
 /// Budgets the curve is measured at, as fractions of the files.
 pub const BUDGETS: &[f64] = &[0.05, 0.10, 0.20, 0.30, 0.50, 0.75];
@@ -254,7 +254,7 @@ pub fn evaluate(samples: &[(String, bool)], cfg: &TrainConfig, holdout: f64) -> 
         return None;
     }
 
-    let model: Hmm = train(&train_set, cfg);
+    let model: PathModel = train(&train_set, cfg);
     let prior = DirPrior::fit(&train_set);
 
     let rank = |score: &dyn Fn(&str) -> f64| -> Vec<(f64, bool)> {

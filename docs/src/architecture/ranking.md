@@ -1,4 +1,4 @@
-# 9 · Ranked scanning (`hmm` · `plan`)
+# 9 · Ranked scanning (`model` · `plan`)
 
 ← [Integrations](./integrations.md) · Next: [Rust primer →](./rust-primer.md)
 
@@ -7,7 +7,7 @@ Everything up to here scans **everything**. This page is about scanning the
 
 Two pieces:
 
-- **`exfil-hmm`** — a hidden Markov model over filesystem paths, trained on the
+- **`exfil-model`** — a hidden Markov model over filesystem paths, trained on the
   scans already in your graph, that estimates `P(finding | path)`.
 - **`exfil-engine::plan`** — the [`Budget`](#budgets) and [`ScanPlan`](#the-plan)
   that turn that estimate into an ordering and a stopping rule.
@@ -52,7 +52,7 @@ argument for a Markov chain over a simple frequency table — and it is worth
 measuring, because a bag-of-components baseline is thirty lines and will capture
 a surprising fraction.
 
-The tokenizer ([`hmm/lib.rs`](../../crates/exfil-hmm/src/lib.rs)) lowercases each
+The tokenizer ([`model/lib.rs`](../../crates/exfil-model/src/lib.rs)) lowercases each
 path component and replaces the **filename with its extension**:
 
 ```text
@@ -263,9 +263,9 @@ ruleset **warns** rather than silently ranking on stale assumptions.
 
 ```sh
 exfil scan ./project              # populate the graph first
-exfil hmm train                   # fit on what's there
-exfil hmm status                  # states, vocabulary, base rate, ruleset
-exfil hmm score src/auth/key.pem  # probability + per-component log-odds
+exfil model train                   # fit on what's there
+exfil model status                  # states, vocabulary, base rate, ruleset
+exfil model score src/auth/key.pem  # probability + per-component log-odds
 
 exfil scan ./project --ranked        # worst-first, still scans everything
 exfil scan ./project --budget 20%    # worst-first, stops at 20%
@@ -313,9 +313,9 @@ Two details carry the weight:
   asserts the two orderings match — calibration must never cost ranking quality.
 
 When there is too little data to hold anything out, the map stays at the
-identity and `hmm status` says `uncalibrated` rather than pretending.
+identity and `model status` says `uncalibrated` rather than pretending.
 
-Quality is measured, not asserted. `hmm eval` reports:
+Quality is measured, not asserted. `model eval` reports:
 
 - **Brier score** — mean squared error between predicted probability and
   outcome. Always guessing the base rate scores about 0.25.
@@ -332,10 +332,10 @@ which is a statement you can act on.
 
 ---
 
-## 10. Measuring it: `exfil hmm eval` {#eval}
+## 10. Measuring it: `exfil model eval` {#eval}
 
 The claim is "at N% of the work you recover far more than N% of the findings".
-[`hmm/eval.rs`](../../crates/exfil-hmm/src/eval.rs) checks it, and is built to
+[`model/eval.rs`](../../crates/exfil-model/src/eval.rs) checks it, and is built to
 avoid the three ways you can fool yourself:
 
 - **Out of sample.** Paths are split train/test by a deterministic hash of the
@@ -349,7 +349,7 @@ avoid the three ways you can fool yourself:
   floor.
 
 ```text
-$ exfil hmm eval
+$ exfil model eval
 trained on 109 path(s), measured on 51 held out (14 with findings)
 
    budget    model  baseline  random   lift
@@ -365,7 +365,7 @@ not earning its complexity on this corpus.
 
 **Read that verdict carefully — it is the common case.** On a corpus where the
 directory name alone explains the label (`secrets/` always has findings,
-`docs/` never does), a frequency table matches the HMM exactly. The 3.2× lift
+`docs/` never does), a frequency table matches the path model exactly. The 3.2× lift
 over blind selection is real and useful; the *sequence modelling* contributes
 nothing.
 
@@ -381,7 +381,7 @@ better than chance. A model that conditions on the prefix separates them. A test
 (`context_dependent_corpus_is_where_the_sequence_model_wins`) pins exactly that,
 and the complementary test pins the case where the baseline ties.
 
-So the honest position: **run `hmm eval` on your own corpus before trusting
+So the honest position: **run `model eval` on your own corpus before trusting
 `--budget`.** If it reports the baseline tying, ranked scanning still helps a
 great deal over scanning in walk order — but a much simpler model would do the
 same job, and that is worth knowing.
@@ -391,7 +391,7 @@ same job, and that is worth knowing.
 Stated plainly, because a probability that looks authoritative and isn't is
 worse than no probability at all:
 
-- **The sequence model does not always earn its complexity.** `exfil hmm eval`
+- **The sequence model does not always earn its complexity.** `exfil model eval`
   measures this and says so out loud — see below.
 
 ---

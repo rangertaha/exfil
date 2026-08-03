@@ -66,7 +66,7 @@ DEFINE TABLE IF NOT EXISTS finding SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS event SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS scan SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS plugin_setting SCHEMALESS;
-DEFINE TABLE IF NOT EXISTS hmm_model SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS path_model SCHEMALESS;
 
 -- graph edges connecting the records
 DEFINE TABLE IF NOT EXISTS has_ast TYPE RELATION FROM file TO ast;
@@ -922,41 +922,41 @@ impl Store {
     /// opaque means the model's own shape can change without a store
     /// migration. Lives in the catalog, so it survives `store clean` like every
     /// other trained/downloaded artifact.
-    pub async fn upsert_hmm(&self, name: &str, model: &serde_json::Value) -> Result<()> {
+    pub async fn upsert_path_model(&self, name: &str, model: &serde_json::Value) -> Result<()> {
         self.db
-            .query("UPSERT type::thing('hmm_model', $k) CONTENT { model: $m }")
+            .query("UPSERT type::thing('path_model', $k) CONTENT { model: $m }")
             .bind(("k", name.to_string()))
             .bind(("m", model.clone()))
             .await
-            .with_context(|| format!("upsert hmm model {name:?}"))?
+            .with_context(|| format!("upsert path model {name:?}"))?
             .check()
-            .context("hmm model upsert failed")?;
+            .context("path model upsert failed")?;
         Ok(())
     }
 
     /// Load a trained path model by name, or `None` when none has been trained.
-    pub async fn load_hmm(&self, name: &str) -> Result<Option<serde_json::Value>> {
+    pub async fn load_path_model(&self, name: &str) -> Result<Option<serde_json::Value>> {
         #[derive(Deserialize)]
         struct Row {
             model: serde_json::Value,
         }
         let mut res = self
             .db
-            .query("SELECT model FROM type::thing('hmm_model', $k)")
+            .query("SELECT model FROM type::thing('path_model', $k)")
             .bind(("k", name.to_string()))
             .await
-            .context("load hmm model")?;
+            .context("load path model")?;
         let rows: Vec<Row> = res.take(0)?;
         Ok(rows.into_iter().next().map(|r| r.model))
     }
 
     /// The names of every stored path model.
-    pub async fn list_hmm(&self) -> Result<Vec<String>> {
+    pub async fn list_path_models(&self) -> Result<Vec<String>> {
         let mut res = self
             .db
-            .query("SELECT type::string(id) AS rid FROM hmm_model")
+            .query("SELECT type::string(id) AS rid FROM path_model")
             .await
-            .context("list hmm models")?;
+            .context("list path models")?;
         #[derive(Deserialize)]
         struct Row {
             rid: String,

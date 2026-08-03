@@ -325,16 +325,16 @@ pub async fn scan(
 
 /// The trained path model from the catalog, if any. A missing or undecodable
 /// model is not an error: ranking degrades to walk order.
-async fn load_model(ctx: &Ctx) -> Option<exfil_hmm::Hmm> {
+async fn load_model(ctx: &Ctx) -> Option<exfil_model::PathModel> {
     let catalog = ctx.catalog().await.ok()?;
-    let value = catalog.load_hmm("default").await.ok()??;
+    let value = catalog.load_path_model("default").await.ok()??;
     serde_json::from_value(value).ok()
 }
 
 // ── The path model ───────────────────────────────────────────────────────────
 
 /// Train the path model on the scans already in the store.
-pub async fn hmm_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<String> {
+pub async fn model_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<String> {
     let samples = ctx.findings().await?.training_paths().await?;
     if samples.is_empty() {
         return Ok("nothing to train on — run a scan first".into());
@@ -355,16 +355,16 @@ pub async fn hmm_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<St
             samples.len()
         ));
     }
-    let cfg = exfil_hmm::TrainConfig {
+    let cfg = exfil_model::TrainConfig {
         states: states.max(1),
         iterations: iterations.max(1),
         ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
-        ..exfil_hmm::TrainConfig::default()
+        ..exfil_model::TrainConfig::default()
     };
-    let model = exfil_hmm::train(&samples, &cfg);
+    let model = exfil_model::train(&samples, &cfg);
     ctx.catalog()
         .await?
-        .upsert_hmm("default", &serde_json::to_value(&model)?)
+        .upsert_path_model("default", &serde_json::to_value(&model)?)
         .await?;
     Ok(format!(
         "trained on {} path(s), {positives} with findings ({:.1}% base rate): \
@@ -377,9 +377,9 @@ pub async fn hmm_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<St
 }
 
 /// Score one path under the trained model, with the per-component evidence.
-pub async fn hmm_score(ctx: &Ctx, path: &str) -> Result<String> {
+pub async fn model_score(ctx: &Ctx, path: &str) -> Result<String> {
     let Some(model) = load_model(ctx).await else {
-        return Ok("no trained model — run hmm_train first".into());
+        return Ok("no trained model — run model_train first".into());
     };
     let mut out = format!(
         "{path}\nP(finding) = {:.4}   (base rate {:.4})\n\ncomponent contributions (log-odds):\n",
@@ -388,7 +388,7 @@ pub async fn hmm_score(ctx: &Ctx, path: &str) -> Result<String> {
     );
     let obs = model.observe(path);
     for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
-        let unseen = if obs.get(i) == Some(&exfil_hmm::UNK) {
+        let unseen = if obs.get(i) == Some(&exfil_model::UNK) {
             "  (unseen)"
         } else {
             ""
@@ -400,17 +400,17 @@ pub async fn hmm_score(ctx: &Ctx, path: &str) -> Result<String> {
 
 /// Measure the model out of sample: recall-at-budget against a
 /// directory-frequency baseline and against blind selection.
-pub async fn hmm_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String> {
+pub async fn model_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String> {
     let samples = ctx.findings().await?.training_paths().await?;
     if samples.is_empty() {
         return Ok("nothing to evaluate — run a scan first".into());
     }
-    let cfg = exfil_hmm::TrainConfig {
+    let cfg = exfil_model::TrainConfig {
         states: states.max(1),
         ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
-        ..exfil_hmm::TrainConfig::default()
+        ..exfil_model::TrainConfig::default()
     };
-    let Some(report) = exfil_hmm::eval::evaluate(&samples, &cfg, holdout) else {
+    let Some(report) = exfil_model::eval::evaluate(&samples, &cfg, holdout) else {
         return Ok(format!(
             "{} path(s), but the split leaves nothing to measure — a corpus needs \
              findings on both sides of it",
@@ -451,9 +451,9 @@ pub async fn hmm_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String> 
 }
 
 /// Summarize the trained path model.
-pub async fn hmm_status(ctx: &Ctx) -> Result<String> {
+pub async fn model_status(ctx: &Ctx) -> Result<String> {
     let Some(model) = load_model(ctx).await else {
-        return Ok("no trained model — run hmm_train first".into());
+        return Ok("no trained model — run model_train first".into());
     };
     let current = exfil_engine::setup::ruleset_fingerprint(ctx.config()).await;
     let stale = !model.ruleset.is_empty() && model.ruleset != current;

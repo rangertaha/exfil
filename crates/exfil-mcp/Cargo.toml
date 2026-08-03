@@ -10,7 +10,7 @@ exfil-store = { workspace = true }
 exfil-scan = { workspace = true }
 exfil-source = { workspace = true }
 exfil-engine = { workspace = true }
-exfil-hmm = { workspace = true }
+exfil-model = { workspace = true }
 exfil-remote = { workspace = true }
 exfil-report = { workspace = true }
 anyhow = { workspace = true }

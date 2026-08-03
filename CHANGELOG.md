@@ -268,6 +268,14 @@ and this project adheres to
 
 ### Changed
 
+- `exfil hmm` is now **`exfil model`**, and the `exfil-hmm` crate is
+  `exfil-model`. The command names what it is — the path model that ranks a
+  scan — rather than the algorithm behind it, which is an implementation
+  detail the model is free to change. The `Hmm` type is `PathModel`, the MCP
+  tools are `model_train`/`model_score`/`model_eval`/`model_status`, and the
+  catalog table `hmm_model` is `path_model`. **A model trained before this
+  change is not found under the new table name; re-run `exfil model train`.**
+
 - Dropped the `is-root` dependency for `rustix` (already in the tree, safe,
   maintained). `is-root`'s entire unix implementation was one call into
   `users`, an unmaintained crate carrying three RUSTSEC advisories
@@ -413,6 +421,21 @@ and this project adheres to
   lookup, with a dependency-free date parser. Online, opt-in.
 
 ### Removed
+
+- `exfil server` and the HTTP/GraphQL API behind it (`crates/exfil-cli/src/
+  server.rs`, `graphql.rs`, and the `async-graphql` dependency). A long-lived
+  network listener is a standing attack surface and a second, drifting way to
+  ask the same questions the CLI and MCP already answer; the CLI's tokio
+  features narrow back to the workspace default with it. The desktop app was
+  the only consumer, so it now **serves its own API in-process**
+  (`app/src-tauri/src/server.rs`) on the same `127.0.0.1:8080` — same
+  `/health`, `/stats` and `/findings` routes and the same JSON, but with no
+  child process to spawn or supervise, no `exfil` binary needed on `PATH` (and
+  so no `EXFIL_BIN`), and nothing listening unless the app is open. It resolves
+  its store through `exfil_engine::setup::open_findings`, the same path the CLI
+  takes, so both honour a `[database]` override identically; `EXFIL_STORE`
+  points it at a specific store. GraphQL is not reproduced — the dashboard
+  never used it.
 
 - `crates/exfil-remote/top-ports.txt`, the port ranking derived from nmap's
   `nmap-services` data. It was retained under MIT with an in-file notice, but

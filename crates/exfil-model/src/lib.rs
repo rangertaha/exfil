@@ -92,7 +92,7 @@ pub fn tokenize(path: &str) -> Vec<String> {
 
 /// One trained Markov chain over path tokens: the parameters Baum-Welch fits.
 ///
-/// Two of these make a classifier — see [`Hmm`].
+/// Two of these make a classifier — see [`PathModel`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
     /// Number of hidden states.
@@ -309,7 +309,7 @@ impl Chain {
 /// Fitting a chain per class makes the label a first-class part of training,
 /// and scoring becomes a likelihood ratio.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Hmm {
+pub struct PathModel {
     /// Token → observation index. Index [`UNK`] is reserved.
     pub vocab: BTreeMap<String, usize>,
     /// Chain fitted to paths that produced a finding.
@@ -326,7 +326,7 @@ pub struct Hmm {
     /// "what those rules happened to fire on".
     #[serde(default)]
     pub ruleset: String,
-    /// Mean log-likelihood per path under the positive chain, for `hmm status`.
+    /// Mean log-likelihood per path under the positive chain, for `model status`.
     #[serde(default)]
     pub log_likelihood: f64,
     /// Platt scaling `(slope, intercept)` mapping the raw log-odds onto a
@@ -347,7 +347,7 @@ fn identity_platt() -> (f64, f64) {
     (1.0, 0.0)
 }
 
-impl Hmm {
+impl PathModel {
     /// Number of hidden states per chain.
     pub fn states(&self) -> usize {
         self.positive.states
@@ -472,14 +472,14 @@ impl Default for TrainConfig {
 
 /// Fit a classifier to `samples` — `(path, produced_a_finding)` pairs, which is
 /// exactly what the findings graph already holds.
-pub fn train(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
+pub fn train(samples: &[(String, bool)], cfg: &TrainConfig) -> PathModel {
     let mut model = train_chains_only(samples, cfg);
     model.platt = fit_calibration(samples, cfg, &model);
     model
 }
 
 /// Fit both chains and the prior, leaving the calibration at identity.
-fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
+fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> PathModel {
     let vocab = build_vocab(samples, cfg.vocab_cap);
     let v = vocab.len() + 1; // +1 for UNK at index 0
     let s = cfg.states.max(1);
@@ -525,7 +525,7 @@ fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
             / positives.len() as f64
     };
 
-    Hmm {
+    PathModel {
         vocab,
         positive,
         negative,
@@ -549,7 +549,7 @@ fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> Hmm {
 /// other, and the calibration is learned from *those* predictions — an honest
 /// estimate of how confident the model is on paths it has not seen. The map is
 /// then applied to the full-data chains.
-fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig, full: &Hmm) -> (f64, f64) {
+fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig, full: &PathModel) -> (f64, f64) {
     // A cheap deterministic split; same idea as the evaluation harness.
     let held = |p: &str| -> bool {
         let mut h: u64 = 1469598103934665603;
@@ -762,9 +762,9 @@ mod tests {
 
     #[test]
     fn training_separates_risky_paths_from_safe_ones() {
-        let hmm = train(&corpus(), &TrainConfig::default());
-        let risky = hmm.score("/home/u/secrets/app99/key.pem");
-        let safe = hmm.score("/usr/share/doc/pkg99/readme.md");
+        let model = train(&corpus(), &TrainConfig::default());
+        let risky = model.score("/home/u/secrets/app99/key.pem");
+        let safe = model.score("/usr/share/doc/pkg99/readme.md");
         assert!(
             risky > safe,
             "risky {risky:.3} should outrank safe {safe:.3}"
@@ -787,11 +787,11 @@ mod tests {
             samples.push((format!("{prefix}/docs/d{i}.md"), false));
             samples.push((format!("{prefix}/vendor/v{i}.js"), false));
         }
-        let hmm = train(&samples, &TrainConfig::default());
+        let model = train(&samples, &TrainConfig::default());
 
-        let risky = hmm.score(&format!("{prefix}/secrets/new.env"));
-        let safe = hmm.score(&format!("{prefix}/docs/new.md"));
-        let vendor = hmm.score(&format!("{prefix}/vendor/new.js"));
+        let risky = model.score(&format!("{prefix}/secrets/new.env"));
+        let safe = model.score(&format!("{prefix}/docs/new.md"));
+        let vendor = model.score(&format!("{prefix}/vendor/new.js"));
 
         assert!(
             risky > safe && risky > vendor,
@@ -805,9 +805,9 @@ mod tests {
 
     #[test]
     fn probabilities_stay_normalized_and_finite() {
-        let hmm = train(&corpus(), &TrainConfig::default());
+        let model = train(&corpus(), &TrainConfig::default());
         let close = |x: f64| (x - 1.0).abs() < 1e-6;
-        for chain in [&hmm.positive, &hmm.negative] {
+        for chain in [&model.positive, &model.negative] {
             assert!(close(chain.init.iter().sum::<f64>()), "init");
             for (i, row) in chain.trans.iter().enumerate() {
                 assert!(close(row.iter().sum::<f64>()), "trans row {i}");
@@ -816,32 +816,32 @@ mod tests {
                 assert!(close(row.iter().sum::<f64>()), "emit row {i}");
             }
         }
-        assert!((0.0..=1.0).contains(&hmm.prior));
-        assert!(hmm.log_likelihood.is_finite());
+        assert!((0.0..=1.0).contains(&model.prior));
+        assert!(model.log_likelihood.is_finite());
         // Scores are probabilities for any path, seen or not.
         for p in ["/home/u/secrets/app1/key.pem", "/zzz/qqq.xyzzy", "/etc"] {
-            let s = hmm.score(p);
+            let s = model.score(p);
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "{p} -> {s}");
         }
     }
 
     #[test]
     fn long_paths_do_not_underflow() {
-        let hmm = train(&corpus(), &TrainConfig::default());
+        let model = train(&corpus(), &TrainConfig::default());
         // 400 components: unscaled forward-backward would be 0.0 well before
         // this, taking the score with it.
         let deep = format!("/home/u/{}/key.pem", vec!["nested"; 400].join("/"));
-        let score = hmm.score(&deep);
+        let score = model.score(&deep);
         assert!(score.is_finite() && score > 0.0, "score={score}");
     }
 
     #[test]
     fn unknown_tokens_and_empty_paths_fall_back_to_the_base_rate() {
-        let hmm = train(&corpus(), &TrainConfig::default());
+        let model = train(&corpus(), &TrainConfig::default());
         // A path of entirely unseen tokens is uninformative, not impossible.
-        let alien = hmm.score("/zzz/qqq/wwww/vvvv.xyzzy");
+        let alien = model.score("/zzz/qqq/wwww/vvvv.xyzzy");
         assert!(alien.is_finite() && alien > 0.0 && alien < 1.0, "{alien}");
-        assert_eq!(hmm.score(""), hmm.base_rate());
+        assert_eq!(model.score(""), model.base_rate());
     }
 
     #[test]
@@ -860,48 +860,48 @@ mod tests {
 
     #[test]
     fn viterbi_labels_every_position() {
-        let hmm = train(&corpus(), &TrainConfig::default());
-        let obs = hmm.observe("/home/u/secrets/app1/key.pem");
-        let path = hmm.viterbi(&obs);
+        let model = train(&corpus(), &TrainConfig::default());
+        let obs = model.observe("/home/u/secrets/app1/key.pem");
+        let path = model.viterbi(&obs);
         assert_eq!(path.len(), obs.len());
-        assert!(path.iter().all(|s| *s < hmm.states()));
-        assert!(hmm.viterbi(&[]).is_empty());
+        assert!(path.iter().all(|s| *s < model.states()));
+        assert!(model.viterbi(&[]).is_empty());
     }
 
     #[test]
     fn empty_corpus_yields_a_usable_model() {
-        let hmm = train(&[], &TrainConfig::default());
-        assert_eq!(hmm.observations, 0);
-        let s = hmm.score("/anything/at/all.rs");
+        let model = train(&[], &TrainConfig::default());
+        assert_eq!(model.observations, 0);
+        let s = model.score("/anything/at/all.rs");
         assert!(s.is_finite(), "score={s}");
     }
 
     #[test]
     fn model_round_trips_through_json() {
-        let hmm = train(&corpus(), &TrainConfig::default());
-        let json = serde_json::to_string(&hmm).unwrap();
-        let back: Hmm = serde_json::from_str(&json).unwrap();
+        let model = train(&corpus(), &TrainConfig::default());
+        let json = serde_json::to_string(&model).unwrap();
+        let back: PathModel = serde_json::from_str(&json).unwrap();
         let p = "/home/u/secrets/app3/creds.env";
-        assert!((hmm.score(p) - back.score(p)).abs() < 1e-12);
+        assert!((model.score(p) - back.score(p)).abs() < 1e-12);
     }
     /// A stored model whose vocabulary outruns its matrices must not panic the
     /// scanner mid-walk — a corrupt or version-skewed model should degrade to
     /// "I know nothing", not take the process down.
     #[test]
     fn a_model_with_an_oversized_vocab_degrades_instead_of_panicking() {
-        let mut hmm = train(&corpus(), &TrainConfig::default());
+        let mut model = train(&corpus(), &TrainConfig::default());
         // Simulate skew: a token indexed past the emission matrix's width.
-        let width = hmm.vocab_len();
-        hmm.vocab.insert("bogus".into(), width + 50);
-        assert!(hmm.observe("/bogus/x.pem").iter().all(|i| *i < width));
-        let s = hmm.score("/bogus/thing/x.pem");
+        let width = model.vocab_len();
+        model.vocab.insert("bogus".into(), width + 50);
+        assert!(model.observe("/bogus/x.pem").iter().all(|i| *i < width));
+        let s = model.score("/bogus/thing/x.pem");
         assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score={s}");
 
         // An empty vocabulary leaves nothing to index at all.
-        hmm.vocab.clear();
-        hmm.positive.emit = vec![Vec::new(); hmm.positive.states];
-        hmm.negative.emit = vec![Vec::new(); hmm.negative.states];
-        assert_eq!(hmm.score("/anything/at/all.rs"), hmm.prior);
+        model.vocab.clear();
+        model.positive.emit = vec![Vec::new(); model.positive.states];
+        model.negative.emit = vec![Vec::new(); model.negative.states];
+        assert_eq!(model.score("/anything/at/all.rs"), model.prior);
     }
     /// A corpus with only one class cannot separate anything — the missing
     /// chain is fitted on nothing. The model must stay usable (finite scores,
@@ -912,14 +912,18 @@ mod tests {
             let samples: Vec<(String, bool)> = (0..20)
                 .map(|i| (format!("/t/dir{i}/f{i}.rs"), all_found))
                 .collect();
-            let hmm = train(&samples, &TrainConfig::default());
-            let s = hmm.score("/t/dir1/other.rs");
+            let model = train(&samples, &TrainConfig::default());
+            let s = model.score("/t/dir1/other.rs");
             assert!(
                 s.is_finite() && (0.0..=1.0).contains(&s),
                 "all_found={all_found} score={s}"
             );
             // The prior reflects the corpus it saw, clamped off the extremes.
-            assert!(hmm.prior > 0.0 && hmm.prior < 1.0, "prior={}", hmm.prior);
+            assert!(
+                model.prior > 0.0 && model.prior < 1.0,
+                "prior={}",
+                model.prior
+            );
         }
     }
     #[test]

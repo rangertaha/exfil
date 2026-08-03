@@ -20,7 +20,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use exfil_hmm::Hmm;
+use exfil_model::PathModel;
 
 /// How much work a scan may do before it stops.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,7 +140,7 @@ impl FromStr for Budget {
 pub struct ScanPlan {
     /// Trained path model used to rank what to scan first. `None` keeps the
     /// filesystem's own order.
-    pub model: Option<Hmm>,
+    pub model: Option<PathModel>,
     /// Work limit. `None` scans everything.
     pub budget: Option<Budget>,
     /// Fingerprint of the ruleset this scan applies (see

@@ -180,7 +180,7 @@ enum Command {
         /// count, or `90c` for 90% of the *expected findings* (which adapts to
         /// the tree instead of assuming a shape, and needs a calibrated model).
         /// Ranking uses the trained path model when one exists
-        /// (`exfil hmm train`). Cannot be combined with `--fail-on`: a partial
+        /// (`exfil model train`). Cannot be combined with `--fail-on`: a partial
         /// scan cannot certify that a tree is clean.
         #[arg(long, value_name = "BUDGET")]
         budget: Option<exfil_engine::Budget>,
@@ -231,9 +231,9 @@ enum Command {
     /// `exfil pull mitre://cwe` first to download the catalog).
     Enrich,
     /// Train and inspect the path model that ranks what a scan looks at first.
-    Hmm {
+    Model {
         #[command(subcommand)]
-        action: HmmCmd,
+        action: ModelCmd,
     },
     /// Look up a weakness in the local MITRE CWE catalog (`exfil pull
     /// mitre://cwe` downloads it).
@@ -308,7 +308,7 @@ enum CheckCmd {
 
 /// Path-model actions.
 #[derive(Subcommand)]
-enum HmmCmd {
+enum ModelCmd {
     /// Train the path model on the scans already in the store and save it to
     /// the catalog. Every file recorded is a training sample; whether a
     /// finding was attached to it is the label.
@@ -467,17 +467,17 @@ async fn main() -> Result<()> {
             StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
         },
         Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
-        Command::Hmm { action } => match action {
-            HmmCmd::Train {
+        Command::Model { action } => match action {
+            ModelCmd::Train {
                 states,
                 iterations,
                 vocab,
                 name,
-            } => cmd_hmm_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
-            HmmCmd::Score { path, name } => cmd_hmm_score(cfg, &path, &name).await?,
-            HmmCmd::Status { name } => cmd_hmm_status(cfg, &name).await?,
-            HmmCmd::Eval { holdout, states } => {
-                cmd_hmm_eval(&store_dir, cfg, holdout, states).await?
+            } => cmd_model_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
+            ModelCmd::Score { path, name } => cmd_model_score(cfg, &path, &name).await?,
+            ModelCmd::Status { name } => cmd_model_status(cfg, &name).await?,
+            ModelCmd::Eval { holdout, states } => {
+                cmd_model_eval(&store_dir, cfg, holdout, states).await?
             }
         },
         Command::Cwe { id } => cmd_cwe(cfg, &id).await?,
@@ -713,12 +713,12 @@ async fn cmd_scan(
         match &m {
             None => eprintln!(
                 "no trained path model; scanning in walk order \
-                 (run `exfil hmm train` to rank by probability)"
+                 (run `exfil model train` to rank by probability)"
             ),
             Some(m) if !m.ruleset.is_empty() && m.ruleset != fingerprint => eprintln!(
                 "warning: the path model was trained under ruleset {} but this \
                  scan applies {fingerprint}; its ranking may be stale — re-run \
-                 `exfil hmm train`",
+                 `exfil model train`",
                 m.ruleset
             ),
             Some(_) => {}
@@ -1242,7 +1242,7 @@ async fn cmd_graph(
 /// whether a finding hangs off it is the label. That also means the model is
 /// only as good as the ruleset that produced those findings, which is why the
 /// ruleset fingerprint is recorded alongside it.
-async fn cmd_hmm_train(
+async fn cmd_model_train(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
     states: usize,
@@ -1275,23 +1275,23 @@ async fn cmd_hmm_train(
         return Ok(());
     }
 
-    let cfg = exfil_hmm::TrainConfig {
+    let cfg = exfil_model::TrainConfig {
         states,
         iterations,
         vocab_cap: vocab,
         ruleset: exfil_engine::setup::ruleset_fingerprint(config).await,
-        ..exfil_hmm::TrainConfig::default()
+        ..exfil_model::TrainConfig::default()
     };
     println!(
         "training on {} path(s), {positives} with findings ({:.1}% base rate)…",
         samples.len(),
         100.0 * positives as f64 / samples.len() as f64
     );
-    let model = exfil_hmm::train(&samples, &cfg);
+    let model = exfil_model::train(&samples, &cfg);
 
     let catalog = open_catalog(config).await?;
     catalog
-        .upsert_hmm(name, &serde_json::to_value(&model)?)
+        .upsert_path_model(name, &serde_json::to_value(&model)?)
         .await?;
     println!(
         "trained {name:?}: {} states/chain, {} tokens, mean log-likelihood {:.3}",
@@ -1304,9 +1304,9 @@ async fn cmd_hmm_train(
 }
 
 /// Score one path and show which components drove the number.
-async fn cmd_hmm_score(config: Option<&std::path::Path>, path: &str, name: &str) -> Result<()> {
+async fn cmd_model_score(config: Option<&std::path::Path>, path: &str, name: &str) -> Result<()> {
     let Some(model) = load_model(config, name).await? else {
-        println!("no model {name:?} — run `exfil hmm train`");
+        println!("no model {name:?} — run `exfil model train`");
         return Ok(());
     };
     println!("{path}");
@@ -1320,7 +1320,7 @@ async fn cmd_hmm_score(config: Option<&std::path::Path>, path: &str, name: &str)
     let obs = model.observe(path);
     println!("\n  {:<28} {:>9}", "component", "log-odds");
     for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
-        let unseen = if obs.get(i) == Some(&exfil_hmm::UNK) {
+        let unseen = if obs.get(i) == Some(&exfil_model::UNK) {
             "  (unseen)"
         } else {
             ""
@@ -1331,11 +1331,11 @@ async fn cmd_hmm_score(config: Option<&std::path::Path>, path: &str, name: &str)
 }
 
 /// Summarize a trained model.
-async fn cmd_hmm_status(config: Option<&std::path::Path>, name: &str) -> Result<()> {
+async fn cmd_model_status(config: Option<&std::path::Path>, name: &str) -> Result<()> {
     let catalog = open_catalog(config).await?;
-    let names = catalog.list_hmm().await.unwrap_or_default();
+    let names = catalog.list_path_models().await.unwrap_or_default();
     let Some(model) = load_model(config, name).await? else {
-        println!("no model {name:?} — run `exfil hmm train`");
+        println!("no model {name:?} — run `exfil model train`");
         if !names.is_empty() {
             println!("stored models: {}", names.join(", "));
         }
@@ -1378,7 +1378,7 @@ async fn cmd_hmm_status(config: Option<&std::path::Path>, name: &str) -> Result<
 /// This is the number that decides whether ranked scanning earns its
 /// complexity. Scoring the paths a model was fitted on would flatter it, so the
 /// corpus is split and the model only ever sees the training half.
-async fn cmd_hmm_eval(
+async fn cmd_model_eval(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
     holdout: f64,
@@ -1390,12 +1390,12 @@ async fn cmd_hmm_eval(
         println!("nothing to evaluate — run `exfil scan` first");
         return Ok(());
     }
-    let cfg = exfil_hmm::TrainConfig {
+    let cfg = exfil_model::TrainConfig {
         states: states.max(1),
         ruleset: exfil_engine::setup::ruleset_fingerprint(config).await,
-        ..exfil_hmm::TrainConfig::default()
+        ..exfil_model::TrainConfig::default()
     };
-    let Some(report) = exfil_hmm::eval::evaluate(&samples, &cfg, holdout) else {
+    let Some(report) = exfil_model::eval::evaluate(&samples, &cfg, holdout) else {
         println!(
             "{} path(s), but the split leaves nothing to measure — a corpus needs \
              findings on both sides of it. Scan a wider tree.",
@@ -1452,9 +1452,9 @@ async fn cmd_hmm_eval(
 async fn load_model(
     config: Option<&std::path::Path>,
     name: &str,
-) -> Result<Option<exfil_hmm::Hmm>> {
+) -> Result<Option<exfil_model::PathModel>> {
     let catalog = open_catalog(config).await?;
-    match catalog.load_hmm(name).await? {
+    match catalog.load_path_model(name).await? {
         Some(value) => Ok(Some(
             serde_json::from_value(value).context("decode stored path model")?,
         )),

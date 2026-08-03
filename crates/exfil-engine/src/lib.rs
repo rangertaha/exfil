@@ -1112,7 +1112,7 @@ mod tests {
             samples.push((format!("/t/secrets/k{i}.env"), true));
             samples.push((format!("/t/docs/d{i}.md"), false));
         }
-        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+        let model = exfil_model::train(&samples, &exfil_model::TrainConfig::default());
 
         let plan = ScanPlan {
             model: Some(model),
@@ -1850,7 +1850,7 @@ rule Detect_Evil {
             samples.push((format!("/t/secrets/k{i}.env"), true));
             samples.push((format!("/t/docs/d{i}.md"), false));
         }
-        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+        let model = exfil_model::train(&samples, &exfil_model::TrainConfig::default());
 
         let plan = ScanPlan {
             model: Some(model),
@@ -1886,7 +1886,7 @@ rule Detect_Evil {
             samples.push((format!("/t/secrets/k{i}.env"), true));
             samples.push((format!("/t/docs/d{i}.md"), false));
         }
-        let model = exfil_hmm::train(&samples, &exfil_hmm::TrainConfig::default());
+        let model = exfil_model::train(&samples, &exfil_model::TrainConfig::default());
 
         // Same tree, reached two ways: canonical, and via a `.` indirection
         // that makes the walk yield non-canonical paths.
