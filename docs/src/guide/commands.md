@@ -59,10 +59,31 @@ are.
 
 | Command | What it does |
 |---|---|
-| `exfil train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
+| `exfil train [--model KIND]` | Fit a path model on stored scans (every recorded file is a sample; a finding on it is the label) |
 | `exfil model score <path>` | The model's `P(finding)` for a path, with each component's contribution |
-| `exfil model get` | States, vocabulary, base rate, and the ruleset it was trained under |
+| `exfil model get [name]` | Kind, base rate, the ruleset it was trained under, and whatever that kind can report |
 | `exfil model eval` | Measure whether the model actually helps — recall at each budget, against a directory-frequency baseline and blind selection |
+
+### Two kinds of model
+
+`--model` on `train` picks **what to fit**; `--model` on `scan` picks **which
+fitted model to use**, by the name it was saved under. A model that does not
+exist yet can only be named by kind; one that does can only be named by name.
+
+| Kind | What it is | When to prefer it |
+|---|---|---|
+| `path-hmm` *(default)* | Two Markov chains over path tokens — conditions on the whole sequence, so `.ssh` under a home directory means something different from `.ssh` under `/tmp/build-1234` | Most trees |
+| `dir-prior` | A Laplace-smoothed finding rate per parent directory. No sequence, no states, and calibrated by construction — a frequency already *is* a probability | When `exfil model eval` reports that the baseline ties. It trains instantly and needs no calibration set, so a `90c` budget works on corpora too small to calibrate an HMM |
+
+```sh
+exfil train                                   # path-hmm, saved as "default"
+exfil train --model dir-prior --name cheap    # the baseline, saved as "cheap"
+exfil scan ./project --model cheap --budget 20%
+```
+
+Naming a model that is not stored is an error rather than a quiet fall back to
+walk order — you asked for a ranking, and a typo would otherwise produce a
+differently-shaped scan under a summary that looks the same.
 
 Then bound the work:
 

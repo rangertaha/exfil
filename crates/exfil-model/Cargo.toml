@@ -6,8 +6,9 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-
-[dev-dependencies]
+# The crate owns the stored form of a model, including how to read one written
+# before the kind tag existed. Both front ends load models, so the fallback
+# lives here rather than being duplicated (and drifting) in each.
 serde_json = { workspace = true }
 
 [lints]

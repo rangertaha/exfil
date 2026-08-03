@@ -498,6 +498,106 @@ fn yara_rules_from_config() {
     );
 }
 
+/// A tree where the risky files share a directory, so either kind of model has
+/// something to learn.
+fn seeded_tree(sb: &Sandbox) {
+    for i in 0..8 {
+        let d = sb.tree.join("secrets");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join(format!("k{i}.env")),
+            format!("AWS_ACCESS_KEY_ID=AKIA{i}0ZZZZZZZZZZZZZZ\n"),
+        )
+        .unwrap();
+        let d = sb.tree.join("docs");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(format!("d{i}.md")), format!("page {i}\n")).unwrap();
+    }
+}
+
+#[test]
+fn both_model_kinds_train_store_and_rank() {
+    let sb = Sandbox::new("kinds");
+    let catalog = sb.base.join("catalog");
+    seeded_tree(&sb);
+    let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // The sequence model is the default…
+    let out = exfil_catalog(&sb.store, &catalog, &["train"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("(path-hmm)"), "{}", stdout(&out));
+
+    // …and the directory prior is a flag away, stored under its own name.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["train", "--model", "dir-prior", "--name", "cheap"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("(dir-prior)"), "{}", stdout(&out));
+
+    // Each loads back as the kind it was written as — the tag survives a round
+    // trip through the catalog, which is the whole point of storing it.
+    let out = exfil_catalog(&sb.store, &catalog, &["model", "get", "cheap"]);
+    let text = stdout(&out);
+    assert!(text.contains("kind          dir-prior"), "{text}");
+    assert!(text.contains("directories"), "{text}");
+    let out = exfil_catalog(&sb.store, &catalog, &["model", "get", "default"]);
+    let text = stdout(&out);
+    assert!(text.contains("kind          path-hmm"), "{text}");
+    assert!(text.contains("states"), "{text}");
+
+    // A scan can rank with either.
+    for name in ["default", "cheap"] {
+        let out = exfil_catalog(
+            &sb.store,
+            &catalog,
+            &[
+                "scan",
+                sb.tree.to_str().unwrap(),
+                "--model",
+                name,
+                "--budget",
+                "50%",
+            ],
+        );
+        assert!(out.status.success(), "{name}: {}", stderr(&out));
+        assert!(
+            stdout(&out).contains("probability-ranked"),
+            "{name} did not rank: {}",
+            stdout(&out)
+        );
+    }
+
+    // Naming a model that is not there is an error, not a silent fall back to
+    // walk order: the caller asked for a ranking and would not have got one.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &[
+            "scan",
+            sb.tree.to_str().unwrap(),
+            "--model",
+            "typo",
+            "--ranked",
+        ],
+    );
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("no model \"typo\""), "{err}");
+    assert!(err.contains("cheap"), "it should list what is there: {err}");
+
+    // An unknown *kind* is refused by the parser, with the choices.
+    let out = exfil_catalog(&sb.store, &catalog, &["train", "--model", "neural-net"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("path-hmm|dir-prior"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn dataset_crud_subcommands() {
     let sb = Sandbox::new("dscrud");

@@ -36,6 +36,16 @@ pub trait PathScorer: Send + Sync {
     /// [`score`](Self::score) falls back to when a path says nothing.
     fn base_rate(&self) -> f64;
 
+    /// Fingerprint of the ruleset whose findings labelled this scorer's
+    /// training data, or empty when nothing was recorded.
+    ///
+    /// A scorer's labels are "what those rules happened to fire on", so a
+    /// scorer stops describing a tree the moment the ruleset moves — whatever
+    /// algorithm produced it. Empty means "unknown", which never invalidates.
+    fn ruleset(&self) -> &str {
+        ""
+    }
+
     /// Whether [`score`](Self::score) may be read as a probability, or only as
     /// a rank.
     ///

@@ -60,6 +60,16 @@ fn parse_severity(s: &str) -> std::result::Result<exfil_core::Severity, String> 
     }
 }
 
+/// The model name used when `--model` is not given, on both `train` and
+/// `scan` — so "the default model" is one string, not two that agree by luck.
+const DEFAULT_MODEL: &str = "default";
+
+/// Parse a `--model` kind for `train`, so an unknown name is reported with
+/// what is available rather than a bare parse failure.
+fn parse_scorer_kind(s: &str) -> std::result::Result<exfil_model::ScorerKind, String> {
+    s.parse()
+}
+
 /// Print the per-severity tally line after a scan summary, when any match was
 /// rated. Shared by the local and remote scan commands.
 fn print_tally(counts: &progress::SevCounts) {
@@ -182,6 +192,11 @@ enum Command {
         /// early. Same results as an ordinary scan, reached sooner.
         #[arg(long)]
         ranked: bool,
+        /// Which stored model to rank with, by the name `exfil train --name`
+        /// saved it under. (On `train`, `--model` names a *kind* to fit; here
+        /// it names one you already have.)
+        #[arg(long, value_name = "NAME", default_value = DEFAULT_MODEL)]
+        model: String,
         /// Name this run, so `exfil analyze -n <name>` and `exfil search
         /// run=<name>` can address it later. Defaults to the start time, so
         /// every run stays addressable either way.
@@ -236,17 +251,25 @@ enum Command {
     /// the catalog. Every file recorded is a training sample; whether a finding
     /// was attached to it is the label, so there is nothing to hand-label.
     Train {
-        /// Number of latent states to fit.
+        /// Which model to fit: `path-hmm` (default) conditions on the whole
+        /// path sequence; `dir-prior` is a finding rate per parent directory
+        /// — no states, calibrated by construction. Run `exfil model eval`
+        /// first: when it reports that the baseline ties, `dir-prior` is the
+        /// one to keep.
+        #[arg(long, value_name = "KIND", default_value = "path-hmm",
+              value_parser = parse_scorer_kind)]
+        model: exfil_model::ScorerKind,
+        /// Number of latent states to fit (`path-hmm` only).
         #[arg(long, default_value_t = 12)]
         states: usize,
-        /// Maximum Baum-Welch iterations.
+        /// Maximum Baum-Welch iterations (`path-hmm` only).
         #[arg(long, default_value_t = 30)]
         iterations: usize,
-        /// Keep at most this many distinct path tokens.
+        /// Keep at most this many distinct path tokens (`path-hmm` only).
         #[arg(long, default_value_t = 4096)]
         vocab: usize,
         /// Name to save the model under.
-        #[arg(short, long, default_value = "default")]
+        #[arg(short, long, default_value = DEFAULT_MODEL)]
         name: String,
     },
     /// Inspect the path models that `exfil train` produced.
@@ -415,6 +438,7 @@ async fn main() -> Result<()> {
             fail_on,
             budget,
             ranked,
+            model,
             name,
         } => {
             cmd_scan(
@@ -429,6 +453,7 @@ async fn main() -> Result<()> {
                 fail_on,
                 budget,
                 ranked,
+                &model,
                 name,
             )
             .await?
@@ -461,11 +486,12 @@ async fn main() -> Result<()> {
             StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
         },
         Command::Train {
+            model,
             states,
             iterations,
             vocab,
             name,
-        } => cmd_model_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
+        } => cmd_model_train(&store_dir, cfg, model, states, iterations, vocab, &name).await?,
         Command::Model { action } => match action.unwrap_or(ModelCmd::List) {
             ModelCmd::List => cmd_model_list(cfg).await?,
             ModelCmd::Get { name } => cmd_model_status(cfg, &name).await?,
@@ -657,6 +683,7 @@ async fn cmd_scan(
     fail_on: Option<exfil_core::Severity>,
     budget: Option<exfil_engine::Budget>,
     ranked: bool,
+    model_name: &str,
     name: Option<String>,
 ) -> Result<()> {
     // `common` expands to this many ports; configurable per the scan plugin's
@@ -703,7 +730,26 @@ async fn cmd_scan(
     // without a model still works — it just cuts in walk order rather than
     // value order — so a missing model is a note, not an error.
     let model = if budget.is_some() || ranked {
-        let m = load_model(config, "default").await.unwrap_or(None);
+        let m = load_model(config, model_name).await.unwrap_or(None);
+        // …unless a particular model was *asked for*. Falling back to walk
+        // order then would answer a question nobody put: the caller named a
+        // ranking, and a typo would silently produce a differently-shaped scan
+        // under a reassuring summary.
+        if m.is_none() && model_name != DEFAULT_MODEL {
+            let known = open_catalog(config)
+                .await?
+                .list_path_models()
+                .await
+                .unwrap_or_default();
+            anyhow::bail!(
+                "no model {model_name:?}{}",
+                if known.is_empty() {
+                    " — none are trained yet (`exfil train`)".to_string()
+                } else {
+                    format!(" — stored models: {}", known.join(", "))
+                }
+            );
+        }
         match &m {
             None => eprintln!(
                 "no trained path model; scanning in walk order \
@@ -713,13 +759,14 @@ async fn cmd_scan(
             // rather than match arms: a stale model can also be an
             // uncalibrated one, and hearing about only the first would leave
             // the more consequential problem unsaid.
-            Some(m) => {
-                if !m.ruleset.is_empty() && m.ruleset != fingerprint {
+            Some(stored) => {
+                let m = stored.as_scorer();
+                if !m.ruleset().is_empty() && m.ruleset() != fingerprint {
                     eprintln!(
                         "warning: the path model was trained under ruleset {} but this \
                          scan applies {fingerprint}; its ranking may be stale — re-run \
                          `exfil train`",
-                        m.ruleset
+                        m.ruleset()
                     );
                 }
                 // A confidence budget is the only one that reads the score as a
@@ -752,7 +799,7 @@ async fn cmd_scan(
         // The concrete model is what the warnings above inspect — its ruleset,
         // its calibration. The engine only needs something that scores a path,
         // so it goes in behind the trait.
-        model: model.map(|m| Box::new(m) as Box<dyn PathScorer>),
+        model: model.map(|m| m.into_scorer()),
         budget,
         ruleset: fingerprint,
         name: name.unwrap_or_default(),
@@ -1073,6 +1120,7 @@ async fn cmd_analyze(
 async fn cmd_model_train(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
+    kind: exfil_model::ScorerKind,
     states: usize,
     iterations: usize,
     vocab: usize,
@@ -1111,41 +1159,54 @@ async fn cmd_model_train(
         ..exfil_model::TrainConfig::default()
     };
     println!(
-        "training on {} path(s), {positives} with findings ({:.1}% base rate)…",
+        "training {kind} on {} path(s), {positives} with findings ({:.1}% base rate)…",
         samples.len(),
         100.0 * positives as f64 / samples.len() as f64
     );
-    let model = exfil_model::train(&samples, &cfg);
+    let fitted = exfil_model::StoredScorer::fit(kind, &samples, &cfg);
 
     let catalog = open_catalog(config).await?;
     catalog
-        .upsert_path_model(name, &serde_json::to_value(&model)?)
+        .upsert_path_model(name, &serde_json::to_value(&fitted)?)
         .await?;
-    println!(
-        "trained {name:?}: {} states/chain, {} tokens, mean log-likelihood {:.3}",
-        model.states(),
-        model.vocab.len(),
-        model.log_likelihood
-    );
+    match &fitted {
+        exfil_model::StoredScorer::PathHmm(m) => println!(
+            "trained {name:?} ({kind}): {} states/chain, {} tokens, mean log-likelihood {:.3}",
+            m.states(),
+            m.vocab.len(),
+            m.log_likelihood
+        ),
+        exfil_model::StoredScorer::DirPrior(p) => println!(
+            "trained {name:?} ({kind}): {} director{} observed, base rate {:.4}",
+            p.rate.len(),
+            if p.rate.len() == 1 { "y" } else { "ies" },
+            p.base
+        ),
+    }
     hint("\nNext: `exfil scan --ranked` to scan worst-first, or `--budget 20%` to cap the work");
     Ok(())
 }
 
 /// Score one path and show which components drove the number.
 async fn cmd_model_score(config: Option<&std::path::Path>, path: &str, name: &str) -> Result<()> {
-    let Some(model) = load_model(config, name).await? else {
+    let Some(stored) = load_model(config, name).await? else {
         println!("no model {name:?} — run `exfil train`");
         return Ok(());
     };
-    println!("{path}");
+    let model = stored.as_scorer();
+    println!("{path}   [{}]", model.name());
     println!(
         "  P(finding) = {:.4}   (base rate {:.4})",
         model.score(path),
         model.base_rate()
     );
-    // Per-token log-odds: what each path component contributed, so the number
-    // is inspectable rather than oracular.
-    let obs = model.observe(path);
+    // Per-component log-odds: what each part of the path contributed, so the
+    // number is inspectable rather than oracular. Only the sequence model has a
+    // vocabulary, so only it can say a component was never seen in training.
+    let obs = match &stored {
+        exfil_model::StoredScorer::PathHmm(m) => m.observe(path),
+        _ => Vec::new(),
+    };
     println!("\n  {:<28} {:>9}", "component", "log-odds");
     for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
         let unseen = if obs.get(i) == Some(&exfil_model::UNK) {
@@ -1243,32 +1304,42 @@ async fn cmd_model_status(config: Option<&std::path::Path>, name: &str) -> Resul
         }
         return Ok(());
     };
+    let scorer = model.as_scorer();
     println!("model         {name}");
-    println!(
-        "states        {} per chain (positive + negative)",
-        model.states()
-    );
-    println!("vocabulary    {} token(s)", model.vocab.len());
-    println!("trained on    {} path(s)", model.observations);
-    println!("log-likelihood {:.4} per path", model.log_likelihood);
-    println!("base rate     {:.4}", model.base_rate());
-    println!(
-        "calibration   {}",
-        if model.platt == (1.0, 0.0) {
-            "identity (uncalibrated — too little held-out data to fit)".to_string()
-        } else {
-            format!(
-                "Platt slope {:.4}, intercept {:+.3}",
-                model.platt.0, model.platt.1
-            )
+    println!("kind          {}", model.kind());
+    println!("              {}", model.kind().about());
+    println!("trained on    {} path(s)", model.observations());
+    println!("base rate     {:.4}", scorer.base_rate());
+    // Everything below is what one kind can say and the other cannot, so it is
+    // reported per kind rather than flattened into fields that would be blank.
+    match &model {
+        exfil_model::StoredScorer::PathHmm(m) => {
+            println!(
+                "states        {} per chain (positive + negative)",
+                m.states()
+            );
+            println!("vocabulary    {} token(s)", m.vocab.len());
+            println!("log-likelihood {:.4} per path", m.log_likelihood);
+            println!(
+                "calibration   {}",
+                if m.has_calibration() {
+                    format!("Platt slope {:.4}, intercept {:+.3}", m.platt.0, m.platt.1)
+                } else {
+                    "identity (uncalibrated — too little held-out data to fit)".to_string()
+                }
+            );
         }
-    );
+        exfil_model::StoredScorer::DirPrior(p) => {
+            println!("directories   {} observed", p.rate.len());
+            println!("calibration   a smoothed frequency is already a probability");
+        }
+    }
     println!(
         "ruleset       {}",
-        if model.ruleset.is_empty() {
+        if scorer.ruleset().is_empty() {
             "(unrecorded)"
         } else {
-            &model.ruleset
+            scorer.ruleset()
         }
     );
     Ok(())
@@ -1354,7 +1425,7 @@ async fn cmd_model_eval(
 async fn load_model(
     config: Option<&std::path::Path>,
     name: &str,
-) -> Result<Option<exfil_model::PathModel>> {
+) -> Result<Option<exfil_model::StoredScorer>> {
     let catalog = open_catalog(config).await?;
     match catalog.load_path_model(name).await? {
         Some(value) => Ok(Some(

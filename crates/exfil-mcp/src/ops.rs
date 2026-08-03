@@ -274,9 +274,7 @@ pub async fn scan(
     // next scan notice the ruleset moved and stop trusting "unchanged".
     let plan = exfil_engine::ScanPlan {
         model: if budget.is_some() {
-            load_model(ctx)
-                .await
-                .map(|m| Box::new(m) as Box<dyn PathScorer>)
+            load_model(ctx).await.map(|m| m.into_scorer())
         } else {
             None
         },
@@ -330,7 +328,7 @@ pub async fn scan(
 
 /// The trained path model from the catalog, if any. A missing or undecodable
 /// model is not an error: ranking degrades to walk order.
-async fn load_model(ctx: &Ctx) -> Option<exfil_model::PathModel> {
+async fn load_model(ctx: &Ctx) -> Option<exfil_model::StoredScorer> {
     let catalog = ctx.catalog().await.ok()?;
     let value = catalog.load_path_model("default").await.ok()??;
     serde_json::from_value(value).ok()
@@ -383,15 +381,22 @@ pub async fn model_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<
 
 /// Score one path under the trained model, with the per-component evidence.
 pub async fn model_score(ctx: &Ctx, path: &str) -> Result<String> {
-    let Some(model) = load_model(ctx).await else {
+    let Some(stored) = load_model(ctx).await else {
         return Ok("no trained model — run the `train` tool first".into());
     };
+    let model = stored.as_scorer();
     let mut out = format!(
-        "{path}\nP(finding) = {:.4}   (base rate {:.4})\n\ncomponent contributions (log-odds):\n",
+        "{path}   [{}]\nP(finding) = {:.4}   (base rate {:.4})\n\ncomponent contributions (log-odds):\n",
+        model.name(),
         model.score(path),
         model.base_rate()
     );
-    let obs = model.observe(path);
+    // Only the sequence model has a vocabulary, so only it can report that a
+    // component was never seen in training.
+    let obs = match &stored {
+        exfil_model::StoredScorer::PathHmm(m) => m.observe(path),
+        _ => Vec::new(),
+    };
     for (i, (token, delta)) in model.explain(path).into_iter().enumerate() {
         let unseen = if obs.get(i) == Some(&exfil_model::UNK) {
             "  (unseen)"
@@ -518,25 +523,43 @@ pub async fn model_remove(ctx: &Ctx, name: &str) -> Result<String> {
 
 /// Summarize the trained path model.
 pub async fn model_status(ctx: &Ctx) -> Result<String> {
-    let Some(model) = load_model(ctx).await else {
+    let Some(stored) = load_model(ctx).await else {
         return Ok("no trained model — run model_train first".into());
     };
+    let model = stored.as_scorer();
     let current = exfil_engine::setup::ruleset_fingerprint(ctx.config()).await;
-    let stale = !model.ruleset.is_empty() && model.ruleset != current;
+    let stale = !model.ruleset().is_empty() && model.ruleset() != current;
+    // What one kind can say and the other cannot is reported per kind, rather
+    // than flattened into fields that would be blank for half of them.
+    let specifics = match &stored {
+        exfil_model::StoredScorer::PathHmm(m) => format!(
+            "states        {} per chain (positive + negative)\nvocabulary    {} token(s)\n\
+             calibration   {}\n",
+            m.states(),
+            m.vocab.len(),
+            if m.has_calibration() {
+                "fitted"
+            } else {
+                "identity (uncalibrated — read the scores as a ranking)"
+            }
+        ),
+        exfil_model::StoredScorer::DirPrior(p) => {
+            format!("directories   {} observed\n", p.rate.len())
+        }
+    };
     Ok(format!(
-        "states        {} per chain (positive + negative)\n\
-         vocabulary    {} token(s)\n\
+        "kind          {}\n\
+         {specifics}\
          trained on    {} path(s)\n\
          base rate     {:.4}\n\
          ruleset       {}{}\n",
-        model.states(),
-        model.vocab.len(),
-        model.observations,
+        stored.kind(),
+        stored.observations(),
         model.base_rate(),
-        if model.ruleset.is_empty() {
+        if model.ruleset().is_empty() {
             "(unrecorded)"
         } else {
-            &model.ruleset
+            model.ruleset()
         },
         if stale {
             format!(" — STALE, this store now applies {current}; retrain")

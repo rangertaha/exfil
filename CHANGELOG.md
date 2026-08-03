@@ -10,6 +10,33 @@ and this project adheres to
 
 ### Added
 
+- **`exfil train --model <kind>` and `exfil scan --model <name>`** — the path
+  model is now a choice rather than a fixed algorithm. `path-hmm` (the default)
+  is the sequence model; `dir-prior` is the parent-directory frequency prior
+  that `model eval` has always measured against, promoted from benchmark
+  fixture to something you can actually scan with. When `eval` reports the
+  baseline ties — which it does on simple corpora — that verdict is now
+  actionable.
+  - `--model` means "which kind to fit" on `train` and "which stored model to
+    use" on `scan`, because a model that does not exist yet can only be named
+    by kind and one that does can only be named by name.
+  - `dir-prior` is **calibrated by construction**: a smoothed frequency already
+    is a probability, so `--budget 90c` works with it on corpora far too small
+    to fit a Platt map for the HMM.
+  - Stored models carry a `kind` tag, and the tag is the same string the scorer
+    reports as its name, so what a model calls itself and what it is stored as
+    cannot drift. Models written before the tag existed still load — decoding
+    falls back to reading an untagged document as a `path-hmm`, declaratively,
+    via a `#[serde(untagged)]` shim — so no migration step and no re-training.
+    The fallback lives in `exfil-model` rather than in each front end, and
+    describes the *format* without depending on an encoding of it.
+  - `model get` and the MCP `model_status` report per kind rather than
+    flattening both into one shape with fields left blank.
+  - Naming a model that is not stored is now an **error**. Falling back to walk
+    order would answer a question nobody asked: the caller named a ranking, and
+    a typo would otherwise produce a differently-shaped scan under a summary
+    that reads the same.
+
 - `exfil report -f pdf` — a paginated PDF: summary, per-severity tally,
   directory hotspots, then the findings worst-first, colour-coded by severity.
   For handing a scan's result to someone who will read it rather than parse it.

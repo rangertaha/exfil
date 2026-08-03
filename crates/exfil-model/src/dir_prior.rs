@@ -26,6 +26,12 @@ pub struct DirPrior {
     pub rate: BTreeMap<String, f64>,
     /// Corpus-wide finding rate, used for unseen directories.
     pub base: f64,
+    /// How many paths it was fitted on.
+    #[serde(default)]
+    pub observations: u64,
+    /// Fingerprint of the ruleset that produced the labels.
+    #[serde(default)]
+    pub ruleset: String,
 }
 
 impl DirPrior {
@@ -55,7 +61,15 @@ impl DirPrior {
             } else {
                 found / samples.len() as f64
             },
+            observations: samples.len() as u64,
+            ruleset: String::new(),
         }
+    }
+
+    /// Record the ruleset the labels came from.
+    pub fn with_ruleset(mut self, ruleset: &str) -> Self {
+        self.ruleset = ruleset.to_string();
+        self
     }
 }
 
@@ -70,6 +84,10 @@ impl PathScorer for DirPrior {
 
     fn base_rate(&self) -> f64 {
         self.base
+    }
+
+    fn ruleset(&self) -> &str {
+        &self.ruleset
     }
 
     /// A smoothed frequency *is* a probability — it was never a likelihood

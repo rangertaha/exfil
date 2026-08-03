@@ -143,6 +143,10 @@ impl PathScorer for PathModel {
         self.prior
     }
 
+    fn ruleset(&self) -> &str {
+        &self.ruleset
+    }
+
     /// Whether a calibration map was fitted at all, or [`score`](Self::score)
     /// is passing raw log-odds through the identity.
     ///

@@ -38,6 +38,7 @@
 //! | [`model`] | The classifier: two chains, a prior, a calibration — and the training that fits them |
 //! | [`scorer`] | The [`PathScorer`] seam every consumer talks to |
 //! | [`dir_prior`] | The other scorer: a frequency prior over the parent directory |
+//! | [`stored`] | How a fitted scorer is written down, so more than one kind can be |
 //! | [`eval`] | Does any of it help? Recall-at-budget, measured out of sample |
 //!
 //! # Rust notes
@@ -52,6 +53,7 @@ pub mod eval;
 pub mod hmm;
 pub mod model;
 pub mod scorer;
+pub mod stored;
 pub mod tokens;
 
 // The crate's own surface, flattened. Callers say `exfil_model::PathModel`,
@@ -61,4 +63,5 @@ pub use dir_prior::DirPrior;
 pub use hmm::Chain;
 pub use model::{train, PathModel, TrainConfig};
 pub use scorer::PathScorer;
+pub use stored::{ScorerKind, StoredScorer};
 pub use tokens::{tokenize, UNK};
