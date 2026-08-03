@@ -142,7 +142,6 @@ exfil plugin config scan   # interactive: prompts for top-ports, pre-filled with
 | Command | What it does |
 |---|---|
 | `exfil mcp` | Run an MCP server on stdio giving AI agents exfil's whole tool surface (30 tools: query, scan, catalog, model, maintenance) |
-| `exfil server [--addr H:P]` | Run a long-lived HTTP API service over the findings graph |
 | `exfil config` | Show the resolved config path and contents |
 | `exfil store export` | Export the whole graph as a portable snapshot (CBOR or JSON) |
 | `exfil store gc` | Garbage-collect unreachable records |
@@ -265,45 +264,3 @@ exfil scan https://app.example.com --driver http://localhost:4444
 exfil connects to the driver you run (it doesn't launch the browser). The
 rendered, post-JavaScript DOM flows through the same scanners, so secrets and
 indicators injected by scripts are caught.
-
-## HTTP API server
-
-`exfil server` runs a long-lived, read-only HTTP service over the findings
-store, shutting down gracefully on Ctrl-C or SIGTERM:
-
-```sh
-exfil server                       # binds 127.0.0.1:8080
-exfil server --addr 0.0.0.0:9000   # serve other hosts
-```
-
-| Route | Returns |
-|---|---|
-| `GET /health` | `{"status":"ok","service":"exfil"}` |
-| `GET /findings` | Every finding, worst-first (JSON array) |
-| `GET /findings?q=<filter>` | Filtered — same grammar as `search` (`severity=high`, `path=…`, text) |
-| `GET /rules` | The built-in ruleset |
-| `GET /stats` | Total findings and a per-severity breakdown |
-| `GET /graphql` | Interactive GraphiQL IDE |
-| `POST /graphql` | Execute a GraphQL query |
-
-It is read-only, so it is safe to expose, but bind it to loopback unless you
-intend to serve other hosts.
-
-### GraphQL
-
-`POST /graphql` runs a query against a read-only schema (`health`, `findings`,
-`rules`, `stats`), so a client can ask for exactly the fields it needs:
-
-```graphql
-{
-  stats { total critical high }
-  findings(query: "severity=critical") { rule path line severity cwe }
-}
-```
-
-```sh
-curl -s localhost:8080/graphql -H 'content-type: application/json' \
-  -d '{"query":"{ stats { total critical } }"}'
-```
-
-Open `http://localhost:8080/graphql` in a browser for the GraphiQL IDE.

@@ -2,7 +2,7 @@
 name = "exfil-desktop"
 version = "0.1.0"
 edition = "2021"
-description = "exfil desktop app — runs the exfil server and shows the findings dashboard"
+description = "exfil desktop app — serves the findings graph and shows a dashboard"
 license = "GPL-3.0-or-later"
 
 # Standalone workspace: keep this out of the parent Cargo workspace so
@@ -17,6 +17,16 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"] }
+# The findings API runs in-process (there is no `exfil server` command), so the
+# app reads the store through the same crates the CLI does. `setup` resolves the
+# `[database]` config override exactly as the CLI would, so both front ends
+# always agree on which store they are looking at.
+exfil-core = { path = "../../crates/exfil-core" }
+exfil-config = { path = "../../crates/exfil-config" }
+exfil-store = { path = "../../crates/exfil-store" }
+exfil-engine = { path = "../../crates/exfil-engine" }
 
 [profile.release]
 strip = true

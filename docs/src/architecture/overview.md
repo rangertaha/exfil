@@ -86,13 +86,12 @@ exfil/
 │   ├── exfil-remote/    ← non-local scan sources (processes, TCP, web)
 │   │   └── src/
 │   │       └── target.rs     ← shared: resolve a target spec, run the scan
-│   ├── exfil-hmm/       ← path model: P(finding | path), for ranked scanning
+│   ├── exfil-model/       ← path model: P(finding | path), for ranked scanning
 │   ├── exfil-report/    ← render findings as text / json / markdown
 │   ├── exfil-mcp/       ← MCP server: expose the whole tool to AI agents
 │   └── exfil-cli/       ← THE BINARY: argument parsing, wiring
 │       └── src/
 │           ├── main.rs       ← subcommands (scan, search, analyze, gc…)
-│           ├── server.rs     ← HTTP + GraphQL server
 │           └── progress.rs   ← the scan progress bar
 │
 ├── datasets/             ← example rule/IOC data (gitleaks.json, *.yar, iocs…)
@@ -132,7 +131,6 @@ flowchart TD
     subgraph L7["① Binary · exfil-cli"]
         CLI_MAIN["main<br/>commands"]
         subgraph CLI_UI["interfaces"]
-            SERVER["server<br/>HTTP + GraphQL"]
             PROG["progress"]
         end
     end
@@ -160,7 +158,7 @@ flowchart TD
         end
         REPORT["exfil-report<br/>text·json·md·junit·sarif"]
         MCP["exfil-mcp<br/>30 agent tools"]
-        HMM["exfil-hmm<br/>path model"]
+        MODEL["exfil-model<br/>path model"]
     end
     subgraph L3["⑤ Storage · exfil-store"]
         subgraph RECORDS["records"]
@@ -179,14 +177,13 @@ flowchart TD
     end
 
     CLI_MAIN --> PROC & RUN & REGEX & DS & MCP & CONFIG & ANY
-    SERVER --> ANY
     PROC & WEB & WD & NET --> RUN
     RUN --> EXPAND & WALK & REGEX & REPORT & ANY & TASK
     REGEX & ASTG & IOCG & PIIG --> TASK
     DS --> REGEX
     MITRE --> T_REF
     MCP --> REPORT & ANY
-    HMM --> ANY
+    MODEL --> ANY
     REPORT & ANY & TASK --> CORE
 ```
 

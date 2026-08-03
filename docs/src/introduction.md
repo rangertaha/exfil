@@ -11,7 +11,7 @@ flowchart LR
     T["Targets<br/>code · config · deps<br/>hosts · web"] --> S["Scan<br/>walk · parse · render"]
     S --> M["Match<br/>secrets · taint · IOCs<br/>YARA · PII · supply-chain"]
     M --> G[("Findings graph<br/>SurrealDB")]
-    G --> R["Report<br/>search · reports<br/>HTTP · GraphQL · MCP"]
+    G --> R["Report<br/>search · reports<br/>MCP"]
 ```
 
 ### What it scans
@@ -31,9 +31,9 @@ flowchart LR
 - **Stored as a graph** — files → findings → rules in an embedded, pure-Rust
   database ([SurrealDB](https://surrealdb.com)) — or a remote cluster.
 - **Reported many ways** — query with `search`, render
-  `text`/`json`/`markdown`/`junit`/`sarif` reports, gate CI with `--fail-on`, or serve
-  the graph over HTTP + GraphQL and to AI agents over MCP. Enriched offline with
-  authoritative MITRE CWE names.
+  `text`/`json`/`markdown`/`junit`/`sarif` reports, gate CI with `--fail-on`, or
+  expose the graph to AI agents over MCP. Enriched offline with authoritative
+  MITRE CWE names.
 
 ## Where to go next
 

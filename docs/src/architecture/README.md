@@ -79,7 +79,6 @@ flowchart TD
     end
     subgraph Out["Read paths"]
         CLI[CLI]
-        SERVER[server<br/>HTTP + GraphQL]
         MCP[MCP for AI]
         REP[reports]
     end
@@ -92,7 +91,7 @@ flowchart TD
     REGEX & AST & TAINT & MORE & PII --> FILES
     FILES -.edges.- EDGES
     REF -. enrich .-> FILES
-    FILES & REF & EDGES --> CLI & SERVER & MCP & REP
+    FILES & REF & EDGES --> CLI & MCP & REP
 ```
 
 Read on: **[Overview & layers →](./overview.md)**

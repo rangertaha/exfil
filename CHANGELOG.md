@@ -437,6 +437,21 @@ and this project adheres to
   points it at a specific store. GraphQL is not reproduced — the dashboard
   never used it.
 
+- `exfil server` and the HTTP/GraphQL API behind it (`crates/exfil-cli/src/
+  server.rs`, `graphql.rs`, and the `async-graphql` dependency). A long-lived
+  network listener is a standing attack surface and a second, drifting way to
+  ask the same questions the CLI and MCP already answer; the CLI's tokio
+  features narrow back to the workspace default with it. The desktop app was
+  the only consumer, so it now **serves its own API in-process**
+  (`app/src-tauri/src/server.rs`) on the same `127.0.0.1:8080` — same
+  `/health`, `/stats` and `/findings` routes and the same JSON, but with no
+  child process to spawn or supervise, no `exfil` binary needed on `PATH` (and
+  so no `EXFIL_BIN`), and nothing listening unless the app is open. It resolves
+  its store through `exfil_engine::setup::open_findings`, the same path the CLI
+  takes, so both honour a `[database]` override identically; `EXFIL_STORE`
+  points it at a specific store. GraphQL is not reproduced — the dashboard
+  never used it.
+
 - `crates/exfil-remote/top-ports.txt`, the port ranking derived from nmap's
   `nmap-services` data. It was retained under MIT with an in-file notice, but
   the Nmap Public Source License is a modified GPLv2 with added restrictions

@@ -16,7 +16,7 @@ flowchart LR
     T["Targets<br/>code · config · deps<br/>hosts · web"] --> S["Scan<br/>walk · parse · render"]
     S --> M["Match<br/>secrets · taint · IOCs<br/>YARA · PII · supply-chain"]
     M --> G[("Findings graph<br/>SurrealDB")]
-    G --> R["Report<br/>search · reports<br/>HTTP · GraphQL · MCP"]
+    G --> R["Report<br/>search · reports<br/>MCP"]
 ```
 
 **What it scans**
@@ -31,7 +31,7 @@ flowchart LR
 **What it finds** — leaked credentials, code-injection flows, supply-chain
 risks (malicious & typosquatted dependencies), malware signatures (YARA ·
 ClamAV), IOCs (bad domains/IPs/hashes), and PII. Findings land in an embedded
-graph DB (or a remote cluster) you can query or serve over HTTP/GraphQL.
+graph DB (or a remote cluster) you can query from the CLI or over MCP.
 
 📖 **Full documentation: <https://rangertaha.github.io/exfil/>**
 

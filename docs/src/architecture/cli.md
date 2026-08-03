@@ -7,8 +7,7 @@ arguments and wires every other crate together. This page maps the commands, the
 covers the interactive progress gauge shown during a scan.
 
 Source: [`crates/exfil-cli/src/`](../../crates/exfil-cli/src/) — `main.rs`
-(commands), `progress.rs` (the gauge), `server.rs` (the HTTP API),
-`graphql.rs` (its GraphQL schema).
+(commands) and `progress.rs` (the gauge).
 
 ---
 
@@ -26,7 +25,7 @@ flowchart TD
     EXF --> DATA["sources / pull / datasets / feeds / rules — manage rules"]
     EXF --> MAINT["store export/gc/clean — maintenance"]
     EXF --> ENR["enrich / cwe — MITRE CWE annotation & lookup"]
-    EXF --> RANK["hmm train/score/status/eval — the path model"]
+    EXF --> RANK["model train/score/status/eval — the path model"]
     EXF --> SERVE["mcp / server — serve results to AI agents or over HTTP"]
     EXF --> MISC["config / completions"]
 ```
@@ -47,14 +46,13 @@ flowchart TD
 | `feeds [list/add/rm/show/pull]` | Manage the URL feed catalog and fetch feeds into rule datasets | [`main.rs:1055`](../../crates/exfil-cli/src/main.rs#L1055) (`cmd_feeds`) |
 | `rules [filter]` | Show the built-in rules a scan would apply | [`main.rs:1611`](../../crates/exfil-cli/src/main.rs#L1611) (`cmd_rules`) |
 | `enrich` | Annotate findings with authoritative MITRE CWE names | [`main.rs:1466`](../../crates/exfil-cli/src/main.rs#L1466) (`cmd_enrich`) |
-| `hmm train\|score\|status\|eval` | Train, inspect and evaluate the path model that ranks what a scan looks at first | [`main.rs:1243`](../../crates/exfil-cli/src/main.rs#L1243) (`cmd_hmm_train`) |
+| `model train\|score\|status\|eval` | Train, inspect and evaluate the path model that ranks what a scan looks at first | [`main.rs:1243`](../../crates/exfil-cli/src/main.rs#L1243) (`cmd_model_train`) |
 | `cwe <id>` | Look up a weakness in the local MITRE CWE catalog | [`main.rs:1500`](../../crates/exfil-cli/src/main.rs#L1500) (`cmd_cwe`) |
 | `config` | Show the resolved config path and contents | [`main.rs:503`](../../crates/exfil-cli/src/main.rs#L503) (`cmd_config`) |
 | `store export -o -f` | Snapshot the store (CBOR or JSON) | [`main.rs:1518`](../../crates/exfil-cli/src/main.rs#L1518) (`cmd_export`) |
 | `store gc` | Garbage-collect unreachable records | [`main.rs:1556`](../../crates/exfil-cli/src/main.rs#L1556) (`cmd_gc`) |
 | `store clean` | Delete the findings store (keeps downloaded datasets) | [`main.rs:1652`](../../crates/exfil-cli/src/main.rs#L1652) (`cmd_clean`) |
 | `mcp` | Serve exfil's whole tool surface over MCP/stdio for AI agents | [`main.rs:482`](../../crates/exfil-cli/src/main.rs#L482) |
-| `server` | Run a long-lived HTTP API over the findings graph until interrupted | [`main.rs:1583`](../../crates/exfil-cli/src/main.rs#L1583) (`cmd_server`) |
 | `completions <shell>` | Print a shell completion script | [`main.rs:1603`](../../crates/exfil-cli/src/main.rs#L1603) (`cmd_completions`) |
 
 `main` is `#[tokio::main]` ([`main.rs:406`](../../crates/exfil-cli/src/main.rs#L406))

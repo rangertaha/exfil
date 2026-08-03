@@ -16,9 +16,7 @@
 //!   prints the error (with its context chain) and exits nonzero — that's the
 //!   whole error-reporting strategy of the binary.
 
-mod graphql;
 mod progress;
-mod server;
 
 use std::path::PathBuf;
 
@@ -251,13 +249,6 @@ enum Command {
     },
     /// Run an MCP server on stdio for AI agents.
     Mcp,
-    /// Run a long-lived service exposing a read-only HTTP API over the findings
-    /// graph (`/health`, `/findings`, `/rules`, `/stats`) until interrupted.
-    Server {
-        /// Address to bind, e.g. `127.0.0.1:8080` or `0.0.0.0:8080`.
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        addr: String,
-    },
     /// Print a stored record by id.
     ///
     /// The id is `table:key`, e.g. `file:<blake3-hash>` or `finding:<id>`, as
@@ -488,7 +479,6 @@ async fn main() -> Result<()> {
             })
             .await?
         }
-        Command::Server { addr } => cmd_server(&store_dir, cfg, &addr).await?,
         Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
         Command::Plugin { action } => match action {
@@ -1577,27 +1567,6 @@ async fn cmd_get(
         None => println!("no record {id:?}"),
     }
     Ok(())
-}
-
-/// Run the long-lived HTTP API service until interrupted. Binds `addr`, opens
-/// the findings store, and serves read-only JSON endpoints; a graceful
-/// shutdown (Ctrl-C / SIGTERM) stops accepting connections and returns.
-async fn cmd_server(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    addr: &str,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("bind {addr}"))?;
-    eprintln!(
-        "[server] serving findings from {} — Ctrl-C to stop",
-        store_dir.display()
-    );
-    eprintln!("[server]   REST: GET /health /findings[?q=…] /rules /stats");
-    eprintln!("[server]   GraphQL: POST /graphql · IDE at GET /graphql");
-    server::serve(listener, store, server::shutdown_signal()).await
 }
 
 /// Print a shell completion script for `shell` to stdout. Generated from the

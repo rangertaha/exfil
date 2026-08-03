@@ -1,4 +1,4 @@
-// Talks to the `exfil server` HTTP API the desktop app launches on startup.
+// Talks to the findings API the desktop app serves in-process on startup.
 // 127.0.0.1 is a "potentially trustworthy" origin, so the webview may fetch it
 // over http from the app's secure context.
 const API = "http://127.0.0.1:8080";
@@ -10,14 +10,14 @@ async function api(path) {
   return res.json();
 }
 
-// The server is a child process that may still be starting; poll until it's up.
+// The API starts alongside the window and may not be listening yet; poll it.
 async function waitForServer() {
   for (;;) {
     try {
       await api("/health");
       return;
     } catch {
-      setStatus("starting server…", "");
+      setStatus("starting API…", "");
       await new Promise((r) => setTimeout(r, 700));
     }
   }
