@@ -298,6 +298,26 @@ const TOOLS: &[Tool] = &[
         params: &[],
     },
     Tool {
+        name: "run_list",
+        access: Access::Read,
+        description: "List the recorded scan runs, newest first. A run's name is what \
+                      'search' filters on with 'run=<name>'.",
+        params: &[],
+    },
+    Tool {
+        name: "run_get",
+        access: Access::Read,
+        description: "Show one scan run's details by name.",
+        params: &[("name", "string", "run name")],
+    },
+    Tool {
+        name: "run_remove",
+        access: Access::Write,
+        description: "Forget a scan run record. Its files and findings stay, since another \
+                      run may still stand behind them; 'gc' reclaims what nothing references.",
+        params: &[("name", "string", "run name")],
+    },
+    Tool {
         name: "model_list",
         access: Access::Read,
         description: "List the trained path models in the catalog.",
@@ -437,6 +457,9 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
             ops::model_eval(ctx, holdout, number("states").unwrap_or(8)).await
         }
         "model_get" => ops::model_status(ctx).await,
+        "run_list" => ops::run_list(ctx).await,
+        "run_get" => ops::run_get(ctx, &text("name")).await,
+        "run_remove" => ops::run_remove(ctx, &text("name")).await,
         "model_list" => ops::model_list(ctx).await,
         "model_remove" => ops::model_remove(ctx, &text("name")).await,
 

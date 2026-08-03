@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Added
 
+- `run_list`, `run_get` and `run_remove` MCP tools. Cutting `exfil run` from
+  the CLI rested on every departed command still existing as an MCP tool; for
+  `run` that was not yet true, which left named runs creatable and filterable
+  but enumerable from nowhere — and `Store::list_runs`/`get_run`/`remove_run`
+  reachable only from their own tests.
+
 - **`exfil datasets update [target]`** — re-fetch the datasets a config already
   names. With no target it runs every `[[update]]` entry; with one it runs that
   entry, or, when no entry matches, fetches the target as a source reference

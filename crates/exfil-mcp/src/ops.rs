@@ -452,6 +452,48 @@ pub async fn model_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String
     Ok(out)
 }
 
+/// The recorded scan runs, newest first.
+pub async fn run_list(ctx: &Ctx) -> Result<String> {
+    let runs = ctx.findings().await?.list_runs().await?;
+    if runs.is_empty() {
+        return Ok("no runs — the `scan` tool records one\n".into());
+    }
+    let mut out = String::new();
+    for r in &runs {
+        out.push_str(&format!(
+            "{}\t{} files\t{} matches\t{}\n",
+            r.name, r.files, r.matches, r.root
+        ));
+    }
+    out.push_str(&format!("{} run(s)\n", runs.len()));
+    Ok(out)
+}
+
+/// One run's details, by name.
+pub async fn run_get(ctx: &Ctx, name: &str) -> Result<String> {
+    match ctx.findings().await?.get_run(name).await? {
+        Some(r) => Ok(format!(
+            "name     {}\nroot     {}\nhost     {}\nstarted  {}\n\
+             files    {}\nmatches  {}\nruleset  {}\n",
+            r.name, r.root, r.host, r.started_at, r.files, r.matches, r.ruleset
+        )),
+        None => Ok(format!("no run {name:?}\n")),
+    }
+}
+
+/// Forget a run record. Its files and findings stay — another run may still
+/// stand behind them — so `gc` is what reclaims anything left unreferenced.
+pub async fn run_remove(ctx: &Ctx, name: &str) -> Result<String> {
+    let n = ctx.findings().await?.remove_run(name).await?;
+    Ok(if n == 0 {
+        format!("no run {name:?}\n")
+    } else {
+        format!(
+            "removed {n} run(s) named {name:?}; findings kept, `gc` reclaims unreferenced ones\n"
+        )
+    })
+}
+
 /// The names of every trained model in the catalog.
 pub async fn model_list(ctx: &Ctx) -> Result<String> {
     let names = ctx.catalog().await?.list_path_models().await?;
