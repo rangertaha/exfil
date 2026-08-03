@@ -120,7 +120,8 @@ enum ColorWhen {
 enum Command {
     /// List the available dataset source plugins.
     Sources,
-    /// Manage catalog datasets (list by default; add/show/rm subcommands).
+    /// Manage catalog datasets (list by default; add/show/rm/update
+    /// subcommands).
     Datasets {
         #[command(subcommand)]
         action: Option<DatasetCmd>,
@@ -216,7 +217,8 @@ enum Command {
         #[command(subcommand)]
         action: ModelCmd,
     },
-    /// Look up a weakness in the local MITRE CWE catalog.
+    /// Look up a weakness in the local MITRE CWE catalog (`exfil datasets
+    /// update mitre://cwe` downloads it).
     Cwe {
         /// CWE id, e.g. `CWE-798` or `798`.
         id: String,
@@ -346,6 +348,15 @@ enum DatasetCmd {
     Add { name: String, reference: String },
     /// Remove a dataset from the catalog.
     Rm { name: String },
+    /// Re-fetch datasets: every `[[update]]` entry in the config when no
+    /// target is given, or one entry by name. A target that is not a
+    /// configured name is fetched as a source reference directly
+    /// (`builtin://…`, a path, an `https://` URL, or `mitre://cwe` for the
+    /// MITRE CWE catalog).
+    Update {
+        /// An `[[update]]` entry's name, or a source reference. Omit for all.
+        target: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -842,8 +853,89 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
                 println!("no dataset {name:?}");
             }
         }
+        DatasetCmd::Update { target } => cmd_datasets_update(config, &catalog, target).await?,
     }
     Ok(())
+}
+
+/// Re-fetch the configured `[[update]]` entries, or one target.
+///
+/// A bare target is resolved against the config first: `datasets update
+/// security` means the entry named `security`, not a source called that. Only
+/// when no entry matches is it treated as a reference, so a name and a URL can
+/// share one argument without either shadowing the other.
+///
+/// One failed fetch does not abandon the rest — a feed being down should cost
+/// you that dataset, not the whole update — so failures are reported per entry
+/// and the command still exits zero. The exception is a target that named
+/// nothing at all, which is a mistake in the command rather than a fact about
+/// the network.
+async fn cmd_datasets_update(
+    config: Option<&std::path::Path>,
+    catalog: &exfil_store::Store,
+    target: Option<String>,
+) -> Result<()> {
+    let configured = exfil_config::load(config)?.update;
+    let entries: Vec<(String, String)> = match target {
+        Some(t) => match configured.into_iter().find(|u| u.name == t) {
+            Some(u) => vec![(u.name, u.reference)],
+            // Not a configured name: fetch it as a reference, stored under the
+            // name its source reports.
+            None => vec![(String::new(), t)],
+        },
+        None => configured
+            .into_iter()
+            .map(|u| (u.name, u.reference))
+            .collect(),
+    };
+    if entries.is_empty() {
+        println!("nothing to update (no [[update]] entries in the config — see `exfil config`)");
+        return Ok(());
+    }
+
+    let registry = exfil_source::Registry::new();
+    for (name, reference) in entries {
+        // MITRE reference catalogs (CWE today) are enrichment data, not rules,
+        // so they take a separate path into their own tables.
+        if let Some(kind) = reference.strip_prefix("mitre://") {
+            if let Err(e) = update_mitre(catalog, kind).await {
+                eprintln!("failed to update mitre://{kind}: {e:#}");
+            }
+            continue;
+        }
+        match registry.fetch(&reference).await {
+            Ok(mut dataset) => {
+                // A configured entry's name is what it is stored under, so the
+                // config decides what a dataset is called rather than the
+                // source deciding for it — the same rule `datasets add` follows.
+                if !name.is_empty() {
+                    dataset.name = name;
+                }
+                let n = catalog.upsert_dataset(&dataset).await?;
+                println!("updated {:?} ({} rules) from {reference}", dataset.name, n);
+            }
+            Err(e) => eprintln!("failed to update {reference}: {e:#}"),
+        }
+    }
+    Ok(())
+}
+
+/// Download a MITRE reference catalog into the local catalog store. Currently
+/// `cwe` (CVE/CPE are planned). These enrich findings; they are not rules.
+async fn update_mitre(catalog: &exfil_store::Store, kind: &str) -> Result<()> {
+    match kind {
+        "cwe" => {
+            eprintln!(
+                "downloading CWE catalog from {}…",
+                exfil_source::mitre::CWE_URL
+            );
+            let entries = exfil_source::mitre::fetch_cwe(exfil_source::mitre::CWE_URL).await?;
+            let n = catalog.upsert_cwe(&entries).await?;
+            println!("updated MITRE CWE catalog ({n} weaknesses)");
+            Ok(())
+        }
+        other => anyhow::bail!("unknown MITRE catalog {other:?} (known: cwe)"),
+    }
 }
 
 /// Query stored findings: no arg lists all, `field=value` filters on
@@ -1138,7 +1230,9 @@ async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
                 println!("\n{}", e.description);
             }
         }
-        None => println!("no {id} in the local CWE catalog"),
+        None => println!(
+            "no {id} in the local CWE catalog (run `exfil datasets update mitre://cwe`)"
+        ),
     }
     Ok(())
 }

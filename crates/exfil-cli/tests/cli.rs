@@ -531,3 +531,105 @@ fn dataset_crud_subcommands() {
     let out = exfil_catalog(&sb.store, &catalog, &["datasets", "rm", "sec"]);
     assert!(stdout(&out).contains("no dataset"), "{}", stdout(&out));
 }
+
+#[test]
+fn datasets_update_reads_the_configured_entries() {
+    let sb = Sandbox::new("dsupdate");
+    let catalog = sb.base.join("catalog");
+
+    // A config with no [[update]] entries says so rather than silently doing
+    // nothing.
+    let bare = sb.base.join("bare.toml");
+    std::fs::write(&bare, "store = \".exfil\"\n").unwrap();
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["--config", bare.to_str().unwrap(), "datasets", "update"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("nothing to update"),
+        "{}",
+        stdout(&out)
+    );
+
+    // With an entry configured, a bare `update` fetches it and stores it under
+    // the *config's* name, not the source's.
+    let cfg = sb.base.join("exfil.toml");
+    std::fs::write(
+        &cfg,
+        "store = \".exfil\"\n\n[[update]]\nname = \"house-rules\"\nref = \"builtin://security\"\n",
+    )
+    .unwrap();
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["--config", cfg.to_str().unwrap(), "datasets", "update"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("updated \"house-rules\""),
+        "{}",
+        stdout(&out)
+    );
+
+    // The name resolves against the config, so `update house-rules` is that
+    // entry — not a source called "house-rules", which does not exist.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &[
+            "--config",
+            cfg.to_str().unwrap(),
+            "datasets",
+            "update",
+            "house-rules",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("updated \"house-rules\""),
+        "{}",
+        stdout(&out)
+    );
+
+    // An unconfigured target is fetched as a reference instead.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &[
+            "--config",
+            cfg.to_str().unwrap(),
+            "datasets",
+            "update",
+            "builtin://security",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("updated"), "{}", stdout(&out));
+
+    // A reference that resolves to nothing is reported, and the command still
+    // exits zero — one dead feed must not fail the whole update.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &[
+            "--config",
+            cfg.to_str().unwrap(),
+            "datasets",
+            "update",
+            "builtin://no-such-set",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("failed to update"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Both datasets are in the catalog under the names chosen for them.
+    let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
+    let text = stdout(&out);
+    assert!(text.contains("house-rules") && text.contains("security"), "{text}");
+}

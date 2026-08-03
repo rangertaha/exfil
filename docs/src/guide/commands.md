@@ -110,11 +110,27 @@ over [`exfil mcp`](#mcp), not as CLI commands.
 | Command | What it does |
 |---|---|
 | `exfil sources` | List the available dataset source plugins |
-| `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`) |
+| `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`/`update`) |
 
 `exfil datasets add <name> <reference>` is how a dataset enters the catalog from
-the CLI. Feed management and the `mitre://cwe` catalog download are MCP tools
-(`feeds`, `feed_add`, `feed_rm`, `pull`).
+the CLI; `exfil datasets update` re-fetches what is already configured:
+
+```sh
+exfil datasets update                    # every [[update]] entry in the config
+exfil datasets update security           # just that entry, by its config name
+exfil datasets update https://example.com/rules.csv   # or any source reference
+exfil datasets update mitre://cwe        # the MITRE CWE catalog `exfil cwe` reads
+```
+
+A target is resolved against the config's `[[update]]` names first and treated
+as a source reference only when no entry matches, so a name and a URL share one
+argument without either shadowing the other. A configured entry is stored under
+*its* name, so the config decides what a dataset is called. One failed fetch is
+reported and the rest still run — a feed being down should cost you that
+dataset, not the whole update.
+
+Feed management remains an MCP tool set (`feeds`, `feed_add`, `feed_rm`,
+`pull`).
 
 ## Plugin settings {#plugin-settings}
 

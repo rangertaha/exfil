@@ -59,8 +59,9 @@
   sinks, so `os.system(request.args['cmd'])` is flagged while `os.system('ls')`
   is not — the attacker-controlled flow, not just the dangerous call.
 - **Datasets & IOC feeds** — `exfil datasets add <name> <ref>` pulls a rule/IOC
-  dataset (builtin, local file, or `https://`) into the catalog, and
-  `exfil datasets` list/show/rm manages what is there. IOCs ride the same pipeline: content
+  dataset (builtin, local file, or `https://`) into the catalog,
+  `exfil datasets update` re-fetches everything configured under `[[update]]`,
+  and `exfil datasets` list/show/rm manages what is there. IOCs ride the same pipeline: content
   indicators are regex rules, file-hash indicators (`sha256:…`) match digests.
 - **Malware signatures** — a pure-Rust ClamAV-signature scanner matches files
   against `.hdb`/`.hsb` hash signatures and literal `.ndb` body signatures

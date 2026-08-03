@@ -10,6 +10,22 @@ and this project adheres to
 
 ### Added
 
+- **`exfil datasets update [target]`** — re-fetch the datasets a config already
+  names. With no target it runs every `[[update]]` entry; with one it runs that
+  entry, or, when no entry matches, fetches the target as a source reference
+  (`builtin://…`, a path, an `https://` URL, or `mitre://cwe` for the MITRE CWE
+  catalog that `exfil cwe` reads).
+  - Resolving a target against the configured names *first* is what lets one
+    argument carry either a name or a URL. The alternative — a `--name` flag
+    beside a positional reference — makes the caller declare which kind of
+    thing they are holding when the command can just look.
+  - A configured entry is stored under **its** name, so `[[update]] name` finally
+    decides what a dataset is called instead of being decorative while the
+    source's own name won. `datasets add` already worked this way.
+  - One failed fetch is reported and the remaining entries still run. A feed
+    being down should cost you that dataset, not the whole update, so the
+    command exits zero with the failures on stderr.
+
 - **Named scan runs.** `exfil scan --name nightly` labels a run, and
   `exfil analyze -n nightly` and `exfil search run=nightly` ask for one run's
   findings. A run given no name is
@@ -471,11 +487,8 @@ and this project adheres to
   - `exfil datasets add <name> <reference>` is now the only CLI route into the
     catalog. It takes the same references `pull` did — `builtin://…`, a path, an
     `https://` URL — and stores the result under a name you choose.
-  - Two consequences worth stating rather than discovering: the MITRE CWE
-    catalog can no longer be downloaded from the CLI (`pull mitre://cwe` was the
-    only route, and `datasets add` does not handle the `mitre://` scheme), so
-    `exfil cwe <id>` can only read a catalog something else populated; and named
-    runs can be created and filtered on, but not enumerated.
+  - Named runs can still be created and filtered on (`scan --name`,
+    `analyze -n`, `search run=`), but no longer enumerated.
   - The post-scan hint, the empty-`datasets` message and the `cwe` not-found
     message no longer point at commands that are gone.
 
