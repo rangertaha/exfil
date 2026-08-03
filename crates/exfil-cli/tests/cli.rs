@@ -125,17 +125,7 @@ fn scan_search_get_clean_roundtrip() {
     let out = exfil(&sb.store, &["get", "garbage"]);
     assert!(!out.status.success());
 
-    // graph emits nodes/edges as JSON; gc runs and reports.
-    let out = exfil(&sb.store, &["graph"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    let g: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid graph json");
-    assert!(g["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|n| n["kind"] == "finding"));
-    let out = exfil(&sb.store, &["graph", "--format", "dot"]);
-    assert!(stdout(&out).contains("digraph exfil"));
+    // gc runs and reports.
     let out = exfil(&sb.store, &["store", "gc"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("gc: removed"), "{}", stdout(&out));
@@ -161,17 +151,6 @@ fn scan_ports_without_a_target_is_rejected() {
         "expected a missing-target error, got:\n{}",
         stderr(&out)
     );
-}
-
-#[test]
-fn rules_lists_builtin_ruleset() {
-    let sb = Sandbox::new("rules");
-    let out = exfil(&sb.store, &["rules"]);
-    assert!(out.status.success());
-    let text = stdout(&out);
-    for rule in ["aws-access-key-id", "private-key-block", "password-in-url"] {
-        assert!(text.contains(rule), "missing {rule} in:\n{text}");
-    }
 }
 
 #[test]
@@ -201,20 +180,10 @@ fn config_shows_explicit_file_and_errors_when_missing() {
 }
 
 #[test]
-fn enrich_and_export_commands() {
-    let sb = Sandbox::new("enrich");
+fn export_round_trips_the_stored_findings() {
+    let sb = Sandbox::new("export");
     let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
-
-    // With no MITRE catalog pulled (the sandbox isolates it), enrich says so
-    // rather than failing.
-    let out = exfil(&sb.store, &["enrich"]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stdout(&out).contains("nothing to annotate"),
-        "{}",
-        stdout(&out)
-    );
 
     // export --format json round-trips the stored findings.
     let out = exfil(&sb.store, &["store", "export", "--format", "json"]);
@@ -277,7 +246,7 @@ fn exfil_catalog(store: &Path, catalog: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn sources_pull_datasets_flow() {
+fn sources_and_datasets_flow() {
     let sb = Sandbox::new("catalog");
     let catalog = sb.base.join("catalog");
 
@@ -287,27 +256,35 @@ fn sources_pull_datasets_flow() {
     let text = stdout(&out);
     assert!(text.contains("builtin") && text.contains("file") && text.contains("http"));
 
-    // datasets is empty before any pull.
+    // datasets is empty before anything is added.
     let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
     assert!(stdout(&out).contains("no datasets"), "{}", stdout(&out));
 
-    // pull the built-in security dataset into the catalog.
-    let out = exfil_catalog(&sb.store, &catalog, &["pull", "builtin://security"]);
-    assert!(out.status.success(), "pull failed: {}", stderr(&out));
+    // add the built-in security dataset to the catalog.
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["datasets", "add", "security", "builtin://security"],
+    );
+    assert!(out.status.success(), "add failed: {}", stderr(&out));
     assert!(
-        stdout(&out).contains("pulled \"security\""),
+        stdout(&out).contains("added dataset \"security\""),
         "{}",
         stdout(&out)
     );
 
-    // pull a custom dataset from a JSON file.
+    // add a custom dataset from a JSON file.
     let ds = sb.base.join("custom.json");
     std::fs::write(
         &ds,
         r#"{"name":"custom","rules":[{"name":"acme-token","pattern":"ACME-[0-9]{6}","severity":"high"}]}"#,
     )
     .unwrap();
-    let out = exfil_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["datasets", "add", "custom", ds.to_str().unwrap()],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
 
     // datasets now lists both.
@@ -351,7 +328,11 @@ fn ioc_hash_and_content_scanning() {
     )
     .unwrap();
 
-    let out = exfil_catalog(&sb.store, &catalog, &["pull", ds.to_str().unwrap()]);
+    let out = exfil_catalog(
+        &sb.store,
+        &catalog,
+        &["datasets", "add", "iocs", ds.to_str().unwrap()],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
 
     let out = exfil_catalog(&sb.store, &catalog, &["scan", sb.tree.to_str().unwrap()]);

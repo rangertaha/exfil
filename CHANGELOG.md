@@ -10,9 +10,9 @@ and this project adheres to
 
 ### Added
 
-- **Named scan runs.** `exfil scan --name nightly` labels a run; `exfil run
-  list|get|remove` enumerates them, and `exfil analyze -n nightly` and
-  `exfil search run=nightly` ask for one run's findings. A run given no name is
+- **Named scan runs.** `exfil scan --name nightly` labels a run, and
+  `exfil analyze -n nightly` and `exfil search run=nightly` ask for one run's
+  findings. A run given no name is
   still recorded under one generated from its start time
   (`2026-08-03T14-22-05`), so every run stays addressable — a name you did not
   choose beats no handle at all.
@@ -23,10 +23,6 @@ and this project adheres to
   - `--name` is sugar for the `run=` filter rather than a second code path, so
     there is one query grammar; combining it with a query is rejected out loud
     instead of silently dropping one.
-  - `run remove` drops the run record and its `includes` edges only. The files
-    and findings stay, because another run may still stand behind them, and the
-    command says so rather than leaving a puzzling `search` result behind.
-    `exfil store gc` reclaims what nothing references.
   - The MCP `scan` tool takes the same `name`, so an agent can scan and then
     ask for exactly what that scan found.
 
@@ -465,6 +461,23 @@ and this project adheres to
   lookup, with a dependency-free date parser. Online, opt-in.
 
 ### Removed
+
+- **Eight CLI commands: `pull`, `feeds`, `rules`, `run`, `check`, `normalize`,
+  `graph` and `enrich`** — twenty-two top-level commands down to fourteen. Every
+  one of them survives as an MCP tool (`pull`, `feeds`, `rules`, `normalize`,
+  `enrich`, `graph`, `check_dns`, `check_whois`), so nothing was deleted from
+  the engine and no subsystem became unreachable; what went is a second way to
+  ask, from a shell, for things an agent asks for over `exfil mcp`.
+  - `exfil datasets add <name> <reference>` is now the only CLI route into the
+    catalog. It takes the same references `pull` did — `builtin://…`, a path, an
+    `https://` URL — and stores the result under a name you choose.
+  - Two consequences worth stating rather than discovering: the MITRE CWE
+    catalog can no longer be downloaded from the CLI (`pull mitre://cwe` was the
+    only route, and `datasets add` does not handle the `mitre://` scheme), so
+    `exfil cwe <id>` can only read a catalog something else populated; and named
+    runs can be created and filtered on, but not enumerated.
+  - The post-scan hint, the empty-`datasets` message and the `cwe` not-found
+    message no longer point at commands that are gone.
 
 - `exfil server` and the HTTP/GraphQL API behind it (`crates/exfil-cli/src/
   server.rs`, `graphql.rs`, and the direct `async-graphql` dependency — the

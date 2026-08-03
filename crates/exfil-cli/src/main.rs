@@ -108,24 +108,6 @@ struct Cli {
     command: Command,
 }
 
-/// What `exfil run` can do with a recorded scan.
-#[derive(Subcommand)]
-enum RunCmd {
-    /// List the recorded runs, newest first (the default).
-    List,
-    /// Show one run's details.
-    Get {
-        /// Run name, as given to `scan --name` or generated from its start time.
-        name: String,
-    },
-    /// Forget a run. Its files and findings stay — another run may still stand
-    /// behind them — so reclaim those with `exfil store gc`.
-    Remove {
-        /// Run name.
-        name: String,
-    },
-}
-
 /// `--color` choices, mapped onto [`progress::ColorChoice`].
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum ColorWhen {
@@ -138,23 +120,11 @@ enum ColorWhen {
 enum Command {
     /// List the available dataset source plugins.
     Sources,
-    /// Download datasets: a specific `reference`, or every configured
-    /// `[[update]]` entry when no reference is given.
-    Pull { reference: Option<String> },
     /// Manage catalog datasets (list by default; add/show/rm subcommands).
     Datasets {
         #[command(subcommand)]
         action: Option<DatasetCmd>,
     },
-    /// Manage the URL feed catalog and fetch feeds into rule datasets (list by
-    /// default; add/rm/pull subcommands).
-    Feeds {
-        #[command(subcommand)]
-        action: Option<FeedCmd>,
-    },
-    /// Show the rules a scan would apply, optionally filtered by a substring
-    /// of the name, description, CWE, or severity.
-    Rules { filter: Option<String> },
     /// Scan a target for secrets and security issues. With no target, scans
     /// the current directory. Passive targets stay on the local system: a
     /// path (default), or the literal `processes`. Active targets reach out
@@ -210,26 +180,12 @@ enum Command {
         /// early. Same results as an ordinary scan, reached sooner.
         #[arg(long)]
         ranked: bool,
-        /// Name this run, so `exfil run get <name>`, `exfil analyze -n <name>`
-        /// and `exfil search run=<name>` can address it later. Defaults to the
-        /// start time, so every run stays addressable either way.
+        /// Name this run, so `exfil analyze -n <name>` and `exfil search
+        /// run=<name>` can address it later. Defaults to the start time, so
+        /// every run stays addressable either way.
         #[arg(short, long, value_name = "NAME")]
         name: Option<String>,
     },
-    /// Inspect the named scan runs recorded in the store.
-    Run {
-        #[command(subcommand)]
-        action: Option<RunCmd>,
-    },
-    /// Check observed indicators against live network sources (online;
-    /// authorized use). `check dns` resolves domains; `check whois` ages them.
-    Check {
-        #[command(subcommand)]
-        action: CheckCmd,
-    },
-    /// Normalize findings into CIM events (shared category/action fields) for
-    /// cross-source correlation.
-    Normalize,
     /// Query stored findings.
     ///
     /// With no query, lists every finding. A `field=value` term filters on one
@@ -243,14 +199,6 @@ enum Command {
         #[arg(short = 'n', long)]
         limit: Option<usize>,
     },
-    /// Emit the findings graph (finding → file / rule) as JSON or DOT.
-    Graph {
-        /// Optional finding filter (same syntax as `search`).
-        query: Option<String>,
-        /// Output format: json or dot.
-        #[arg(short, long, default_value = "json")]
-        format: String,
-    },
     /// Analyze the whole findings graph and render a report.
     Analyze {
         /// Optional finding filter (same syntax as `search`).
@@ -263,16 +211,12 @@ enum Command {
         #[arg(short, long, value_name = "RUN")]
         name: Option<String>,
     },
-    /// Annotate stored findings with authoritative MITRE CWE names (run
-    /// `exfil pull mitre://cwe` first to download the catalog).
-    Enrich,
     /// Train and inspect the path model that ranks what a scan looks at first.
     Model {
         #[command(subcommand)]
         action: ModelCmd,
     },
-    /// Look up a weakness in the local MITRE CWE catalog (`exfil pull
-    /// mitre://cwe` downloads it).
+    /// Look up a weakness in the local MITRE CWE catalog.
     Cwe {
         /// CWE id, e.g. `CWE-798` or `798`.
         id: String,
@@ -318,20 +262,6 @@ enum PluginCmd {
     Config {
         /// Plugin name, e.g. `scan`.
         plugin: String,
-    },
-}
-
-/// Network reachability checks over observed indicators (online).
-#[derive(Subcommand)]
-enum CheckCmd {
-    /// Resolve domains observed during scans and flag reserved/private
-    /// resolutions.
-    Dns,
-    /// WHOIS-check observed domains and flag newly-registered ones.
-    Whois {
-        /// Flag domains registered within this many days.
-        #[arg(long, default_value_t = exfil_scan::whois::DEFAULT_RECENT_DAYS)]
-        recent_days: i64,
     },
 }
 
@@ -418,21 +348,6 @@ enum DatasetCmd {
     Rm { name: String },
 }
 
-/// URL feed catalog actions.
-#[derive(Subcommand)]
-enum FeedCmd {
-    /// List stored feeds and their URLs (the default).
-    List,
-    /// Add (or update) a feed URL under a name.
-    Add { name: String, url: String },
-    /// Remove a feed from the catalog.
-    Rm { name: String },
-    /// Show a feed's URL and a breakdown of the rules it last pulled.
-    Show { name: String },
-    /// Fetch feeds into rule datasets: a specific `name`, or all when omitted.
-    Pull { name: Option<String> },
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -449,9 +364,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,
         Command::Sources => cmd_sources(),
-        Command::Pull { reference } => cmd_pull(cli.config.as_deref(), reference).await?,
         Command::Datasets { action } => cmd_datasets(cfg, action).await?,
-        Command::Feeds { action } => cmd_feeds(cfg, action).await?,
         Command::Scan {
             target,
             ports,
@@ -481,14 +394,6 @@ async fn main() -> Result<()> {
             )
             .await?
         }
-        Command::Run { action } => cmd_run(&store_dir, cfg, action).await?,
-        Command::Check { action } => match action {
-            CheckCmd::Dns => cmd_check_dns(&store_dir, cfg).await?,
-            CheckCmd::Whois { recent_days } => {
-                cmd_check_whois(&store_dir, cfg, recent_days).await?
-            }
-        },
-        Command::Normalize => cmd_normalize(&store_dir, cfg).await?,
         Command::Search { query, limit } => cmd_search(&store_dir, cfg, query, limit).await?,
         Command::Analyze {
             query,
@@ -496,13 +401,11 @@ async fn main() -> Result<()> {
             name,
         } => cmd_analyze(&store_dir, cfg, run_query(query, name)?, &format).await?,
         Command::Get { id } => cmd_get(&store_dir, cfg, &id).await?,
-        Command::Graph { query, format } => cmd_graph(&store_dir, cfg, query, &format).await?,
         Command::Store { action } => match action {
             StoreCmd::Export { out, format } => cmd_export(&store_dir, cfg, out, &format).await?,
             StoreCmd::Gc => cmd_gc(&store_dir, cfg).await?,
             StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
         },
-        Command::Enrich => cmd_enrich(&store_dir, cfg).await?,
         Command::Model { action } => match action {
             ModelCmd::Train {
                 states,
@@ -524,7 +427,6 @@ async fn main() -> Result<()> {
             })
             .await?
         }
-        Command::Rules { filter } => cmd_rules(filter)?,
         Command::Completions { shell } => cmd_completions(shell),
         Command::Plugin { action } => match action {
             PluginCmd::Config { plugin } => cmd_plugin_config(cfg, &plugin).await?,
@@ -869,98 +771,10 @@ fn scan_hints(outcome: &target::Outcome) {
         hint("\nNext: `exfil analyze` for a report \u{b7} `exfil search severity=critical` to filter");
     } else if outcome.summary.files > 0 {
         hint(
-            "\nNo findings. `exfil rules` shows what was checked; `exfil pull` adds more rulesets.",
+            "\nNo findings. `exfil datasets` lists the rulesets in play; \
+             `exfil datasets add <name> <ref>` adds more.",
         );
     }
-}
-
-/// WHOIS-check every observed domain and flag newly-registered ones (a common
-/// phishing signal). Online: the port-43 lookups run off the async thread.
-async fn cmd_check_whois(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    recent_days: i64,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    let domains = store.indicator_domains().await?;
-    let today = exfil_scan::whois::today_epoch_days();
-    let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
-    eprintln!("WHOIS-checking {total} domain(s)…");
-
-    let mut flagged = 0u64;
-    for (hash, list) in domains {
-        for domain in list {
-            let d = domain.clone();
-            let finding = tokio::task::spawn_blocking(move || {
-                let whois = exfil_scan::whois::lookup(&d).ok()?;
-                exfil_scan::whois::check(&whois, &d, today, recent_days, "whois")
-            })
-            .await
-            .ok()
-            .flatten();
-            if let Some(m) = finding {
-                println!("{}", progress::styled_line(&m));
-                store.add_finding(&m, &hash).await?;
-                flagged += 1;
-            }
-        }
-    }
-    println!("{flagged} newly-registered domain(s)");
-    Ok(())
-}
-
-/// Normalize every stored finding into a CIM event (shared category/action
-/// fields) so heterogeneous findings can be correlated. Prints a per-category
-/// summary.
-async fn cmd_normalize(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    let findings = store.findings_with_ids("").await?;
-    for (fid, m) in &findings {
-        let event = exfil_scan::cim::normalize(m);
-        let value = serde_json::to_value(&event).unwrap_or_default();
-        store.upsert_event(fid, &value).await?;
-    }
-    println!("normalized {} finding(s) into CIM events", findings.len());
-    for (category, n) in store.event_summary().await? {
-        println!("  {category:<16} {n}");
-    }
-    Ok(())
-}
-
-/// Resolve every domain observed during scans and flag those resolving to a
-/// reserved/private address. Online: runs the blocking resolver off the async
-/// thread, then attaches findings to the file each domain came from.
-async fn cmd_check_dns(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    let domains = store.indicator_domains().await?;
-    let total: usize = domains.iter().map(|(_, d)| d.len()).sum();
-    eprintln!("resolving {total} domain(s)…");
-
-    let mut flagged = 0u64;
-    for (hash, list) in domains {
-        for domain in list {
-            // DNS resolution blocks; keep it off the async runtime thread.
-            let d = domain.clone();
-            let finding =
-                tokio::task::spawn_blocking(move || exfil_scan::dns::check_domain(&d, "dns"))
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some(m) = finding {
-                println!("{}", progress::styled_line(&m));
-                store.add_finding(&m, &hash).await?;
-                flagged += 1;
-            }
-        }
-    }
-    println!("{flagged} domain(s) resolve to reserved addresses");
-    Ok(())
 }
 
 /// List the available dataset source plugins.
@@ -977,62 +791,6 @@ fn cmd_sources() {
     }
 }
 
-/// Download a dataset into the catalog: a specific reference, or every
-/// configured `[[update]]` when none is given.
-async fn cmd_pull(config: Option<&std::path::Path>, reference: Option<String>) -> Result<()> {
-    let catalog = open_catalog(config).await?;
-    let registry = exfil_source::Registry::new();
-
-    let refs: Vec<(String, String)> = match reference {
-        Some(r) => vec![(r.clone(), r)],
-        None => exfil_config::load(config)?
-            .update
-            .into_iter()
-            .map(|u| (u.name, u.reference))
-            .collect(),
-    };
-    if refs.is_empty() {
-        println!("nothing to pull (no reference and no [[update]] entries configured)");
-        return Ok(());
-    }
-    for (name, reference) in refs {
-        // MITRE reference catalogs (CWE today) are enrichment data, not rules,
-        // so they take a separate path into their own tables.
-        if let Some(kind) = reference.strip_prefix("mitre://") {
-            if let Err(e) = pull_mitre(&catalog, kind).await {
-                eprintln!("failed to pull mitre://{kind}: {e:#}");
-            }
-            continue;
-        }
-        match registry.fetch(&reference).await {
-            Ok(dataset) => {
-                let n = catalog.upsert_dataset(&dataset).await?;
-                println!("pulled {:?} ({} rules) from {reference}", dataset.name, n);
-            }
-            Err(e) => eprintln!("failed to pull {name:?} from {reference}: {e:#}"),
-        }
-    }
-    Ok(())
-}
-
-/// Download a MITRE reference catalog into the local catalog store. Currently
-/// `cwe` (CVE/CPE are planned). These enrich findings; they are not rules.
-async fn pull_mitre(catalog: &exfil_store::Store, kind: &str) -> Result<()> {
-    match kind {
-        "cwe" => {
-            eprintln!(
-                "downloading CWE catalog from {}…",
-                exfil_source::mitre::CWE_URL
-            );
-            let entries = exfil_source::mitre::fetch_cwe(exfil_source::mitre::CWE_URL).await?;
-            let n = catalog.upsert_cwe(&entries).await?;
-            println!("pulled MITRE CWE catalog ({n} weaknesses)");
-            Ok(())
-        }
-        other => anyhow::bail!("unknown MITRE catalog {other:?} (known: cwe)"),
-    }
-}
-
 /// Manage catalog datasets: list (default), show, add, or remove.
 async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCmd>) -> Result<()> {
     let catalog = open_catalog(config).await?;
@@ -1041,7 +799,7 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
         DatasetCmd::List => {
             let datasets = catalog.list_datasets().await?;
             if datasets.is_empty() {
-                println!("no datasets — run `exfil pull` to download some");
+                println!("no datasets — add one with `exfil datasets add <name> <reference>`");
                 return Ok(());
             }
             for (name, rules) in &datasets {
@@ -1086,113 +844,6 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
         }
     }
     Ok(())
-}
-
-/// Manage the URL feed catalog: list (default), add, remove, or pull. `pull`
-/// runs the ingestion pipeline (fetch → decompress → detect → parse) over a
-/// feed and stores the extracted rules as a dataset named after the feed.
-async fn cmd_feeds(config: Option<&std::path::Path>, action: Option<FeedCmd>) -> Result<()> {
-    let catalog = open_catalog(config).await?;
-    match action.unwrap_or(FeedCmd::List) {
-        FeedCmd::List => {
-            let feeds = catalog.list_feeds().await?;
-            if feeds.is_empty() {
-                println!("no feeds — add one with `exfil feeds add <name> <url>`");
-                return Ok(());
-            }
-            for (name, url) in &feeds {
-                println!("{name:<24} {url}");
-            }
-            println!("{} feed(s)", feeds.len());
-        }
-        FeedCmd::Add { name, url } => {
-            catalog.upsert_feed(&name, &url).await?;
-            println!("added feed {name:?} → {url}");
-        }
-        FeedCmd::Rm { name } => {
-            if catalog.remove_feed(&name).await? {
-                println!("removed feed {name:?}");
-            } else {
-                println!("no feed {name:?}");
-            }
-        }
-        FeedCmd::Show { name } => {
-            let feeds = catalog.list_feeds().await?;
-            let Some((_, url)) = feeds.iter().find(|(n, _)| *n == name) else {
-                println!("no feed {name:?}");
-                return Ok(());
-            };
-            println!("feed {name:?}\n  url: {url}");
-            match catalog.get_dataset(&name).await? {
-                Some(ds) if !ds.rules.is_empty() => {
-                    // Group the pulled rules by indicator / rule type.
-                    let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
-                    for r in &ds.rules {
-                        *counts.entry(feed_rule_kind(&r.pattern)).or_default() += 1;
-                    }
-                    println!("  rules: {}", ds.rules.len());
-                    for (kind, n) in &counts {
-                        println!("    {kind:<8} {n}");
-                    }
-                }
-                _ => println!("  rules: none pulled yet — run `exfil feeds pull {name}`"),
-            }
-        }
-        FeedCmd::Pull { name } => {
-            let mut targets = catalog.list_feeds().await?;
-            if let Some(want) = &name {
-                targets.retain(|(n, _)| n == want);
-            }
-            if targets.is_empty() {
-                println!("nothing to pull (add a feed with `exfil feeds add`)");
-                return Ok(());
-            }
-            let total = targets.len();
-            let (mut ok, mut failed, mut rules) = (0usize, 0usize, 0usize);
-            for (name, url) in targets {
-                eprintln!("pulling feed {name:?} from {url}…");
-                match exfil_source::feed::fetch_feed(&name, &url).await {
-                    Ok(dataset) => {
-                        let n = catalog.upsert_dataset(&dataset).await?;
-                        println!("pulled feed {name:?}: {n} rule(s) from {url}");
-                        ok += 1;
-                        rules += n;
-                    }
-                    Err(e) => {
-                        eprintln!("failed to pull feed {name:?}: {e:#}");
-                        failed += 1;
-                    }
-                }
-            }
-            // Rollup, but only when it adds information (more than one feed).
-            if total > 1 {
-                let failed_note = if failed > 0 {
-                    format!(", {failed} failed")
-                } else {
-                    String::new()
-                };
-                println!("pulled {ok}/{total} feed(s), {rules} rule(s){failed_note}");
-            }
-            if failed > 0 {
-                std::process::exit(1);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Classify a rule pattern into a coarse type label for the `feeds show`
-/// breakdown, by its scheme prefix (a plain pattern is a regex rule).
-fn feed_rule_kind(pattern: &str) -> &'static str {
-    match pattern.split_once(':').map(|(s, _)| s) {
-        Some("domain") => "domain",
-        Some("ip") => "ip",
-        Some("url") => "url",
-        Some("md5" | "sha1" | "sha256") => "hash",
-        Some("breach-email") => "email",
-        Some("yara") => "yara",
-        _ => "regex",
-    }
 }
 
 /// Query stored findings: no arg lists all, `field=value` filters on
@@ -1245,38 +896,6 @@ async fn cmd_analyze(
         &mut stdout,
     )
     .await
-}
-
-/// Emit the findings graph as JSON or Graphviz DOT.
-async fn cmd_graph(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    query: Option<String>,
-    format: &str,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    let graph = store.graph(query.as_deref().unwrap_or("")).await?;
-    match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&graph)?),
-        "dot" => {
-            println!("digraph exfil {{");
-            println!("  rankdir=LR;");
-            for n in &graph.nodes {
-                let shape = match n.kind.as_str() {
-                    "finding" => "box",
-                    "file" => "folder",
-                    _ => "ellipse",
-                };
-                println!("  {:?} [label={:?}, shape={shape}];", n.id, n.label);
-            }
-            for e in &graph.edges {
-                println!("  {:?} -> {:?} [label={:?}];", e.from, e.to, e.rel);
-            }
-            println!("}}");
-        }
-        other => anyhow::bail!("unknown graph format {other:?} (use json or dot)"),
-    }
-    Ok(())
 }
 
 /// Train the path model on everything the store already knows and save it to
@@ -1506,42 +1125,6 @@ async fn load_model(
     }
 }
 
-/// Enrich stored findings from the local MITRE catalog: attach the
-/// authoritative CWE name to every finding carrying a `cwe`. A no-op until
-/// `exfil pull mitre://cwe` has downloaded the catalog.
-async fn cmd_enrich(store_dir: &std::path::Path, config: Option<&std::path::Path>) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    match annotate_cwe(&store, config).await? {
-        0 => println!("nothing to annotate (run `exfil pull mitre://cwe` for the CWE catalog)"),
-        n => println!("annotated {n} finding(s) with CWE names from the MITRE catalog"),
-    }
-    Ok(())
-}
-
-/// Attach the authoritative CWE name (from a pulled MITRE catalog) to every
-/// finding that carries a matching `cwe`. Returns how many were annotated; a
-/// no-op (0) when no catalog has been pulled.
-async fn annotate_cwe(
-    findings: &exfil_store::Store,
-    config: Option<&std::path::Path>,
-) -> Result<usize> {
-    let catalog = open_catalog(config).await?;
-    let cwe = catalog.cwe_catalog().await?;
-    if cwe.is_empty() {
-        return Ok(0);
-    }
-    let mut annotated = 0;
-    for (fid, m) in findings.findings_with_ids("").await? {
-        if let Some(entry) = m.cwe.as_deref().and_then(|id| cwe.get(id)) {
-            findings
-                .set_field(&fid, "cwe_name", serde_json::json!(entry.name))
-                .await?;
-            annotated += 1;
-        }
-    }
-    Ok(annotated)
-}
-
 /// Look up one CWE in the local MITRE catalog and print its name/description.
 async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
     let catalog = open_catalog(config).await?;
@@ -1555,7 +1138,7 @@ async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
                 println!("\n{}", e.description);
             }
         }
-        None => println!("no {id} in the local CWE catalog (run `exfil pull mitre://cwe`)"),
+        None => println!("no {id} in the local CWE catalog"),
     }
     Ok(())
 }
@@ -1641,109 +1224,11 @@ fn run_query(query: Option<String>, name: Option<String>) -> Result<Option<Strin
     }
 }
 
-/// `exfil run` — list, show, or forget the named scans in the store.
-///
-/// Runs are what `analyze -n` and `report -n` address, so they have to be
-/// discoverable; a name you can set but never enumerate is write-only.
-async fn cmd_run(
-    store_dir: &std::path::Path,
-    config: Option<&std::path::Path>,
-    action: Option<RunCmd>,
-) -> Result<()> {
-    let store = open_findings(store_dir, config).await?;
-    match action.unwrap_or(RunCmd::List) {
-        RunCmd::List => {
-            let runs = store.list_runs().await?;
-            if runs.is_empty() {
-                println!("no runs — `exfil scan` records one");
-                return Ok(());
-            }
-            for r in &runs {
-                println!(
-                    "{:<24} {:>6} files {:>6} matches  {}",
-                    exfil_report::fit::elide_right(&r.name, 24),
-                    r.files,
-                    r.matches,
-                    r.root
-                );
-            }
-            println!("{} run(s)", runs.len());
-        }
-        RunCmd::Get { name } => match store.get_run(&name).await? {
-            Some(r) => {
-                println!("name     {}", r.name);
-                println!("root     {}", r.root);
-                println!("host     {}", r.host);
-                println!("started  {}", r.started_at);
-                println!("files    {}", r.files);
-                println!("matches  {}", r.matches);
-                if !r.ruleset.is_empty() {
-                    println!("ruleset  {}", r.ruleset);
-                }
-            }
-            None => println!("no run {name:?}"),
-        },
-        RunCmd::Remove { name } => {
-            let n = store.remove_run(&name).await?;
-            if n == 0 {
-                println!("no run {name:?}");
-            } else {
-                // Say what was *not* deleted: the findings are still there, and
-                // a user who expected `remove` to reclaim space should learn
-                // that from the command rather than from a puzzling `search`.
-                println!("removed {n} run(s) named {name:?} — findings kept; `exfil store gc` reclaims unreferenced ones");
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Print a shell completion script for `shell` to stdout. Generated from the
 /// clap command tree, so it always covers the current subcommands and flags.
 fn cmd_completions(shell: Shell) {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, "exfil", &mut std::io::stdout());
-}
-
-/// Show the rules a scan would apply (currently the built-in set), optionally
-/// filtered by a case-insensitive substring of the name, description, CWE, or
-/// severity. Prints a trailing count.
-fn cmd_rules(filter: Option<String>) -> Result<()> {
-    let needle = filter.unwrap_or_default().to_lowercase();
-    let matches = |r: &exfil_core::Rule| {
-        if needle.is_empty() {
-            return true;
-        }
-        let sev = r.severity.map(|s| format!("{s:?}").to_lowercase());
-        r.name.to_lowercase().contains(&needle)
-            || r.description.to_lowercase().contains(&needle)
-            || r.cwe
-                .as_deref()
-                .is_some_and(|c| c.to_lowercase().contains(&needle))
-            || sev.as_deref() == Some(needle.as_str())
-    };
-
-    let mut shown = 0;
-    for r in exfil_scan::builtin_rules().iter().filter(|r| matches(r)) {
-        let sev = r
-            .severity
-            .map(|s| format!("{s:?}").to_lowercase())
-            .unwrap_or_else(|| "-".into());
-        println!(
-            "{:<22} {:<8} {:<8} {}",
-            r.name,
-            sev,
-            r.cwe.as_deref().unwrap_or("-"),
-            r.description
-        );
-        shown += 1;
-    }
-    if needle.is_empty() {
-        println!("{shown} rule(s)");
-    } else {
-        println!("{shown} rule(s) matching {needle:?}");
-    }
-    Ok(())
 }
 
 /// Remove the local findings store. Downloaded datasets live in the user config
@@ -1783,21 +1268,7 @@ fn confirm(question: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{feed_rule_kind, find_plugin_field, resolve_plugin_setting};
-
-    #[test]
-    fn feed_rule_kind_classifies_by_scheme() {
-        assert_eq!(feed_rule_kind("domain:evil.test"), "domain");
-        assert_eq!(feed_rule_kind("ip:203.0.113.9"), "ip");
-        assert_eq!(feed_rule_kind("url:https://evil.test/x"), "url");
-        assert_eq!(feed_rule_kind("sha256:deadbeef"), "hash");
-        assert_eq!(feed_rule_kind("md5:abc"), "hash");
-        assert_eq!(feed_rule_kind("breach-email:a@b.test"), "email");
-        assert_eq!(feed_rule_kind("yara:src"), "yara");
-        // A plain regex (even one containing a colon) is not a scheme.
-        assert_eq!(feed_rule_kind("AKIA[0-9A-Z]{16}"), "regex");
-        assert_eq!(feed_rule_kind("https://not-a-scheme"), "regex");
-    }
+    use super::{find_plugin_field, resolve_plugin_setting};
 
     #[tokio::test]
     async fn resolve_plugin_setting_falls_back_when_config_value_is_out_of_range() {

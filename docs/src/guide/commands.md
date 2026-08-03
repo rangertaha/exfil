@@ -46,9 +46,10 @@ also uploads a SARIF report to code scanning.
 |---|---|
 | `exfil search [query] [-n N]` | Query stored findings, worst-first (by field like `severity=critical`, or free text; `-n` caps output) |
 | `exfil get <id>` | Print a stored record by id (e.g. `file:<blake3-hash>`) |
-| `exfil rules [filter]` | Show the rules a scan would apply (filter by name/CWE/severity substring) |
-| `exfil graph` | Emit the findings graph (finding → file / rule) as JSON or DOT |
 | `exfil analyze` | Analyze the whole graph and render a report (`--format text\|json\|markdown\|junit\|sarif`) |
+
+The raw graph and the active ruleset are not CLI commands; they are available to
+agents as the `graph` and `rules` tools over [`exfil mcp`](#mcp).
 
 ## Ranked scanning
 
@@ -98,20 +99,22 @@ certainty. See the [architecture chapter](../architecture/ranking.md).
 
 | Command | What it does |
 |---|---|
-| `exfil normalize` | Normalize findings into Splunk-CIM events for cross-source correlation |
-| `exfil enrich` | Annotate findings with authoritative MITRE CWE names (needs `exfil pull mitre://cwe`) |
 | `exfil cwe <id>` | Look up a weakness in the local MITRE CWE catalog (e.g. `exfil cwe 798`) |
-| `exfil check dns` | Resolve observed domains and flag reserved/private resolutions *(online)* |
-| `exfil check whois` | WHOIS-check observed domains and flag newly-registered ones *(online)* |
+
+CIM normalization, CWE annotation, and the online DNS/WHOIS checks over observed
+domains run as the `normalize`, `enrich`, `check_dns` and `check_whois` tools
+over [`exfil mcp`](#mcp), not as CLI commands.
 
 ## Datasets & IOC feeds
 
 | Command | What it does |
 |---|---|
 | `exfil sources` | List the available dataset source plugins |
-| `exfil pull [reference]` | Download datasets (a `reference`, or every configured update); `mitre://cwe` fetches the MITRE CWE catalog |
 | `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`) |
-| `exfil feeds` | Manage the URL feed catalog and pull feeds into rule datasets (`list` default; `add`/`rm`/`show`/`pull`) |
+
+`exfil datasets add <name> <reference>` is how a dataset enters the catalog from
+the CLI. Feed management and the `mitre://cwe` catalog download are MCP tools
+(`feeds`, `feed_add`, `feed_rm`, `pull`).
 
 ## Plugin settings {#plugin-settings}
 
@@ -187,17 +190,12 @@ agent sees the consequence before it calls:
 
 ## Feed catalog
 
-A **feed** is a URL that publishes detection data. `exfil feeds` keeps a catalog
-of them and ingests each through a pipeline — **fetch → decompress → detect
-format → parse → store** — turning it into a rule dataset that scans then apply:
+A **feed** is a URL that publishes detection data. The catalog keeps a list of
+them and ingests each through a pipeline — **fetch → decompress → detect format
+→ parse → store** — turning it into a rule dataset that scans then apply.
 
-```sh
-exfil feeds add secrets https://example.com/rules.csv      # regex rules
-exfil feeds add threats https://example.com/iocs.txt.gz    # IOC list (gzipped)
-exfil feeds list
-exfil feeds pull                                           # fetch all → datasets
-exfil feeds show threats                                   # URL + rule-type breakdown
-```
+Feeds are managed by agents over [`exfil mcp`](#mcp) (`feed_add`, `feed_rm`,
+`feeds`, `pull`); the CLI reads the result with `exfil datasets`.
 
 Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/
 `.tar`/`.tar.gz`):
@@ -221,13 +219,12 @@ catalog and apply on the next scan.
 A feed URL prefixed `taxii2+` is polled over the [TAXII 2.x](https://oasis-open.github.io/cti-documentation/taxii/intro.html)
 transport instead of downloaded as a file. Point it at a collection's
 `objects/` endpoint; exfil sends the TAXII media type, follows `more`/`next`
-pagination, and normalizes the returned STIX objects into IOC rules:
+pagination, and normalizes the returned STIX objects into IOC rules. Basic-auth
+credentials for a private collection go in the URL:
 
-```sh
-exfil feeds add ti "taxii2+https://taxii.example.com/api/collections/<id>/objects/"
-# private collection — basic-auth credentials in the URL:
-exfil feeds add ti "taxii2+https://user:pass@taxii.example.com/api/collections/<id>/objects/"
-exfil feeds pull ti
+```text
+taxii2+https://taxii.example.com/api/collections/<id>/objects/
+taxii2+https://user:pass@taxii.example.com/api/collections/<id>/objects/
 ```
 
 ## Shell completions

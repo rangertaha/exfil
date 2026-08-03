@@ -248,7 +248,7 @@ everything is re-examined exactly once, and the fingerprint settles again.
 flowchart LR
     A["scan #1<br/>ruleset aaaa"] --> B["rescan<br/>ruleset aaaa"]
     B -->|fast-path applies| C["unchanged files skipped"]
-    A --> D["exfil pull …"]
+    A --> D["exfil datasets add …"]
     D --> E["rescan<br/>ruleset bbbb"]
     E -->|fingerprint moved| F["fast-path bypassed<br/>everything re-examined"]
     F --> G["fingerprint settles<br/>fast-path resumes"]
