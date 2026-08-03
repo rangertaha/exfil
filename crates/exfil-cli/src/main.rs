@@ -708,13 +708,38 @@ async fn cmd_scan(
                 "no trained path model; scanning in walk order \
                  (run `exfil train` to rank by probability)"
             ),
-            Some(m) if !m.ruleset.is_empty() && m.ruleset != fingerprint => eprintln!(
-                "warning: the path model was trained under ruleset {} but this \
-                 scan applies {fingerprint}; its ranking may be stale — re-run \
-                 `exfil train`",
-                m.ruleset
-            ),
-            Some(_) => {}
+            // Both of these can be true at once, so they are separate checks
+            // rather than match arms: a stale model can also be an
+            // uncalibrated one, and hearing about only the first would leave
+            // the more consequential problem unsaid.
+            Some(m) => {
+                if !m.ruleset.is_empty() && m.ruleset != fingerprint {
+                    eprintln!(
+                        "warning: the path model was trained under ruleset {} but this \
+                         scan applies {fingerprint}; its ranking may be stale — re-run \
+                         `exfil train`",
+                        m.ruleset
+                    );
+                }
+                // A confidence budget is the only one that reads the score as a
+                // probability rather than a rank: it stops once the scanned
+                // files account for a share of the *expected* findings, which
+                // means summing them. An uncalibrated model's scores are raw
+                // likelihood ratios piled up at 0 and 1, so that sum is not an
+                // expectation and the target is not the one asked for. Every
+                // other budget caps cost and is indifferent to this.
+                if matches!(budget, Some(exfil_engine::Budget::Confidence(_)))
+                    && !m.has_calibration()
+                {
+                    eprintln!(
+                        "warning: this model has no calibration (too little held-out data \
+                         when it was trained), so its scores rank but are not probabilities \
+                         — a `c` budget sums them as if they were, and will not stop where \
+                         you asked. Train on a wider corpus, or bound the scan with a \
+                         `%`/time/size budget instead."
+                    );
+                }
+            }
         }
         m
     } else {

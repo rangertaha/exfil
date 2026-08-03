@@ -416,6 +416,22 @@ impl PathModel {
         self.prior
     }
 
+    /// Whether a calibration map was fitted at all, or [`score`](Self::score)
+    /// is passing raw log-odds through the identity.
+    ///
+    /// This asks a different question from
+    /// [`eval::Report::is_calibrated`](crate::eval::Report::is_calibrated).
+    /// That one measures whether the probabilities *hold up* against held-out
+    /// outcomes; this one only reports whether there was enough data to fit a
+    /// map in the first place. A model can have a calibration and still be
+    /// badly calibrated — but a model without one is certainly not producing
+    /// probabilities, because an uncalibrated likelihood ratio saturates at 0
+    /// and 1. Callers that read a score as a rank can ignore this; callers
+    /// that read it as a probability cannot.
+    pub fn has_calibration(&self) -> bool {
+        self.platt != identity_platt()
+    }
+
     /// Most likely state sequence under the positive chain, for explaining a
     /// score.
     pub fn viterbi(&self, obs: &[usize]) -> Vec<usize> {
@@ -474,7 +490,10 @@ impl Default for TrainConfig {
 /// exactly what the findings graph already holds.
 pub fn train(samples: &[(String, bool)], cfg: &TrainConfig) -> PathModel {
     let mut model = train_chains_only(samples, cfg);
-    model.platt = fit_calibration(samples, cfg, &model);
+    // Safe to graft a map fitted elsewhere onto these chains: `fit_platt`
+    // refuses a non-positive slope, and a logistic with a positive slope is
+    // monotonic, so no calibration can reorder what the chains ranked.
+    model.platt = fit_calibration(samples, cfg);
     model
 }
 
@@ -549,7 +568,7 @@ fn train_chains_only(samples: &[(String, bool)], cfg: &TrainConfig) -> PathModel
 /// other, and the calibration is learned from *those* predictions — an honest
 /// estimate of how confident the model is on paths it has not seen. The map is
 /// then applied to the full-data chains.
-fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig, full: &PathModel) -> (f64, f64) {
+fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig) -> (f64, f64) {
     // A cheap deterministic split; same idea as the evaluation harness.
     let held = |p: &str| -> bool {
         let mut h: u64 = 1469598103934665603;
@@ -587,11 +606,7 @@ fn fit_calibration(samples: &[(String, bool)], cfg: &TrainConfig, full: &PathMod
         .iter()
         .filter_map(|(p, y)| holdout_model.log_odds(p).map(|z| (z, *y)))
         .collect();
-    let (a, b) = fit_platt(&pairs);
-
-    // Sanity: the map must not flip the ranking the full model produces.
-    let _ = full;
-    (a, b)
+    fit_platt(&pairs)
 }
 
 /// The logistic function, guarded against overflow at the tails.
@@ -758,6 +773,23 @@ mod tests {
             s.push((format!("/usr/share/doc/pkg{i}/notes.txt"), false));
         }
         s
+    }
+
+    /// An identity map is not a fitted one, and the difference is what a
+    /// confidence budget turns on. (That the map, when there is one, never
+    /// reorders is pinned by `eval::tests::calibration_preserves_the_ranking`.)
+    #[test]
+    fn has_calibration_distinguishes_a_fitted_map_from_the_identity() {
+        let tiny = vec![
+            ("/home/u/secrets/key.pem".to_string(), true),
+            ("/usr/share/doc/readme.md".to_string(), false),
+        ];
+        let model = train(&tiny, &TrainConfig::default());
+        assert!(!model.has_calibration(), "too small to hold anything out");
+        assert_eq!(model.platt, (1.0, 0.0));
+
+        let model = train(&corpus(), &TrainConfig::default());
+        assert!(model.has_calibration(), "big enough to fit a map");
     }
 
     #[test]

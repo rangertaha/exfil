@@ -588,6 +588,32 @@ and this project adheres to
 
 ### Fixed
 
+- **A `90c` budget no longer runs silently against an uncalibrated model.** The
+  `c` budget is the one that reads a path score as a *probability* — it stops
+  once the scanned files account for a share of the expected findings, which
+  means summing them — but a model trained on a corpus too small to hold out a
+  calibration set keeps the identity map, and its raw likelihood ratios pile up
+  at 0 and 1. The sum was then not an expectation and the scan stopped nowhere
+  in particular, while the coverage line reported the resulting file count with
+  the same confidence as any other run. `scan` now says so before starting.
+  It stays quiet for `%`/time/size budgets, which cap cost and never read the
+  score as a probability, and for `--ranked`, which only orders.
+  - The stale-ruleset and no-calibration checks are separate `if`s rather than
+    match arms, because a model can be both and hearing only the first would
+    leave the more consequential problem unsaid.
+  - `PathModel::has_calibration()` is what `scan` asks. It reports whether a map
+    was *fitted*, which is a different question from `eval::Report::is_calibrated`
+    — whether the probabilities hold up against held-out outcomes. A model can
+    have a calibration and still be a bad one; a model without one is certainly
+    not producing probabilities.
+
+- `fit_calibration` took the full-data model and discarded it (`let _ = full;`),
+  under a comment promising a check that the map "must not flip the ranking".
+  The invariant is real, but it is enforced in `fit_platt` — which refuses a
+  slope ≤ 0 — and pinned by `eval::tests::calibration_preserves_the_ranking`.
+  The parameter is gone and the reasoning now sits at the graft, where a reader
+  asking "is it safe to put this map on those chains?" will actually look.
+
 - Documentation drift, swept mechanically rather than by eye: 14 `file.rs:NNN`
   citations pointed at lines that no longer held the symbol they named, and
   `cli.md`'s whole handler table had gone stale again after the `hmm` commands
