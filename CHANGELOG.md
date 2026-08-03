@@ -268,6 +268,14 @@ and this project adheres to
 
 ### Changed
 
+- CI is one job instead of two. `cargo test` already builds every target it
+  runs, so the separate `cargo build --workspace` step only compiled the
+  workspace a second time; formatting and clippy are platform-independent and
+  now run once on Linux rather than being a job of their own. The dead `master`
+  branch trigger is gone (the default branch is `main`). The release workflow's
+  packaging step moved its per-OS `if` into the matrix as a `package` command,
+  so the step body is one line.
+
 - Terminal output fits an 80-column window. Help text wraps (clap's `wrap_help`
   with `max_term_width = 80`) instead of printing single 387-column lines, and
   finding lines are laid out to the window by a new `exfil_report::fit`: the

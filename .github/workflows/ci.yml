@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -12,21 +12,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
+  # One job across the three supported platforms. `cargo test` builds every
+  # target it runs, so a separate build step would only compile it all again;
+  # formatting and clippy are platform-independent, so they run once.
   test:
     strategy:
       fail-fast: false
@@ -36,10 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
-
-      - name: Build
-        run: cargo build --workspace
