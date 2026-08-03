@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use exfil_report::{reporter_for, Analysis};
+use exfil_report::{reporter_for, Analysis, Reporter};
 use exfil_store::Store;
 use exfil_task::Pipeline;
 
@@ -151,11 +151,28 @@ pub async fn gather_analysis(store: &Store, query: &str) -> Result<Analysis> {
 /// Convenience: render a report for `query` in `format` to `sink` over an
 /// already-open `store`. Used by the `analyze` CLI command (the caller opens
 /// the store so the `[database]` config is honored).
-pub async fn analyze(store: &Store, query: &str, format: &str, sink: &mut dyn Write) -> Result<()> {
+///
+/// `width` fits the `text` report to a window, and is `None` everywhere the
+/// output is not going to a terminal. The other formats are documents or
+/// machine interfaces and are always rendered in full.
+pub async fn analyze(
+    store: &Store,
+    query: &str,
+    format: &str,
+    width: Option<usize>,
+    sink: &mut dyn Write,
+) -> Result<()> {
     let analysis = gather_analysis(store, query).await?;
-    let reporter =
-        reporter_for(format).with_context(|| format!("unknown report format {format:?}"))?;
-    reporter.report(sink, &analysis)
+    match (width, format) {
+        (Some(width), "text" | "txt") => {
+            exfil_report::TextReporter::fitted(width).report(sink, &analysis)
+        }
+        _ => {
+            let reporter = reporter_for(format)
+                .with_context(|| format!("unknown report format {format:?}"))?;
+            reporter.report(sink, &analysis)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -225,13 +242,15 @@ mod tests {
         // Seed then use the analyze() convenience over a text sink.
         exfil_engine_scan(&tree, &store, &store_dir).await;
         let mut buf: Vec<u8> = Vec::new();
-        analyze(&store, "", "text", &mut buf).await.unwrap();
+        analyze(&store, "", "text", None, &mut buf).await.unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("finding(s) across"), "{out}");
 
         // Unknown format errors through the convenience path too.
         let mut sink = Vec::new();
-        let err = analyze(&store, "", "xml", &mut sink).await.unwrap_err();
+        let err = analyze(&store, "", "xml", None, &mut sink)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("unknown report format"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);

@@ -268,6 +268,22 @@ and this project adheres to
 
 ### Changed
 
+- Terminal output fits an 80-column window. Help text wraps (clap's `wrap_help`
+  with `max_term_width = 80`) instead of printing single 387-column lines, and
+  finding lines are laid out to the window by a new `exfil_report::fit`: the
+  location is elided from the left so the file name, `line:col`, severity and
+  rule survive, and the snippet from the right. The hotspot table sizes its
+  name column and bar from the same width, and its `under <root>` header is
+  elided rather than running to 131 columns.
+
+  **Piped output is untouched** — fitting applies only when stdout is a
+  terminal, so `path:line:col` prefixes stay whole for editors, `grep` and
+  scripts, and the JSON/JUnit/SARIF reporters are never shortened. `markdown`
+  is likewise left at full width: it is a document to paste into a PR, not
+  something read in a terminal. The layout lives in `exfil-report` because the
+  live scan feed and the text report both need it and must not drift; that also
+  retired the near-duplicate `truncate_left` the hotspot table carried.
+
 - `exfil hmm` is now **`exfil model`**, and the `exfil-hmm` crate is
   `exfil-model`. The command names what it is — the path model that ranks a
   scan — rather than the algorithm behind it, which is an implementation

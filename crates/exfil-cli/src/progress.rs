@@ -27,18 +27,12 @@ use std::time::Duration;
 
 use exfil_core::{Match, Severity};
 use exfil_engine::ScanEvent;
+use exfil_report::fit;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Gauge, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
-
-/// Short severity tag shown in a finding line, or `None` when the rule carries
-/// no severity so those lines keep their original shape. Delegates to
-/// [`Severity::tag`] for the canonical abbreviation.
-fn severity_tag(sev: Option<Severity>) -> Option<&'static str> {
-    Some(sev?.tag())
-}
 
 /// ANSI escape that colors a severity tag on a terminal (bright red for the
 /// worst, cooling down to cyan for info).
@@ -52,18 +46,26 @@ fn severity_color(sev: Severity) -> &'static str {
     }
 }
 
-/// Format one match as plain text: `path:line:col SEV [rule] snippet`, with the
-/// severity omitted when the rule has none. `path:line:col` stays at the front
-/// so editors and `grep` can still parse it. Used for pipes, the TUI, and as
-/// the base for the colored [`styled_line`].
-pub fn match_line(m: &Match) -> String {
-    match severity_tag(m.severity) {
-        Some(tag) => format!(
-            "{}:{}:{} {tag} [{}] {}",
-            m.path, m.line, m.col, m.rule, m.snippet
-        ),
-        None => format!("{}:{}:{} [{}] {}", m.path, m.line, m.col, m.rule, m.snippet),
+/// The width terminal output is fitted to: the terminal's own width, capped at
+/// [`fit::MAX_WIDTH`] so a wide window reads the same as a standard 80-column
+/// one.
+///
+/// `None` when stdout is not a terminal. That is the whole opt-out: pipes,
+/// redirects, CI logs and tests keep the full untruncated [`fit::match_line`].
+pub fn display_width() -> Option<usize> {
+    if !std::io::stdout().is_terminal() {
+        return None;
     }
+    let cols = ratatui::crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(fit::MAX_WIDTH);
+    Some(cols.clamp(fit::MIN_WIDTH, fit::MAX_WIDTH))
+}
+
+/// The finding line to show on the current output: fitted to the window on a
+/// terminal, and the full untruncated line anywhere else.
+pub fn display_line(m: &Match) -> String {
+    fit::line(m, display_width())
 }
 
 /// Row style for a finding's severity in ratatui widgets — the live scan feed
@@ -117,20 +119,39 @@ pub fn use_color() -> bool {
     }
 }
 
-/// Like [`match_line`], but colors the severity tag on a terminal. Falls back
+/// Like [`display_line`], but colors the severity tag on a terminal. Falls back
 /// to the plain line when color is disabled or the rule has no severity, so
 /// piped and redirected output is never polluted with escape codes.
+///
+/// The escapes are added *after* fitting and are zero-width on screen, so the
+/// visible line is the same width whether or not color is on.
 pub fn styled_line(m: &Match) -> String {
     match m.severity {
         Some(sev) if use_color() => {
-            let tag = severity_tag(Some(sev)).unwrap_or("");
             let (color, reset) = (severity_color(sev), "\x1b[0m");
-            format!(
-                "{}:{}:{} {color}{tag}{reset} [{}] {}",
-                m.path, m.line, m.col, m.rule, m.snippet
-            )
+            match display_width() {
+                Some(width) => {
+                    let (loc, tag, rule, snippet) = fit::fit_parts(m, width);
+                    let tag = tag.unwrap_or("");
+                    let snippet = if snippet.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {snippet}")
+                    };
+                    format!("{loc} {color}{tag}{reset} [{rule}]{snippet}")
+                }
+                None => format!(
+                    "{}:{}:{} {color}{}{reset} [{}] {}",
+                    m.path,
+                    m.line,
+                    m.col,
+                    sev.tag(),
+                    m.rule,
+                    m.snippet
+                ),
+            }
         }
-        _ => match_line(m),
+        _ => display_line(m),
     }
 }
 
@@ -153,7 +174,7 @@ pub fn severity_summary(findings: &[Match]) -> Option<String> {
             if n == 0 {
                 return None;
             }
-            let tag = severity_tag(Some(sev)).unwrap_or("");
+            let tag = fit::severity_tag(Some(sev)).unwrap_or("");
             Some(if color {
                 format!("{}{tag} {n}\x1b[0m", severity_color(sev))
             } else {
@@ -258,20 +279,28 @@ pub fn spawn(rx: Receiver<ScanEvent>) -> JoinHandle<SevCounts> {
     } else {
         std::thread::spawn(move || {
             let mut out = std::io::stdout();
-            render_plain(rx, &mut out)
+            render_plain(rx, &mut out, None)
         })
     }
 }
 
-/// Pipe-friendly rendering: write each match as a line into `w`. Returns the
-/// per-severity counts of the matches seen.
-fn render_plain<W: Write>(rx: Receiver<ScanEvent>, w: &mut W) -> SevCounts {
+/// Line-at-a-time rendering: write each match as a line into `w`. `fit` is the
+/// window width to fit to, or `None` to write the full untruncated line.
+///
+/// Both callers reach here: piped output (`None` — a machine interface that
+/// must not be shortened) and the terminal path when the inline viewport can't
+/// be set up (`Some`, because that output still lands in a window).
+fn render_plain<W: Write>(rx: Receiver<ScanEvent>, w: &mut W, fit: Option<usize>) -> SevCounts {
     let mut counts = SevCounts::default();
     // A blocking `for` over a Receiver ends when the sender is dropped.
     for event in rx {
         if let ScanEvent::Match(m) = event {
             tally(&mut counts, m.severity);
-            let _ = writeln!(w, "{}", match_line(&m));
+            let line = match fit {
+                Some(width) => fit::fitted_line(&m, width),
+                None => fit::match_line(&m),
+            };
+            let _ = writeln!(w, "{line}");
         }
     }
     counts
@@ -307,7 +336,10 @@ fn pump<B: Backend>(terminal: &mut Terminal<B>, rx: Receiver<ScanEvent>) -> SevC
                     if let ScanEvent::Match(m) = &ev {
                         tally(&mut counts, m.severity);
                         let style = severity_style(m.severity);
-                        let line = match_line(m);
+                        // The feed scrolls into scrollback, so fit it to the
+                        // window: an over-long line would wrap and push the
+                        // inline gauge around while the scan is still running.
+                        let line = fit::fitted_line(m, display_width().unwrap_or(fit::MAX_WIDTH));
                         let _ = terminal.insert_before(1, |buf| {
                             Line::styled(line, style).render(buf.area, buf);
                         });
@@ -337,9 +369,10 @@ fn render_tui(rx: Receiver<ScanEvent>) -> SevCounts {
             viewport: Viewport::Inline(1),
         },
     ) else {
-        // Terminal setup failed; degrade to plain output.
+        // Terminal setup failed; degrade to plain output — still fitted, since
+        // this is a terminal even though the inline viewport is unavailable.
         let mut out = std::io::stdout();
-        return render_plain(rx, &mut out);
+        return render_plain(rx, &mut out, display_width());
     };
     let counts = pump(&mut terminal, rx);
     // Leave the completed gauge in place and move to a fresh line below it.
@@ -366,15 +399,13 @@ mod tests {
     }
 
     #[test]
-    fn match_line_format() {
-        assert_eq!(match_line(&m("r")), "a.env:2:5 [r] hit");
-    }
-
-    #[test]
-    fn match_line_includes_severity_tag() {
-        let mut hit = m("aws");
-        hit.severity = Some(Severity::Critical);
-        assert_eq!(match_line(&hit), "a.env:2:5 CRIT [aws] hit");
+    fn display_line_is_unfitted_without_a_tty() {
+        // Under `cargo test` stdout is not a terminal, so nothing is truncated
+        // — piped output stays a faithful machine interface.
+        let mut hit = m("r");
+        hit.path = "/x".repeat(200);
+        assert_eq!(display_line(&hit), fit::match_line(&hit));
+        assert_eq!(display_width(), None);
     }
 
     #[test]
@@ -425,7 +456,7 @@ mod tests {
         // emit ANSI escapes — it should equal the plain match_line.
         let mut hit = m("aws");
         hit.severity = Some(Severity::Critical);
-        assert_eq!(styled_line(&hit), match_line(&hit));
+        assert_eq!(styled_line(&hit), fit::match_line(&hit));
         assert!(!styled_line(&hit).contains('\x1b'));
     }
 
@@ -463,10 +494,31 @@ mod tests {
         tx.send(ScanEvent::Match(m("gh"))).unwrap();
         drop(tx);
         let mut buf = Vec::new();
-        render_plain(rx, &mut buf);
+        render_plain(rx, &mut buf, None);
         let out = String::from_utf8(buf).unwrap();
         assert_eq!(out.lines().count(), 2, "{out:?}");
         assert!(out.contains("[aws]") && out.contains("[gh]"));
+    }
+
+    #[test]
+    fn render_plain_fits_every_line_when_given_a_width() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut hit = m("aws-access-key-id");
+        hit.path = "/deeply/nested/tree/of/directories/somewhere/config.yaml".into();
+        hit.snippet = "export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF".into();
+        tx.send(ScanEvent::Match(hit)).unwrap();
+        drop(tx);
+        let mut buf = Vec::new();
+        render_plain(rx, &mut buf, Some(fit::MAX_WIDTH));
+        let out = String::from_utf8(buf).unwrap();
+        for line in out.lines() {
+            assert!(
+                fit::width_of(line) <= fit::MAX_WIDTH,
+                "{} — {line}",
+                fit::width_of(line)
+            );
+        }
+        assert!(out.contains("config.yaml"), "{out}");
     }
 
     #[test]

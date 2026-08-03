@@ -79,10 +79,15 @@ fn hint(msg: &str) {
 #[command(
     name = "exfil",
     version,
-    about = "exfil — an offline DevSecOps engine for static analysis of code, infrastructure & systems",
+    about = "exfil — an offline DevSecOps engine for static analysis",
+    long_about = "exfil — an offline DevSecOps engine for static analysis of \
+                  code, infrastructure & systems.",
     after_help = EXAMPLES,
     // A bare `exfil` shows the help/examples instead of a terse usage error.
     arg_required_else_help = true,
+    // Wrap help at the terminal width, but never wider than 80 columns, so the
+    // output reads the same in a standard 80-column window as in a wide one.
+    max_term_width = 80,
 )]
 struct Cli {
     /// Path to the local findings store (default: `.exfil`, or the system
@@ -1190,7 +1195,14 @@ async fn cmd_analyze(
 ) -> Result<()> {
     let store = open_findings(store_dir, config).await?;
     let mut stdout = std::io::stdout().lock();
-    exfil_engine::run::analyze(&store, query.as_deref().unwrap_or(""), format, &mut stdout).await
+    exfil_engine::run::analyze(
+        &store,
+        query.as_deref().unwrap_or(""),
+        format,
+        progress::display_width(),
+        &mut stdout,
+    )
+    .await
 }
 
 /// Emit the findings graph as JSON or Graphviz DOT.

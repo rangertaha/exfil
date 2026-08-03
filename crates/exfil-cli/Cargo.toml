@@ -13,6 +13,7 @@ exfil-core = { workspace = true }
 exfil-config = { workspace = true }
 exfil-store = { workspace = true }
 exfil-scan = { workspace = true }
+exfil-report = { workspace = true }
 exfil-source = { workspace = true }
 exfil-remote = { workspace = true }
 exfil-task = { workspace = true }
@@ -23,7 +24,10 @@ serde_json = { workspace = true }
 toml = "0.8"
 anyhow = { workspace = true }
 tokio = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+# `wrap_help` makes clap wrap help text to the terminal width; without it long
+# descriptions print as single unbroken lines. Paired with `max_term_width`
+# below, help never exceeds 80 columns however wide the terminal is.
+clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
 ratatui = "0.30"
 ciborium = "0.2"

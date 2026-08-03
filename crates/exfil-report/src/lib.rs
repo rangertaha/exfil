@@ -12,6 +12,8 @@
 //! - `write!`/`writeln!` return a `Result`; the `?` after each propagates any
 //!   I/O error to the caller.
 
+pub mod fit;
+
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -136,7 +138,9 @@ pub const HOTSPOT_LIMIT: usize = 10;
 /// Render a hotspot table, or nothing when there is only one directory to
 /// name — a breakdown that says "100% of findings are in the one place they
 /// could be" is noise.
-fn write_hotspots(w: &mut dyn Write, a: &Analysis) -> Result<()> {
+/// `fit` is the window width to lay the table out in, or `None` for the
+/// unconstrained default.
+fn write_hotspots(w: &mut dyn Write, a: &Analysis, fit: Option<usize>) -> Result<()> {
     let rows = a.hotspots(HOTSPOT_LIMIT);
     if rows.len() < 2 {
         return Ok(());
@@ -144,21 +148,45 @@ fn write_hotspots(w: &mut dyn Write, a: &Analysis) -> Result<()> {
     let (root, names) = strip_common_prefix(&rows);
     writeln!(w)?;
     match &root {
-        Some(root) => writeln!(w, "findings by directory (under {root}):")?,
+        Some(root) => {
+            // The stripped root is an absolute path and can be longer than the
+            // whole window on its own, so it is elided like any other path.
+            const HEADER: usize = "findings by directory (under ):".len();
+            let root = match fit {
+                Some(width) => fit::elide_left(root, width.saturating_sub(HEADER)),
+                None => root.clone(),
+            };
+            writeln!(w, "findings by directory (under {root}):")?
+        }
         None => writeln!(w, "findings by directory:")?,
     }
+
+    // A row is `··name···NNNNN··PPP%··bar`: two leading spaces, the name, the
+    // count and percentage columns, then the bar. Everything but the name and
+    // the bar is fixed, so those two share whatever the window leaves.
+    const FIXED: usize = 2 + 1 + 5 + 1 + 5 + 1 + 2;
+    let (name_cap, bar_cap) = match fit {
+        Some(width) => {
+            let room = width.saturating_sub(FIXED);
+            // Give the bar a quarter of the room, the name the rest — the name
+            // identifies the directory, the bar only ranks it.
+            let bar = (room / 4).clamp(4, 20);
+            (room.saturating_sub(bar).max(8), bar)
+        }
+        None => (48, 20),
+    };
     let width = names
         .iter()
         .map(|n| n.chars().count())
         .max()
         .unwrap_or(0)
-        .min(48);
+        .min(name_cap);
     for (r, name) in rows.iter().zip(&names) {
-        let bar = "█".repeat(((r.share * 20.0).round() as usize).max(1));
+        let bar = "█".repeat(((r.share * bar_cap as f64).round() as usize).max(1));
         writeln!(
             w,
             "  {:<width$} {:>5} {:>5.0}%  {}",
-            truncate_left(name, width),
+            fit::elide_left(name, width),
             r.findings,
             r.share * 100.0,
             bar,
@@ -218,17 +246,6 @@ fn strip_common_prefix(rows: &[Hotspot]) -> (Option<String>, Vec<String>) {
     (Some(root), names)
 }
 
-/// Shorten a long path from the left, keeping the tail — the end of a path is
-/// what identifies it, the prefix is usually shared boilerplate.
-fn truncate_left(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
-        return s.to_string();
-    }
-    let keep: String = s.chars().skip(n - width + 1).collect();
-    format!("…{keep}")
-}
-
 /// A pluggable output renderer for one format.
 pub trait Reporter {
     /// Format name, e.g. `text`, `json`, `markdown`.
@@ -242,7 +259,7 @@ pub trait Reporter {
 /// common aliases (`md`, `txt`).
 pub fn reporter_for(format: &str) -> Option<Box<dyn Reporter>> {
     match format {
-        "text" | "txt" => Some(Box::new(TextReporter)),
+        "text" | "txt" => Some(Box::new(TextReporter::default())),
         "json" => Some(Box::new(JsonReporter)),
         "markdown" | "md" => Some(Box::new(MarkdownReporter)),
         "junit" | "junit-xml" => Some(Box::new(JunitReporter)),
@@ -255,7 +272,24 @@ pub fn reporter_for(format: &str) -> Option<Box<dyn Reporter>> {
 pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit", "sarif"];
 
 /// Human-readable plain-text report.
-pub struct TextReporter;
+///
+/// `width` is the window to fit lines to, or `None` for full-length output.
+/// [`reporter_for`] builds the `None` form: a report that is redirected to a
+/// file or piped is a machine interface, and truncating it there would corrupt
+/// whatever reads it. Only a caller that knows it is writing to a terminal —
+/// the CLI — asks for a width.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TextReporter {
+    /// Columns to fit each finding line into, or `None` to never truncate.
+    pub width: Option<usize>,
+}
+
+impl TextReporter {
+    /// A text reporter that fits its output to `width` columns.
+    pub fn fitted(width: usize) -> Self {
+        Self { width: Some(width) }
+    }
+}
 
 impl Reporter for TextReporter {
     fn name(&self) -> &str {
@@ -264,23 +298,7 @@ impl Reporter for TextReporter {
 
     fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
         for m in &a.findings {
-            match m.severity {
-                Some(s) => writeln!(
-                    w,
-                    "{}:{}:{} {} [{}] {}",
-                    m.path,
-                    m.line,
-                    m.col,
-                    s.tag(),
-                    m.rule,
-                    m.snippet
-                )?,
-                None => writeln!(
-                    w,
-                    "{}:{}:{} [{}] {}",
-                    m.path, m.line, m.col, m.rule, m.snippet
-                )?,
-            }
+            writeln!(w, "{}", fit::line(m, self.width))?;
         }
         writeln!(w)?;
         writeln!(
@@ -294,7 +312,7 @@ impl Reporter for TextReporter {
         for (sev, n) in a.severity_counts() {
             writeln!(w, "  {:<8} {}", format!("{sev:?}").to_lowercase(), n)?;
         }
-        write_hotspots(w, a)?;
+        write_hotspots(w, a, self.width)?;
         Ok(())
     }
 }
@@ -617,7 +635,7 @@ mod tests {
 
     #[test]
     fn text_report_has_findings_and_summary() {
-        let out = render(&TextReporter, &sample());
+        let out = render(&TextReporter::default(), &sample());
         assert!(out.contains("[aws-key]"));
         assert!(out.contains("3 finding(s) across 10 file(s), 2 scan(s); risk score 21"));
         assert!(out.contains("critical 2"));
@@ -645,7 +663,7 @@ mod tests {
     #[test]
     fn empty_analysis_still_renders() {
         let empty = Analysis::default();
-        assert!(render(&TextReporter, &empty).contains("0 finding(s)"));
+        assert!(render(&TextReporter::default(), &empty).contains("0 finding(s)"));
         let v: serde_json::Value = serde_json::from_str(&render(&JsonReporter, &empty)).unwrap();
         assert_eq!(v["findings"].as_array().unwrap().len(), 0);
     }
@@ -660,7 +678,8 @@ mod tests {
 
     #[test]
     fn reporter_names_and_formats_are_stable() {
-        assert_eq!(TextReporter.name(), "text");
+        assert_eq!(TextReporter::default().name(), "text");
+        assert_eq!(TextReporter::fitted(80).name(), "text");
         assert_eq!(JsonReporter.name(), "json");
         assert_eq!(MarkdownReporter.name(), "markdown");
         assert_eq!(JunitReporter.name(), "junit");
@@ -853,7 +872,7 @@ mod tests {
     #[test]
     fn hotspots_are_omitted_when_there_is_nothing_to_compare() {
         // Every finding in one directory: a "100%" table teaches nothing.
-        let text = render(&TextReporter, &sample());
+        let text = render(&TextReporter::default(), &sample());
         assert!(!text.contains("findings by directory"), "{text}");
         // …and an empty report has no hotspots at all.
         assert!(Analysis::default().hotspots(HOTSPOT_LIMIT).is_empty());
@@ -862,7 +881,7 @@ mod tests {
     #[test]
     fn hotspots_reach_every_human_facing_format() {
         let a = spread();
-        let text = render(&TextReporter, &a);
+        let text = render(&TextReporter::default(), &a);
         assert!(text.contains("findings by directory"), "{text}");
         assert!(text.contains("src/auth"), "{text}");
         assert!(text.contains("50%"), "{text}");
@@ -878,10 +897,35 @@ mod tests {
     }
 
     #[test]
+    fn a_fitted_text_report_stays_inside_the_window() {
+        // Long paths, long snippets and a hotspot table, all in 80 columns.
+        let mut a = sample();
+        for (i, m) in a.findings.iter_mut().enumerate() {
+            m.path = format!("/a/deeply/nested/tree/of/directories/number{i}/config.yaml");
+            m.snippet = "password = \"https://user:hunter2@example.com/long/path\"".into();
+        }
+        let fitted = render(&TextReporter::fitted(fit::MAX_WIDTH), &a);
+        for line in fitted.lines() {
+            assert!(
+                fit::width_of(line) <= fit::MAX_WIDTH,
+                "{} cols — {line}",
+                fit::width_of(line)
+            );
+        }
+
+        // The default reporter is the machine interface and is never shortened.
+        let full = render(&TextReporter::default(), &a);
+        assert!(
+            full.lines().any(|l| fit::width_of(l) > fit::MAX_WIDTH),
+            "unfitted output should keep its long lines"
+        );
+    }
+
+    #[test]
     fn a_long_directory_is_shortened_from_the_left() {
         // The tail identifies a path; the prefix is usually shared boilerplate.
-        assert_eq!(truncate_left("short", 10), "short");
-        let long = truncate_left("/a/very/deeply/nested/path/to/somewhere", 12);
+        assert_eq!(fit::elide_left("short", 10), "short");
+        let long = fit::elide_left("/a/very/deeply/nested/path/to/somewhere", 12);
         assert_eq!(long.chars().count(), 12);
         assert!(
             long.starts_with('…') && long.ends_with("somewhere"),
@@ -909,7 +953,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let text = render(&TextReporter, &a);
+        let text = render(&TextReporter::default(), &a);
         // Scope the checks to the hotspot table: the finding list above it
         // legitimately prints full paths.
         let table = text
