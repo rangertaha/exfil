@@ -13,6 +13,7 @@
 //!   I/O error to the caller.
 
 pub mod fit;
+pub mod pdf;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -264,12 +265,27 @@ pub fn reporter_for(format: &str) -> Option<Box<dyn Reporter>> {
         "markdown" | "md" => Some(Box::new(MarkdownReporter)),
         "junit" | "junit-xml" => Some(Box::new(JunitReporter)),
         "sarif" => Some(Box::new(SarifReporter)),
+        "pdf" => Some(Box::new(PdfReporter)),
         _ => None,
     }
 }
 
 /// The format names [`reporter_for`] accepts (canonical spellings).
-pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit", "sarif"];
+pub const FORMATS: &[&str] = &["text", "json", "markdown", "junit", "sarif", "pdf"];
+
+/// PDF report, for handing a scan's result to someone who will read it.
+pub struct PdfReporter;
+
+impl Reporter for PdfReporter {
+    fn name(&self) -> &str {
+        "pdf"
+    }
+
+    fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
+        w.write_all(&pdf::render(a))?;
+        Ok(())
+    }
+}
 
 /// Human-readable plain-text report.
 ///
@@ -684,7 +700,10 @@ mod tests {
         assert_eq!(MarkdownReporter.name(), "markdown");
         assert_eq!(JunitReporter.name(), "junit");
         assert_eq!(SarifReporter.name(), "sarif");
-        assert_eq!(FORMATS, ["text", "json", "markdown", "junit", "sarif"]);
+        assert_eq!(
+            FORMATS,
+            ["text", "json", "markdown", "junit", "sarif", "pdf"]
+        );
     }
 
     #[test]

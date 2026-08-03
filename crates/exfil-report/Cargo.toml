@@ -9,6 +9,7 @@ exfil-core = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+printpdf = { version = "0.12.5", default-features = false }
 
 [lints]
 workspace = true

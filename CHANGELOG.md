@@ -10,6 +10,21 @@ and this project adheres to
 
 ### Added
 
+- `exfil report -f pdf` — a paginated PDF: summary, per-severity tally,
+  directory hotspots, then the findings worst-first, colour-coded by severity.
+  For handing a scan's result to someone who will read it rather than parse it.
+  - Set in base-14 **Helvetica**, which every PDF reader must provide, so no
+    font is embedded: a 60-finding, two-page report is ~13 KB, and no font file
+    has to be found at build time.
+  - Finding lines reuse `exfil_report::fit`, the same elision the terminal uses,
+    at the width a page holds — one layout decision serving two media.
+  - Characters outside Latin-1 are dropped rather than mangled. The base-14
+    fonts are single-byte encoded, and in a report a wrong glyph is worse than
+    a missing one.
+  - `printpdf` is pulled in with `--no-default-features`; its defaults carry
+    image codecs, an HTML renderer and hyphenation that a text report has no
+    use for.
+
 - `exfil report [-o FILE]` — the same rendering `analyze` prints, aimed at a
   file you keep or send. With no `--out` it writes to stdout, so it is a
   superset of `analyze`; `analyze` stays because it is the one you type
