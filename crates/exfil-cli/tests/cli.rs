@@ -636,3 +636,44 @@ fn datasets_update_reads_the_configured_entries() {
         "{text}"
     );
 }
+
+#[test]
+fn report_writes_a_file_and_validates_the_format_first() {
+    let sb = Sandbox::new("report");
+    let out = exfil(&sb.store, &["scan", sb.tree.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // A report lands in the file it was asked for.
+    let path = sb.base.join("report.md");
+    let out = exfil(
+        &sb.store,
+        &["report", "-f", "markdown", "-o", path.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("aws-access-key-id"), "{body}");
+
+    // An unknown format is rejected *before* the file is touched, so a typo
+    // cannot truncate a good report from a previous run.
+    let out = exfil(
+        &sb.store,
+        &["report", "-f", "nope", "-o", path.to_str().unwrap()],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unknown report format"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        body,
+        "the existing report must survive a bad format"
+    );
+
+    // With no --out it writes to stdout, so it is a superset of `analyze`.
+    let out = exfil(&sb.store, &["report", "-f", "json"]);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json report");
+    assert_eq!(v["summary"]["findings"], 1);
+}

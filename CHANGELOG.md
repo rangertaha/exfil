@@ -10,6 +10,17 @@ and this project adheres to
 
 ### Added
 
+- `exfil report [-o FILE]` — the same rendering `analyze` prints, aimed at a
+  file you keep or send. With no `--out` it writes to stdout, so it is a
+  superset of `analyze`; `analyze` stays because it is the one you type
+  constantly and `report -f text -o -` is a worse way to ask for it.
+  - The format is validated **before** the file is opened. `File::create`
+    truncates, so checking afterwards would leave an empty file behind on a
+    typo — and would destroy a good report from a previous run.
+  - A report written to a file is never fitted to a window. Fitting is for
+    terminals; a saved report is a document, and truncating its paths would
+    corrupt the artifact that was asked for.
+
 - `run_list`, `run_get` and `run_remove` MCP tools. Cutting `exfil run` from
   the CLI rested on every departed command still existing as an MCP tool; for
   `run` that was not yet true, which left named runs creatable and filterable

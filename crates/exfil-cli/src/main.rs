@@ -212,6 +212,25 @@ enum Command {
         #[arg(short, long, value_name = "RUN")]
         name: Option<String>,
     },
+    /// Write a report over the findings graph to a file.
+    ///
+    /// The same rendering `analyze` prints, aimed at a file you keep or send.
+    /// With no `--out` it writes to stdout, which makes it a superset of
+    /// `analyze`; `analyze` stays because it is the one you type constantly.
+    Report {
+        /// Optional finding filter (same syntax as `search`).
+        query: Option<String>,
+        /// Report format: text, json, markdown, junit, or sarif.
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Report on one run's findings only. Sugar for the `run=<name>`
+        /// filter, so it composes with a query rather than replacing it.
+        #[arg(short, long, value_name = "RUN")]
+        name: Option<String>,
+        /// Write here instead of stdout. The parent directory must exist.
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Train the path model on the scans already in the store and save it to
     /// the catalog. Every file recorded is a training sample; whether a finding
     /// was attached to it is the label, so there is nothing to hand-label.
@@ -419,6 +438,21 @@ async fn main() -> Result<()> {
             format,
             name,
         } => cmd_analyze(&store_dir, cfg, run_query(query, name)?, &format).await?,
+        Command::Report {
+            query,
+            format,
+            name,
+            out,
+        } => {
+            cmd_report(
+                &store_dir,
+                cfg,
+                run_query(query, name)?,
+                &format,
+                out.as_deref(),
+            )
+            .await?
+        }
         Command::Get { id } => cmd_get(&store_dir, cfg, &id).await?,
         Command::Store { action } => match action {
             StoreCmd::Export { out, format } => cmd_export(&store_dir, cfg, out, &format).await?,
@@ -1091,6 +1125,54 @@ async fn cmd_model_score(config: Option<&std::path::Path>, path: &str, name: &st
             ""
         };
         println!("  {token:<28} {delta:>+9.3}{unseen}");
+    }
+    Ok(())
+}
+
+/// Render a report to a file, or to stdout when `out` is `None`.
+///
+/// Writing to a file is not the same as writing to a terminal, so the text
+/// report is fitted to a window only in the stdout-to-a-terminal case. A saved
+/// report is a document: truncating its paths would corrupt the artifact the
+/// caller asked for.
+async fn cmd_report(
+    store_dir: &std::path::Path,
+    config: Option<&std::path::Path>,
+    query: Option<String>,
+    format: &str,
+    out: Option<&std::path::Path>,
+) -> Result<()> {
+    // Check the format before touching the filesystem. `File::create`
+    // truncates, so validating afterwards would leave an empty file behind —
+    // and would clobber a good report from a previous run on a typo.
+    if exfil_report::reporter_for(format).is_none() {
+        anyhow::bail!(
+            "unknown report format {format:?} (try {})",
+            exfil_report::FORMATS.join(", ")
+        );
+    }
+    let store = open_findings(store_dir, config).await?;
+    let query = query.unwrap_or_default();
+    match out {
+        Some(path) => {
+            let mut file = std::fs::File::create(path)
+                .with_context(|| format!("create {}", path.display()))?;
+            exfil_engine::run::analyze(&store, &query, format, None, &mut file).await?;
+            // Say where it went: a command whose whole purpose is producing a
+            // file should not be silent about having produced one.
+            hint(&format!("wrote {} report to {}", format, path.display()));
+        }
+        None => {
+            let mut stdout = std::io::stdout().lock();
+            exfil_engine::run::analyze(
+                &store,
+                &query,
+                format,
+                progress::display_width(),
+                &mut stdout,
+            )
+            .await?;
+        }
     }
     Ok(())
 }
