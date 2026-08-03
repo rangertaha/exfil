@@ -173,7 +173,7 @@ enum Command {
         /// count, or `90c` for 90% of the *expected findings* (which adapts to
         /// the tree instead of assuming a shape, and needs a calibrated model).
         /// Ranking uses the trained path model when one exists
-        /// (`exfil model train`). Cannot be combined with `--fail-on`: a partial
+        /// (`exfil train`). Cannot be combined with `--fail-on`: a partial
         /// scan cannot certify that a tree is clean.
         #[arg(long, value_name = "BUDGET")]
         budget: Option<exfil_engine::Budget>,
@@ -212,10 +212,27 @@ enum Command {
         #[arg(short, long, value_name = "RUN")]
         name: Option<String>,
     },
-    /// Train and inspect the path model that ranks what a scan looks at first.
+    /// Train the path model on the scans already in the store and save it to
+    /// the catalog. Every file recorded is a training sample; whether a finding
+    /// was attached to it is the label, so there is nothing to hand-label.
+    Train {
+        /// Number of latent states to fit.
+        #[arg(long, default_value_t = 12)]
+        states: usize,
+        /// Maximum Baum-Welch iterations.
+        #[arg(long, default_value_t = 30)]
+        iterations: usize,
+        /// Keep at most this many distinct path tokens.
+        #[arg(long, default_value_t = 4096)]
+        vocab: usize,
+        /// Name to save the model under.
+        #[arg(short, long, default_value = "default")]
+        name: String,
+    },
+    /// Inspect the path models that `exfil train` produced.
     Model {
         #[command(subcommand)]
-        action: ModelCmd,
+        action: Option<ModelCmd>,
     },
     /// Look up a weakness in the local MITRE CWE catalog (`exfil datasets
     /// update mitre://cwe` downloads it).
@@ -270,33 +287,24 @@ enum PluginCmd {
 /// Path-model actions.
 #[derive(Subcommand)]
 enum ModelCmd {
-    /// Train the path model on the scans already in the store and save it to
-    /// the catalog. Every file recorded is a training sample; whether a
-    /// finding was attached to it is the label.
-    Train {
-        /// Number of latent states to fit.
-        #[arg(long, default_value_t = 12)]
-        states: usize,
-        /// Maximum Baum-Welch iterations.
-        #[arg(long, default_value_t = 30)]
-        iterations: usize,
-        /// Keep at most this many distinct path tokens.
-        #[arg(long, default_value_t = 4096)]
-        vocab: usize,
-        /// Name to save the model under.
-        #[arg(long, default_value = "default")]
+    /// List the trained models in the catalog (the default).
+    List,
+    /// Summarize a model: states, vocabulary, base rate, and the ruleset it
+    /// was trained under.
+    Get {
+        /// Model name.
+        #[arg(default_value = "default")]
+        name: String,
+    },
+    /// Forget a trained model.
+    Remove {
+        /// Model name.
         name: String,
     },
     /// Show what the trained model would give a path, and why.
     Score {
         /// Path to score (need not exist).
         path: String,
-        /// Model name.
-        #[arg(long, default_value = "default")]
-        name: String,
-    },
-    /// Summarize the trained model.
-    Status {
         /// Model name.
         #[arg(long, default_value = "default")]
         name: String,
@@ -417,15 +425,17 @@ async fn main() -> Result<()> {
             StoreCmd::Gc => cmd_gc(&store_dir, cfg).await?,
             StoreCmd::Clean { yes } => cmd_clean(&store_dir, yes)?,
         },
-        Command::Model { action } => match action {
-            ModelCmd::Train {
-                states,
-                iterations,
-                vocab,
-                name,
-            } => cmd_model_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
+        Command::Train {
+            states,
+            iterations,
+            vocab,
+            name,
+        } => cmd_model_train(&store_dir, cfg, states, iterations, vocab, &name).await?,
+        Command::Model { action } => match action.unwrap_or(ModelCmd::List) {
+            ModelCmd::List => cmd_model_list(cfg).await?,
+            ModelCmd::Get { name } => cmd_model_status(cfg, &name).await?,
+            ModelCmd::Remove { name } => cmd_model_remove(cfg, &name).await?,
             ModelCmd::Score { path, name } => cmd_model_score(cfg, &path, &name).await?,
-            ModelCmd::Status { name } => cmd_model_status(cfg, &name).await?,
             ModelCmd::Eval { holdout, states } => {
                 cmd_model_eval(&store_dir, cfg, holdout, states).await?
             }
@@ -662,12 +672,12 @@ async fn cmd_scan(
         match &m {
             None => eprintln!(
                 "no trained path model; scanning in walk order \
-                 (run `exfil model train` to rank by probability)"
+                 (run `exfil train` to rank by probability)"
             ),
             Some(m) if !m.ruleset.is_empty() && m.ruleset != fingerprint => eprintln!(
                 "warning: the path model was trained under ruleset {} but this \
                  scan applies {fingerprint}; its ranking may be stale — re-run \
-                 `exfil model train`",
+                 `exfil train`",
                 m.ruleset
             ),
             Some(_) => {}
@@ -1061,7 +1071,7 @@ async fn cmd_model_train(
 /// Score one path and show which components drove the number.
 async fn cmd_model_score(config: Option<&std::path::Path>, path: &str, name: &str) -> Result<()> {
     let Some(model) = load_model(config, name).await? else {
-        println!("no model {name:?} — run `exfil model train`");
+        println!("no model {name:?} — run `exfil train`");
         return Ok(());
     };
     println!("{path}");
@@ -1085,12 +1095,38 @@ async fn cmd_model_score(config: Option<&std::path::Path>, path: &str, name: &st
     Ok(())
 }
 
+/// List the trained models in the catalog.
+async fn cmd_model_list(config: Option<&std::path::Path>) -> Result<()> {
+    let catalog = open_catalog(config).await?;
+    let names = catalog.list_path_models().await?;
+    if names.is_empty() {
+        println!("no models — `exfil train` fits one on the scans you have");
+        return Ok(());
+    }
+    for name in &names {
+        println!("{name}");
+    }
+    println!("{} model(s)", names.len());
+    Ok(())
+}
+
+/// Forget a trained model.
+async fn cmd_model_remove(config: Option<&std::path::Path>, name: &str) -> Result<()> {
+    let catalog = open_catalog(config).await?;
+    if catalog.remove_path_model(name).await? {
+        println!("removed model {name:?}");
+    } else {
+        println!("no model {name:?}");
+    }
+    Ok(())
+}
+
 /// Summarize a trained model.
 async fn cmd_model_status(config: Option<&std::path::Path>, name: &str) -> Result<()> {
     let catalog = open_catalog(config).await?;
     let names = catalog.list_path_models().await.unwrap_or_default();
     let Some(model) = load_model(config, name).await? else {
-        println!("no model {name:?} — run `exfil model train`");
+        println!("no model {name:?} — run `exfil train`");
         if !names.is_empty() {
             println!("stored models: {}", names.join(", "));
         }
@@ -1230,9 +1266,9 @@ async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
                 println!("\n{}", e.description);
             }
         }
-        None => println!(
-            "no {id} in the local CWE catalog (run `exfil datasets update mitre://cwe`)"
-        ),
+        None => {
+            println!("no {id} in the local CWE catalog (run `exfil datasets update mitre://cwe`)")
+        }
     }
     Ok(())
 }

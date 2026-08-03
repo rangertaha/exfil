@@ -59,9 +59,9 @@ are.
 
 | Command | What it does |
 |---|---|
-| `exfil model train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
+| `exfil train` | Fit the path model on stored scans (every recorded file is a sample; a finding on it is the label) |
 | `exfil model score <path>` | The model's `P(finding)` for a path, with each component's contribution |
-| `exfil model status` | States, vocabulary, base rate, and the ruleset it was trained under |
+| `exfil model get` | States, vocabulary, base rate, and the ruleset it was trained under |
 | `exfil model eval` | Measure whether the model actually helps — recall at each budget, against a directory-frequency baseline and blind selection |
 
 Then bound the work:

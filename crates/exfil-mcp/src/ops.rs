@@ -381,7 +381,7 @@ pub async fn model_train(ctx: &Ctx, states: usize, iterations: usize) -> Result<
 /// Score one path under the trained model, with the per-component evidence.
 pub async fn model_score(ctx: &Ctx, path: &str) -> Result<String> {
     let Some(model) = load_model(ctx).await else {
-        return Ok("no trained model — run model_train first".into());
+        return Ok("no trained model — run the `train` tool first".into());
     };
     let mut out = format!(
         "{path}\nP(finding) = {:.4}   (base rate {:.4})\n\ncomponent contributions (log-odds):\n",
@@ -450,6 +450,25 @@ pub async fn model_eval(ctx: &Ctx, holdout: f64, states: usize) -> Result<String
         }
     ));
     Ok(out)
+}
+
+/// The names of every trained model in the catalog.
+pub async fn model_list(ctx: &Ctx) -> Result<String> {
+    let names = ctx.catalog().await?.list_path_models().await?;
+    if names.is_empty() {
+        return Ok("no models — run the `train` tool to fit one".into());
+    }
+    Ok(format!("{}\n{} model(s)\n", names.join("\n"), names.len()))
+}
+
+/// Forget a trained model.
+pub async fn model_remove(ctx: &Ctx, name: &str) -> Result<String> {
+    let removed = ctx.catalog().await?.remove_path_model(name).await?;
+    Ok(if removed {
+        format!("removed model {name:?}\n")
+    } else {
+        format!("no model {name:?}\n")
+    })
 }
 
 /// Summarize the trained path model.

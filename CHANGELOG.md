@@ -300,6 +300,15 @@ and this project adheres to
 
 ### Changed
 
+- **`exfil train` is a top-level command**, no longer `exfil model train`.
+  Exactly two commands in this tool do work and write a result — `scan`
+  produces findings, `train` produces a model — and everything else reads one
+  back. Burying training a level down hid that pairing. `model` is left holding
+  only the verbs that read: `model list`, `model get <name>` (was
+  `model status`), `model score`, `model eval` and `model remove <name>`, with
+  a bare `exfil model` listing. Over MCP the same reshaping lands as `train`,
+  `model_get`, `model_list` and `model_remove`.
+
 - CI is one job instead of two. `cargo test` already builds every target it
   runs, so the separate `cargo build --workspace` step only compiled the
   workspace a second time; formatting and clippy are platform-independent and

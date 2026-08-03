@@ -631,5 +631,8 @@ fn datasets_update_reads_the_configured_entries() {
     // Both datasets are in the catalog under the names chosen for them.
     let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
     let text = stdout(&out);
-    assert!(text.contains("house-rules") && text.contains("security"), "{text}");
+    assert!(
+        text.contains("house-rules") && text.contains("security"),
+        "{text}"
+    );
 }

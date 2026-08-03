@@ -1008,6 +1008,19 @@ impl Store {
         Ok(rows.into_iter().next().map(|r| r.model))
     }
 
+    /// Forget a trained model, returning whether one was there to forget.
+    pub async fn remove_path_model(&self, name: &str) -> Result<bool> {
+        let existed = self.load_path_model(name).await?.is_some();
+        self.db
+            .query("DELETE type::thing('path_model', $k)")
+            .bind(("k", name.to_string()))
+            .await
+            .context("remove path model")?
+            .check()
+            .context("path model delete failed")?;
+        Ok(existed)
+    }
+
     /// The names of every stored path model.
     pub async fn list_path_models(&self) -> Result<Vec<String>> {
         let mut res = self

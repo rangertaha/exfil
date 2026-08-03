@@ -253,7 +253,7 @@ const TOOLS: &[Tool] = &[
     },
     // ── The path model ──
     Tool {
-        name: "model_train",
+        name: "train",
         access: Access::Write,
         description: "Train the path model that ranks what a scan looks at first, on the \
                       scans already in this store. Every recorded file is a sample; whether \
@@ -291,11 +291,23 @@ const TOOLS: &[Tool] = &[
         ],
     },
     Tool {
-        name: "model_status",
+        name: "model_get",
         access: Access::Read,
-        description: "Summarize the trained path model, and warn when it was trained under a \
+        description: "Summarize a trained path model, and warn when it was trained under a \
                       different ruleset than this store now applies.",
         params: &[],
+    },
+    Tool {
+        name: "model_list",
+        access: Access::Read,
+        description: "List the trained path models in the catalog.",
+        params: &[],
+    },
+    Tool {
+        name: "model_remove",
+        access: Access::Write,
+        description: "Forget a trained path model.",
+        params: &[("name", "string", "model name")],
     },
     // ── Store maintenance ──
     Tool {
@@ -411,7 +423,7 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
         }
 
         // The path model.
-        "model_train" => {
+        "train" => {
             ops::model_train(
                 ctx,
                 number("states").unwrap_or(8),
@@ -424,7 +436,9 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
             let holdout = args.get("holdout").and_then(Value::as_f64).unwrap_or(0.3);
             ops::model_eval(ctx, holdout, number("states").unwrap_or(8)).await
         }
-        "model_status" => ops::model_status(ctx).await,
+        "model_get" => ops::model_status(ctx).await,
+        "model_list" => ops::model_list(ctx).await,
+        "model_remove" => ops::model_remove(ctx, &text("name")).await,
 
         // Store maintenance.
         "gc" => ops::gc(ctx).await,

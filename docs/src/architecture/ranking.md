@@ -263,9 +263,10 @@ ruleset **warns** rather than silently ranking on stale assumptions.
 
 ```sh
 exfil scan ./project              # populate the graph first
-exfil model train                   # fit on what's there
-exfil model status                  # states, vocabulary, base rate, ruleset
-exfil model score src/auth/key.pem  # probability + per-component log-odds
+exfil train                       # fit on what's there
+exfil model get                   # states, vocabulary, base rate, ruleset
+exfil model score src/auth/key.pem
+                                  # probability + per-component log-odds
 
 exfil scan ./project --ranked        # worst-first, still scans everything
 exfil scan ./project --budget 20%    # worst-first, stops at 20%
