@@ -11,7 +11,7 @@ exfil search aws                  # free text against rule names
 
 # look at one record, list the rulesets in play, clean up
 exfil get file:<blake3-hash>
-exfil datasets
+exfil dataset
 exfil store clean
 ```
 

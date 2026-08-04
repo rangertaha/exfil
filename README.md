@@ -61,7 +61,7 @@ exfil search aws                  # free text against rule names
 
 # look at one record, list the rulesets in play, clean up
 exfil get file:<blake3-hash>
-exfil datasets
+exfil dataset
 exfil store clean
 ```
 
@@ -82,8 +82,8 @@ scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 | `exfil scan example.com:22` | Grab and scan a TCP service banner (or `10.0.0.0/28 --ports 22,80,443` to sweep a CIDR) |
 | `exfil search [query]` | Query stored findings (by field or free text) |
 | `exfil analyze` | Render a report of the graph (`--format text\|json\|markdown\|junit\|sarif`) |
-| `exfil datasets add <name> <ref>` | Add a rule/IOC dataset to the catalog |
-| `exfil datasets update` | Re-fetch every dataset configured under `[[update]]` |
+| `exfil dataset add <name> <ref>` | Add a rule/IOC dataset to the catalog |
+| `exfil dataset update` | Re-fetch every dataset configured under `[[update]]` |
 | `exfil train` | Learn where findings tend to be, from the scans already stored |
 | `exfil scan --budget 20%` | Scan the most promising 20% first (also `30s`, `500mb`, a file count) |
 | `exfil store clean` | Delete the findings store (keeps downloaded datasets) |

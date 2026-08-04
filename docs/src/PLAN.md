@@ -257,7 +257,7 @@ release.
   pipeline, then scan for them: file-hash IOCs check the already-computed
   blake3/sha256, content IOCs become regex/aho-corasick rules.
 - **Dataset management (CRUD)** — create, update, list, and view datasets per
-  plugin: `exfil datasets` grows `add/edit/show/rm`, backed by the catalog
+  plugin: `exfil dataset` grows `add/get/remove`, backed by the catalog
   store, so users can maintain their own rule/IOC collections.
 - **Supply-chain detection, dataset-driven** — v1 ships (offline heuristics in
   `exfil-scan::supply`: known-malware list, typosquats, install hooks,

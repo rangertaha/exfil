@@ -131,9 +131,9 @@ enum ColorWhen {
 enum Command {
     /// List the available dataset source plugins.
     Sources,
-    /// Manage catalog datasets (list by default; add/show/rm/update
+    /// Manage catalog datasets (list by default; add/get/remove/update
     /// subcommands).
-    Datasets {
+    Dataset {
         #[command(subcommand)]
         action: Option<DatasetCmd>,
     },
@@ -213,7 +213,7 @@ enum Command {
         /// `field=value` (rule/cwe/severity/path) or free text; empty lists all.
         query: Option<String>,
         /// Show at most N findings (the most severe first).
-        #[arg(short = 'n', long)]
+        #[arg(short = 'l', long)]
         limit: Option<usize>,
     },
     /// Analyze the whole findings graph and render a report.
@@ -277,7 +277,7 @@ enum Command {
         #[command(subcommand)]
         action: Option<ModelCmd>,
     },
-    /// Look up a weakness in the local MITRE CWE catalog (`exfil datasets
+    /// Look up a weakness in the local MITRE CWE catalog (`exfil dataset
     /// update mitre://cwe` downloads it).
     Cwe {
         /// CWE id, e.g. `CWE-798` or `798`.
@@ -394,11 +394,11 @@ enum DatasetCmd {
     /// List stored datasets and their rule counts (the default).
     List,
     /// Show a dataset's rules.
-    Show { name: String },
+    Get { name: String },
     /// Add (or replace) a named dataset from a source reference.
     Add { name: String, reference: String },
     /// Remove a dataset from the catalog.
-    Rm { name: String },
+    Remove { name: String },
     /// Re-fetch datasets: every `[[update]]` entry in the config when no
     /// target is given, or one entry by name. A target that is not a
     /// configured name is fetched as a source reference directly
@@ -426,7 +426,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Config => cmd_config(cli.config.as_deref())?,
         Command::Sources => cmd_sources(),
-        Command::Datasets { action } => cmd_datasets(cfg, action).await?,
+        Command::Dataset { action } => cmd_datasets(cfg, action).await?,
         Command::Scan {
             target,
             ports,
@@ -902,8 +902,8 @@ fn scan_hints(outcome: &target::Outcome) {
         hint("\nNext: `exfil analyze` for a report \u{b7} `exfil search severity=critical` to filter");
     } else if outcome.summary.files > 0 {
         hint(
-            "\nNo findings. `exfil datasets` lists the rulesets in play; \
-             `exfil datasets add <name> <ref>` adds more.",
+            "\nNo findings. `exfil dataset` lists the rulesets in play; \
+             `exfil dataset add <name> <ref>` adds more.",
         );
     }
 }
@@ -930,7 +930,7 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
         DatasetCmd::List => {
             let datasets = catalog.list_datasets().await?;
             if datasets.is_empty() {
-                println!("no datasets — add one with `exfil datasets add <name> <reference>`");
+                println!("no datasets — add one with `exfil dataset add <name> <reference>`");
                 return Ok(());
             }
             for (name, rules) in &datasets {
@@ -938,7 +938,7 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
             }
             println!("{} dataset(s)", datasets.len());
         }
-        DatasetCmd::Show { name } => match catalog.get_dataset(&name).await? {
+        DatasetCmd::Get { name } => match catalog.get_dataset(&name).await? {
             Some(ds) => {
                 println!("# dataset {:?} ({} rules)", ds.name, ds.rules.len());
                 for r in &ds.rules {
@@ -966,7 +966,7 @@ async fn cmd_datasets(config: Option<&std::path::Path>, action: Option<DatasetCm
                 dataset.name, n
             );
         }
-        DatasetCmd::Rm { name } => {
+        DatasetCmd::Remove { name } => {
             if catalog.remove_dataset(&name).await? {
                 println!("removed dataset {name:?}");
             } else {
@@ -1449,7 +1449,7 @@ async fn cmd_cwe(config: Option<&std::path::Path>, id: &str) -> Result<()> {
             }
         }
         None => {
-            println!("no {id} in the local CWE catalog (run `exfil datasets update mitre://cwe`)")
+            println!("no {id} in the local CWE catalog (run `exfil dataset update mitre://cwe`)")
         }
     }
     Ok(())

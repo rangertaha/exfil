@@ -131,16 +131,16 @@ over [`exfil mcp`](#mcp), not as CLI commands.
 | Command | What it does |
 |---|---|
 | `exfil sources` | List the available dataset source plugins |
-| `exfil datasets` | Manage catalog datasets (`list` default; `add`/`show`/`rm`/`update`) |
+| `exfil dataset` | Manage catalog datasets (`list` default; `add`/`get`/`remove`/`update`) |
 
-`exfil datasets add <name> <reference>` is how a dataset enters the catalog from
-the CLI; `exfil datasets update` re-fetches what is already configured:
+`exfil dataset add <name> <reference>` is how a dataset enters the catalog from
+the CLI; `exfil dataset update` re-fetches what is already configured:
 
 ```sh
-exfil datasets update                    # every [[update]] entry in the config
-exfil datasets update security           # just that entry, by its config name
-exfil datasets update https://example.com/rules.csv   # or any source reference
-exfil datasets update mitre://cwe        # the MITRE CWE catalog `exfil cwe` reads
+exfil dataset update                    # every [[update]] entry in the config
+exfil dataset update security           # just that entry, by its config name
+exfil dataset update https://example.com/rules.csv   # or any source reference
+exfil dataset update mitre://cwe        # the MITRE CWE catalog `exfil cwe` reads
 ```
 
 A target is resolved against the config's `[[update]]` names first and treated
@@ -232,7 +232,7 @@ them and ingests each through a pipeline — **fetch → decompress → detect f
 → parse → store** — turning it into a rule dataset that scans then apply.
 
 Feeds are managed by agents over [`exfil mcp`](#mcp) (`feed_add`, `feed_rm`,
-`feeds`, `pull`); the CLI reads the result with `exfil datasets`.
+`feeds`, `pull`); the CLI reads the result with `exfil dataset`.
 
 Supported formats (auto-detected by extension, after unpacking `.gz`/`.zip`/
 `.tar`/`.tar.gz`):

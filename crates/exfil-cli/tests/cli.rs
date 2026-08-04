@@ -257,14 +257,14 @@ fn sources_and_datasets_flow() {
     assert!(text.contains("builtin") && text.contains("file") && text.contains("http"));
 
     // datasets is empty before anything is added.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset"]);
     assert!(stdout(&out).contains("no datasets"), "{}", stdout(&out));
 
     // add the built-in security dataset to the catalog.
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["datasets", "add", "security", "builtin://security"],
+        &["dataset", "add", "security", "builtin://security"],
     );
     assert!(out.status.success(), "add failed: {}", stderr(&out));
     assert!(
@@ -283,12 +283,12 @@ fn sources_and_datasets_flow() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["datasets", "add", "custom", ds.to_str().unwrap()],
+        &["dataset", "add", "custom", ds.to_str().unwrap()],
     );
     assert!(out.status.success(), "{}", stderr(&out));
 
     // datasets now lists both.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset"]);
     let text = stdout(&out);
     assert!(
         text.contains("security") && text.contains("custom"),
@@ -331,7 +331,7 @@ fn ioc_hash_and_content_scanning() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["datasets", "add", "iocs", ds.to_str().unwrap()],
+        &["dataset", "add", "iocs", ds.to_str().unwrap()],
     );
     assert!(out.status.success(), "{}", stderr(&out));
 
@@ -607,7 +607,7 @@ fn dataset_crud_subcommands() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["datasets", "add", "sec", "builtin://security"],
+        &["dataset", "add", "sec", "builtin://security"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
@@ -617,18 +617,18 @@ fn dataset_crud_subcommands() {
     );
 
     // show lists its rules.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets", "show", "sec"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset", "get", "sec"]);
     let text = stdout(&out);
     assert!(text.contains("aws-access-key-id"), "{text}");
 
     // show of a missing dataset is graceful.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets", "show", "nope"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset", "get", "nope"]);
     assert!(stdout(&out).contains("no dataset"), "{}", stdout(&out));
 
     // rm removes it; a second rm reports absence.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets", "rm", "sec"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset", "remove", "sec"]);
     assert!(stdout(&out).contains("removed dataset"), "{}", stdout(&out));
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets", "rm", "sec"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset", "remove", "sec"]);
     assert!(stdout(&out).contains("no dataset"), "{}", stdout(&out));
 }
 
@@ -644,7 +644,7 @@ fn datasets_update_reads_the_configured_entries() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["--config", bare.to_str().unwrap(), "datasets", "update"],
+        &["--config", bare.to_str().unwrap(), "dataset", "update"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
@@ -664,7 +664,7 @@ fn datasets_update_reads_the_configured_entries() {
     let out = exfil_catalog(
         &sb.store,
         &catalog,
-        &["--config", cfg.to_str().unwrap(), "datasets", "update"],
+        &["--config", cfg.to_str().unwrap(), "dataset", "update"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
@@ -681,7 +681,7 @@ fn datasets_update_reads_the_configured_entries() {
         &[
             "--config",
             cfg.to_str().unwrap(),
-            "datasets",
+            "dataset",
             "update",
             "house-rules",
         ],
@@ -700,7 +700,7 @@ fn datasets_update_reads_the_configured_entries() {
         &[
             "--config",
             cfg.to_str().unwrap(),
-            "datasets",
+            "dataset",
             "update",
             "builtin://security",
         ],
@@ -716,7 +716,7 @@ fn datasets_update_reads_the_configured_entries() {
         &[
             "--config",
             cfg.to_str().unwrap(),
-            "datasets",
+            "dataset",
             "update",
             "builtin://no-such-set",
         ],
@@ -729,7 +729,7 @@ fn datasets_update_reads_the_configured_entries() {
     );
 
     // Both datasets are in the catalog under the names chosen for them.
-    let out = exfil_catalog(&sb.store, &catalog, &["datasets"]);
+    let out = exfil_catalog(&sb.store, &catalog, &["dataset"]);
     let text = stdout(&out);
     assert!(
         text.contains("house-rules") && text.contains("security"),

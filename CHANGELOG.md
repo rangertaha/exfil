@@ -359,6 +359,17 @@ and this project adheres to
 
 ### Changed
 
+- **One vocabulary across the nouns.** `datasets` becomes `dataset` (you act on
+  one at a time; `list` is the plural), and its verbs become `list`/`get`/
+  `add`/`remove`/`update` — `show` and `rm` are gone. `model` already used
+  `list`/`get`/`remove`, so knowing one noun now teaches you the others instead
+  of teaching you nothing.
+
+- **`search -n` is `search -l/--limit`.** `-n` meant "how many" on `search` and
+  "which one" on `scan`, `analyze` and `report`, so `exfil search -n 5` and
+  `exfil analyze -n nightly` did unrelated things with the same letter. `-n` now
+  means *name* everywhere.
+
 - **`exfil-model` is a set of parts rather than one algorithm.** It was the only
   crate in the workspace shipping a fixed implementation where the other six
   ship a trait — `Scanner`, `FileTask`, `Reporter`, `Source`, `RunStage`,
