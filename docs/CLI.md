@@ -1,10 +1,15 @@
 # exfil CLI — design
 
-A proposed command surface. The current one has 20 top-level commands that mix
-verbs (`scan`, `pull`, `enrich`, `normalize`, `check`) with nouns (`sources`,
-`datasets`, `feeds`, `rules`, `config`, `store`, `plugin`), spells the same
-concept four ways (`sources` / `datasets` / `feeds` / `rules` are all "where
-rules come from"), and guesses what you meant from the shape of a string.
+A command surface, part shipped and part still proposed. When this was written
+the CLI had 20 top-level commands that mixed verbs (`scan`, `pull`, `enrich`,
+`normalize`, `check`) with nouns (`sources`, `datasets`, `feeds`, `rules`,
+`config`, `store`, `plugin`), spelled the same concept four ways (`sources` /
+`datasets` / `feeds` / `rules` are all "where rules come from"), and guessed
+what you meant from the shape of a string.
+
+It is 15 today. The **§0 status** below is what actually happened; everything
+after it is the design as written, kept intact so the reasoning stays legible
+next to the parts that have not been built.
 
 Three principles drive the redesign:
 
@@ -17,6 +22,71 @@ Three principles drive the redesign:
    colon in it. Reaching a remote system is opt-in, never a parse result.
 3. **Human output is for reading, machine output is exact.** Text is fitted to
    the window; `--format json` and file exports are never truncated.
+
+---
+
+## 0. Status
+
+Today's surface, for comparison with §1: `sources` · `datasets` · `scan` ·
+`search` · `analyze` · `report` · `train` · `model` · `cwe` · `config` ·
+`store` · `mcp` · `get` · `completions` · `plugin`.
+
+### Shipped as designed
+
+| Design | Where |
+|---|---|
+| `train` promoted to a top-level verb | §3, deviation 6 |
+| `model list · get · score · eval · remove` — the verbs that *read* a model back | §1 |
+| `report` with `-f/--format` and `-o/--out`, `analyze` kept beside it | §1, deviation 5 |
+| `dataset update [<name>]` | §1 |
+| `--model <NAME>` on `scan` | §1 |
+| `store export · gc · clean` left alone | §6 |
+| Dropping `pull`, `feeds`, `rules`, `check`, `normalize`, `graph`, `enrich` | §6 |
+
+### Shipped, but not the way §6 said
+
+The dropped commands did **not** each become the CLI replacement the table
+names. They became **MCP tools**, on the argument that a second way to ask the
+same question from a shell is the thing worth removing, not the capability:
+
+| §6 said | What happened |
+|---|---|
+| `rules` → `dataset search <query>` | MCP `rules` tool; `dataset search` unbuilt |
+| `normalize` → `report -f cim` | MCP `normalize` tool |
+| `graph` → `report -f dot` / `-f graph-json` | MCP `graph` tool |
+| `check dns\|whois` → `scan -a -p dns\|whois` | MCP `check_dns` / `check_whois` tools |
+| `pull <ref>` → `dataset add -n <name> <ref>` | `datasets add <name> <ref>` — positional, no `-n` |
+| `pull mitre://cwe` → `dataset add` | `datasets update mitre://cwe` |
+| `cwe <id>` → `dataset get mitre-cwe` | `cwe <id>` kept as its own command |
+| the noun is `dataset` | it is `datasets`, plural, matching what was already typed |
+
+Three further departures, all deliberate:
+
+- **`run` was built and then removed** (deviation 3 said a name without a way to
+  list runs is write-only). Runs are still named by `scan --name` and addressed
+  by `analyze -n` and `search run=`; enumerating them is an MCP tool. The
+  write-only concern stands — this is a known debt, not a resolved question.
+- **`--confidence <P>` folded into `--budget 90c`.** One flag that answers "when
+  do I stop", with a suffix saying which currency, beat two flags that both stop
+  a scan. `--budget` and `--fail-on` conflict for the same reason.
+- **`--model` means two things**, which the design did not anticipate: a *kind*
+  on `train` (`path-hmm`, `dir-prior`) and a stored *name* on `scan`. A model
+  that does not exist yet can only be named by kind; one that does, only by name.
+
+### Not built
+
+The headline idea is among these — §2 is still a proposal:
+
+| Design | Note |
+|---|---|
+| `-p/--plugin` picks the scanner; the positional is only ever a target | §2. `scan` still infers from the target's shape |
+| `-a/--active` as a **permission** rather than a summary label | §2, principle 2. Still cosmetic today |
+| `sources` → `dataset add --help` | `sources` is still a command |
+| `config` → `--show-config`, `completions <shell>` → `--completions` | both still commands |
+| `plugin list · get · set · remove` | only the interactive `plugin config` exists |
+| `dataset search <query>` | — |
+| `search -n` → `--limit`/`-l`, freeing `-n` for *name* everywhere | `search -n` is still the limit |
+| `-q/--quiet`, `-v/--verbose`, global `--format` | — |
 
 ---
 
@@ -266,6 +336,10 @@ Everything else follows from that:
 
 Nothing here disappears without a replacement, which is the point of listing it.
 
+> **What actually happened.** The seven commands in the middle of this table
+> were dropped, but their replacements are MCP tools rather than the CLI
+> spellings below — see §0. The principle held; the destinations moved.
+
 | Today | Becomes |
 |---|---|
 | `sources` | `exfil dataset add --help` (the accepted URL schemes) |
@@ -302,7 +376,8 @@ Six places where this design does not follow `exfil scan -n|--name -p|--passive
 2. **`-n` on `search` collides.** `search -n` is `--limit` today. This design
    moves the limit to `--limit`/`-l` and keeps `-n` meaning *name* everywhere.
 3. **`exfil run` is added.** `-n` names a run; without a way to list runs the
-   name is write-only.
+   name is write-only. *(Built, then removed — listing runs is an MCP tool now,
+   so the write-only objection stands on the CLI. See §0.)*
 4. **`plugin update` is `plugin set`.** "Update" is ambiguous between changing a
    setting and upgrading the plugin. `set`/`remove` say which.
 5. **`analyze` and `report` both stay.** They are one operation with two sinks,
