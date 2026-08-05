@@ -777,3 +777,42 @@ fn report_writes_a_file_and_validates_the_format_first() {
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json report");
     assert_eq!(v["summary"]["findings"], 1);
 }
+
+#[test]
+fn fail_on_gates_only_the_scanned_tree_and_exits_two() {
+    let sb = Sandbox::new("failon");
+    // A second tree in the same store, holding the only critical.
+    let other = sb.base.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("leak.env"), SECRET_LINE).unwrap();
+    let clean = sb.base.join("clean");
+    std::fs::create_dir_all(&clean).unwrap();
+    std::fs::write(clean.join("ok.rs"), "fn main() {}\n").unwrap();
+
+    let out = exfil(&sb.store, &["scan", other.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // Scanning the clean tree must not fail on the other tree's critical.
+    let out = exfil(
+        &sb.store,
+        &["scan", clean.to_str().unwrap(), "--fail-on", "critical"],
+    );
+    assert!(
+        out.status.success(),
+        "gated on a tree it did not scan:\n{}",
+        stderr(&out)
+    );
+
+    // Scanning the tree that does hold one trips the gate, with code 2 —
+    // distinguishable from code 1, which means exfil itself failed.
+    let out = exfil(
+        &sb.store,
+        &["scan", other.to_str().unwrap(), "--fail-on", "critical"],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("at or above"), "{}", stderr(&out));
+
+    // And a real error still exits 1, so the two stay distinguishable.
+    let out = exfil(&sb.store, &["search", "bogus=1"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+}

@@ -725,6 +725,17 @@ async fn cmd_scan(
     // A local walk must exclude the store itself; remote targets have no
     // directory to skip.
     let skip = matches!(target, Target::Path(_)).then_some(store_dir);
+    // Captured before the run consumes `target`: the tree a `--fail-on` gate
+    // is allowed to consider. `None` for targets with no directory to bound.
+    let gate_scope = match &target {
+        Target::Path(p) => Some(
+            std::fs::canonicalize(p)
+                .unwrap_or_else(|_| p.clone())
+                .display()
+                .to_string(),
+        ),
+        _ => None,
+    };
 
     // Load the path model when ranking or budgeting was asked for. A budget
     // without a model still works — it just cuts in walk order rather than
@@ -835,20 +846,34 @@ async fn cmd_scan(
     }
     scan_hints(&outcome);
 
-    // CI gate: exit non-zero when the store holds a finding at or above the
-    // threshold. Checked against the whole store, so a fresh scan gates on its
-    // own results and an incremental scan gates on the cumulative state.
+    // CI gate. Deliberately checked against the stored state rather than only
+    // what this run re-read: an incremental scan re-reads just the changed
+    // files, and a critical sitting in a file that did not change is still a
+    // critical. Gating on "what this run saw" would let a tree pass because
+    // nothing moved.
+    //
+    // Scoped to the tree that was scanned, though. One store can hold several
+    // roots, and gating a scan of `./b` on findings from `./a` fails a build
+    // for something it did not look at.
     if let Some(threshold) = fail_on {
         let findings = store.search_findings("").await?;
         let breaching = findings
             .iter()
+            .filter(|m| {
+                gate_scope
+                    .as_ref()
+                    .is_none_or(|root| m.path.starts_with(root))
+            })
             .filter(|m| m.severity.is_some_and(|s| s.weight() >= threshold.weight()))
             .count();
         if breaching > 0 {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             eprintln!("\u{2717} {breaching} finding(s) at or above {threshold:?}");
-            std::process::exit(1);
+            // 2, not 1: a tripped gate is a result, not a failure to run. CI
+            // can then tell "findings exceeded the threshold" from "exfil
+            // broke" and treat them differently.
+            std::process::exit(2);
         }
     }
     Ok(())

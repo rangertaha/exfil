@@ -667,6 +667,16 @@ and this project adheres to
 
 ### Fixed
 
+- `--fail-on` no longer gates a scan on findings from a tree it did not look
+  at. One store can hold several roots, so scanning `./b` could fail a build on
+  a critical that only exists under `./a`. The gate is now scoped to the tree
+  being scanned. It still checks *stored* state rather than only what this run
+  re-read — an incremental scan re-reads just the changed files, and a critical
+  in a file that did not change is still a critical.
+- A tripped `--fail-on` gate exits **2**, not 1. Both meant the same thing
+  before, so CI could not tell "findings exceeded your threshold" from "exfil
+  broke" and could not treat them differently. Errors still exit 1.
+
 - **A `90c` budget no longer runs silently against an uncalibrated model.** The
   `c` budget is the one that reads a path score as a *probability* — it stops
   once the scanned files account for a share of the expected findings, which
