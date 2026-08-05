@@ -388,7 +388,10 @@ mod tests {
     /// estimate falls over.
     #[test]
     fn separates_families_that_share_a_long_prefix() {
-        let prefix = "/tmp/claude-1001/-home-tsd-rangertaha-exfil/640fb983/scratchpad/e2e/tree";
+        // A deep, neutral prefix. This was once a real scratchpad path complete
+        // with a username and a session id, which read as though something about
+        // those particular segments mattered to the result. Only the depth does.
+        let prefix = "/var/lib/ci/workspace/acme-platform/checkout/e2e/tree";
         let mut samples = Vec::new();
         for i in 0..20 {
             samples.push((format!("{prefix}/secrets/k{i}.env"), true));

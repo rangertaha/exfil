@@ -1676,6 +1676,25 @@ rule Detect_Evil {
         std::fs::write(&file, before).unwrap();
         set_mtime(0);
 
+        // Not every filesystem stores sub-second mtimes (HFS+ and some network
+        // and container filesystems round to the second). Where they are not
+        // stored there is nothing for this fix to read, so the scenario cannot
+        // be constructed and asserting it would be testing the filesystem.
+        set_mtime(400_000_000);
+        let keeps_subsecond = std::fs::metadata(&file)
+            .ok()
+            .and_then(|md| exfil_core::mtime_stamp(&md))
+            .is_some_and(|s| !s.ends_with(".000000000"));
+        set_mtime(0);
+        if !keeps_subsecond {
+            eprintln!(
+                "skipping: {} does not store sub-second mtimes",
+                file.display()
+            );
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
         let pipeline = default_pipeline().unwrap();
         let store = Store::open_findings(&base.join("store")).await.unwrap();
         let first = scan(&tree, &pipeline, &store, None, None).await.unwrap();
