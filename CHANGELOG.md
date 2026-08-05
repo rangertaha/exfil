@@ -736,6 +736,15 @@ and this project adheres to
 
 ### Fixed
 
+- Piping any command into `head`, `less` or `grep -m` panicked. Rust ignores
+  `SIGPIPE`, so `exfil search | head -5` kept writing past the fifth line until
+  the closed pipe surfaced as an I/O error, which `println!` turned into a
+  backtrace on the user's terminal. A panic hook now recognises that one panic
+  and exits 0 — a closed reader ends a pipeline rather than failing it. Every
+  other panic keeps its message and backtrace. Done with a hook rather than by
+  restoring the default `SIGPIPE` handler, which would need `unsafe`, and this
+  workspace denies it.
+
 - The MCP `plugin_set` tool stored overrides without validating them. An
   override that fails its field's schema is ignored when the setting is read,
   so an agent got a success reply for a change that never took effect. It now

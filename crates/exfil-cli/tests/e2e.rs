@@ -489,3 +489,47 @@ fn mcp_plugin_settings_validate_and_can_be_undone() {
     assert!(replies[0].contains("removed"), "{}", replies[0]);
     assert!(out(&exfil(&j, &["plugin", "get", "web"])).contains("[default]"));
 }
+
+/// A closed reader ends a pipeline, it does not crash the writer.
+///
+/// `exfil search | head -1` used to panic: Rust ignores SIGPIPE, so the write
+/// to a closed pipe surfaced as an I/O error and `println!` turned it into a
+/// backtrace on the user's terminal.
+#[test]
+fn a_closed_pipe_is_not_a_crash() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let j = Journey::new("pipe-close");
+    assert!(exfil(&j, &["scan", j.tree.to_str().unwrap()])
+        .status
+        .success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_exfil"))
+        .arg("--store")
+        .arg(&j.store)
+        .arg("search")
+        .env("EXFIL_CATALOG_DIR", &j.catalog)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn exfil");
+
+    // Read one line, then drop the pipe — exactly what `head -1` does.
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    drop(reader);
+
+    let done = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "a closed pipe panicked instead of ending quietly:\n{stderr}"
+    );
+    assert!(
+        done.status.success(),
+        "closed pipe exited {:?}:\n{stderr}",
+        done.status.code()
+    );
+}

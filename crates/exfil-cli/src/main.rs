@@ -44,6 +44,34 @@ Examples:
 
 Docs: https://rangertaha.github.io/exfil/";
 
+/// Exit quietly when the reader of our stdout goes away.
+///
+/// Rust ignores `SIGPIPE`, so `exfil search | head -5` does not stop at the
+/// fifth line — it keeps writing until the closed pipe surfaces as an I/O
+/// error, and `println!` turns that into a panic and a backtrace. Every command
+/// piped into `head`, `less` or `grep -m` did this.
+///
+/// The usual fix is restoring the default `SIGPIPE` handler, which needs
+/// `unsafe`; this workspace denies it. A panic hook is the safe equivalent:
+/// recognise the one panic that means "nobody is listening any more" and exit
+/// 0, because that is a normal end to a pipeline rather than a failure. Every
+/// other panic keeps the default hook's message and backtrace.
+fn quiet_on_broken_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if msg.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        default(info);
+    }));
+}
+
 /// Parse a `--fail-on` severity name into a [`Severity`]. Used as a clap
 /// `value_parser`, so an unknown name is reported with the valid choices.
 fn parse_severity(s: &str) -> std::result::Result<exfil_core::Severity, String> {
@@ -432,6 +460,7 @@ enum DatasetCmd {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    quiet_on_broken_pipe();
     let cli = Cli::parse();
     progress::set_color_choice(match cli.color {
         ColorWhen::Auto => progress::ColorChoice::Auto,
