@@ -8,6 +8,10 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.0.1] - 2026-08-05
+
+First tagged release.
+
 ### Added
 
 - `exfil plugin list|get|set|remove`, so plugin settings are reachable without a
