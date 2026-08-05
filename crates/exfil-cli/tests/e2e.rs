@@ -418,3 +418,74 @@ fn plugin_settings_round_trip_without_a_prompt() {
     assert!(out(&exfil(&j, &["plugin", "get", "scan"])).contains("[default]"));
     assert!(out(&exfil(&j, &["plugin", "remove", "scan", "top-ports"])).contains("no override"));
 }
+
+/// The MCP surface writes plugin overrides too, so it must validate against
+/// the same schemas the CLI does — and be able to take one back off.
+#[test]
+fn mcp_plugin_settings_validate_and_can_be_undone() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let j = Journey::new("mcpplugin");
+
+    // One MCP session per observable state: the store is only inspectable
+    // between sessions, so batching every request would hide the middle.
+    let session = |requests: String| -> Vec<String> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_exfil"))
+            .arg("--store")
+            .arg(&j.store)
+            .arg("mcp")
+            .env("EXFIL_CATALOG_DIR", &j.catalog)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn mcp");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(requests.as_bytes())
+            .unwrap();
+        let done = child.wait_with_output().unwrap();
+        String::from_utf8_lossy(&done.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let call = |name: &str, args: &str| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+        )
+    };
+
+    let replies = session(format!(
+        "{}\n{}\n",
+        call(
+            "plugin_set",
+            r#"{"plugin":"web","key":"max-pages","value":"99999"}"#
+        ),
+        call(
+            "plugin_set",
+            r#"{"plugin":"web","key":"max-pages","value":"200"}"#
+        ),
+    ));
+    // Out of range is refused, not stored and then quietly ignored on read.
+    assert!(replies[0].contains("out of range"), "{}", replies[0]);
+    assert!(replies[1].contains("200"), "{}", replies[1]);
+
+    // The CLI sees exactly what the agent wrote.
+    let seen = out(&exfil(&j, &["plugin", "get", "web"]));
+    assert!(
+        seen.contains("[override]") && seen.contains("200"),
+        "{seen}"
+    );
+
+    // …and the agent can take it back off, which the surface previously could
+    // not do at all.
+    let replies = session(format!(
+        "{}\n",
+        call("plugin_remove", r#"{"plugin":"web","key":"max-pages"}"#)
+    ));
+    assert!(replies[0].contains("removed"), "{}", replies[0]);
+    assert!(out(&exfil(&j, &["plugin", "get", "web"])).contains("[default]"));
+}

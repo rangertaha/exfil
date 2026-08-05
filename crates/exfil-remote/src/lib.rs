@@ -18,3 +18,26 @@ pub use proc::ProcessFs;
 pub use target::Target;
 pub use tcp::TcpFs;
 pub use web::WebFs;
+
+/// Every plugin that publishes a config schema.
+///
+/// Lives here, beside the plugins themselves, rather than in the CLI binary:
+/// the MCP server writes plugin overrides too, and a registry only the binary
+/// could see meant the server had nothing to validate against — it stored
+/// whatever it was handed, and an invalid override is silently ignored at read
+/// time, which looks exactly like the setting having no effect.
+pub const PLUGIN_SCHEMAS: &[exfil_config::PluginSchema] =
+    &[netscan::PLUGIN_SCHEMA, web::PLUGIN_SCHEMA];
+
+/// Find a plugin's schema and one of its fields by name.
+pub fn find_plugin_field(
+    plugin: &str,
+    key: &str,
+) -> Option<(
+    &'static exfil_config::PluginSchema,
+    &'static exfil_config::FieldSchema,
+)> {
+    let schema = PLUGIN_SCHEMAS.iter().find(|p| p.name == plugin)?;
+    let field = schema.fields.iter().find(|f| f.key == key)?;
+    Some((schema, field))
+}

@@ -736,6 +736,16 @@ and this project adheres to
 
 ### Fixed
 
+- The MCP `plugin_set` tool stored overrides without validating them. An
+  override that fails its field's schema is ignored when the setting is read,
+  so an agent got a success reply for a change that never took effect. It now
+  validates against the same schemas the CLI does — which it could not before,
+  because the plugin registry lived in the CLI binary where the server could
+  not see it. `PLUGIN_SCHEMAS` and `find_plugin_field` moved to `exfil-remote`,
+  beside the plugins that publish them.
+- Added the matching `plugin_remove` MCP tool. `plugin_set` had no inverse, so
+  an agent could store an override and never take it back off.
+
 - `--fail-on` no longer gates a scan on findings from a tree it did not look
   at. One store can hold several roots, so scanning `./b` could fail a build on
   a critical that only exists under `./a`. The gate is now scoped to the tree

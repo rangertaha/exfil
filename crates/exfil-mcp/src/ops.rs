@@ -655,11 +655,41 @@ pub async fn dataset_rm(ctx: &Ctx, name: &str) -> Result<String> {
 
 /// Store a per-plugin setting override in the catalog.
 pub async fn plugin_set(ctx: &Ctx, plugin: &str, key: &str, value: &str) -> Result<String> {
+    // Validate against the plugin's own schema first. An override that fails
+    // validation is ignored when the setting is read, so storing it unchecked
+    // reports success for a change that never takes effect.
+    let Some((_, field)) = exfil_remote::find_plugin_field(plugin, key) else {
+        anyhow::bail!("unknown setting {plugin}.{key}");
+    };
+    let normalized = field
+        .validate(value)
+        .map_err(|e| anyhow::anyhow!("invalid value for {plugin}.{key}: {e}"))?;
     ctx.catalog()
         .await?
-        .set_plugin_setting(plugin, key, value)
+        .set_plugin_setting(plugin, key, &normalized)
         .await?;
-    Ok(format!("{plugin}.{key} = {value}"))
+    Ok(format!("{plugin}.{key} = {normalized}"))
+}
+
+/// Drop a stored plugin override, restoring the config file's value or the
+/// built-in default. With no key, drops every override on the plugin.
+pub async fn plugin_remove(ctx: &Ctx, plugin: &str, key: Option<&str>) -> Result<String> {
+    if exfil_remote::PLUGIN_SCHEMAS
+        .iter()
+        .all(|p| p.name != plugin)
+    {
+        anyhow::bail!("unknown plugin {plugin:?}");
+    }
+    let n = ctx
+        .catalog()
+        .await?
+        .remove_plugin_setting(plugin, key)
+        .await?;
+    Ok(match (n, key) {
+        (0, Some(k)) => format!("no override on {plugin}.{k}\n"),
+        (0, None) => format!("no overrides on {plugin}\n"),
+        (n, _) => format!("removed {n} override(s); {plugin} now uses its config/default values\n"),
+    })
 }
 
 // ── Post-scan passes ─────────────────────────────────────────────────────────

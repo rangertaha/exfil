@@ -573,26 +573,10 @@ fn explicit_scan_mode(active: bool, passive: bool) -> Option<ScanMode> {
     }
 }
 
-/// Every plugin's published config schema (see `exfil_config::PluginSchema`),
-/// gathered from the plugin crates that each define their own — the same
-/// "define it, register it" seam as `Source`/`Reporter`/`RemoteFs`.
-const PLUGIN_SCHEMAS: &[exfil_config::PluginSchema] = &[
-    exfil_remote::netscan::PLUGIN_SCHEMA,
-    exfil_remote::web::PLUGIN_SCHEMA,
-];
-
-/// Find a plugin's schema and one of its fields by name.
-fn find_plugin_field(
-    plugin: &str,
-    key: &str,
-) -> Option<(
-    &'static exfil_config::PluginSchema,
-    &'static exfil_config::FieldSchema,
-)> {
-    let schema = PLUGIN_SCHEMAS.iter().find(|p| p.name == plugin)?;
-    let field = schema.fields.iter().find(|f| f.key == key)?;
-    Some((schema, field))
-}
+/// The plugin registry and field lookup live in `exfil-remote`, beside the
+/// plugins that publish them, so the MCP server can validate against the same
+/// schemas this binary does.
+use exfil_remote::{find_plugin_field, PLUGIN_SCHEMAS};
 
 /// Resolve a setting's effective value: a catalog override, else the config
 /// file's `[plugins.<plugin>]` table, else the field's own schema default.

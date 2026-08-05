@@ -213,11 +213,22 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "plugin_set",
         access: Access::Write,
-        description: "Store a per-plugin setting override in the catalog.",
+        description: "Store a per-plugin setting override in the catalog. Validated against \
+                      the plugin's schema; an invalid value is refused rather than stored.",
         params: &[
             ("plugin", "string", "plugin name"),
             ("key", "string", "setting key"),
             ("value", "string", "setting value"),
+        ],
+    },
+    Tool {
+        name: "plugin_remove",
+        access: Access::Write,
+        description: "Drop a stored plugin override, restoring the config file's value or the \
+                      built-in default. Omit the key to clear every override on the plugin.",
+        params: &[
+            ("plugin", "string", "plugin name"),
+            ("key", "string", "setting key; omit to clear them all"),
         ],
     },
     // ── Post-scan passes ──
@@ -429,6 +440,15 @@ pub async fn dispatch(ctx: &Ctx, name: &str, args: &Value) -> anyhow::Result<Str
         "feed_rm" => ops::feed_rm(ctx, &text("name")).await,
         "dataset_rm" => ops::dataset_rm(ctx, &text("name")).await,
         "plugin_set" => ops::plugin_set(ctx, &text("plugin"), &text("key"), &text("value")).await,
+        "plugin_remove" => {
+            let key = text("key");
+            ops::plugin_remove(
+                ctx,
+                &text("plugin"),
+                (!key.is_empty()).then_some(key.as_str()),
+            )
+            .await
+        }
 
         // Post-scan passes.
         "normalize" => ops::normalize(ctx).await,
