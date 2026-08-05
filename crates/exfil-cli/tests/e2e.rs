@@ -374,3 +374,47 @@ fn network_targets_are_refused_without_active() {
     let o = exfil(&j, &["scan", "--passive", j.tree.to_str().unwrap()]);
     assert!(o.status.success(), "{}", err(&o));
 }
+
+/// Plugin settings are scriptable, validated, and honest about where a value
+/// came from — the three things an interactive-only `config` walk cannot give
+/// a CI job or a Dockerfile.
+#[test]
+fn plugin_settings_round_trip_without_a_prompt() {
+    let j = Journey::new("plugin");
+
+    assert!(out(&exfil(&j, &["plugin", "list"])).contains("scan"));
+
+    // A fresh setting reports itself as coming from the built-in default.
+    let before = out(&exfil(&j, &["plugin", "get", "scan"]));
+    assert!(before.contains("top-ports"), "{before}");
+    assert!(before.contains("[default]"), "{before}");
+
+    // Setting it stores an override, and the provenance changes to say so.
+    let set = exfil(&j, &["plugin", "set", "scan", "top-ports", "500"]);
+    assert!(set.status.success(), "{}", err(&set));
+    let after = out(&exfil(&j, &["plugin", "get", "scan"]));
+    assert!(after.contains("500"), "{after}");
+    assert!(after.contains("[override]"), "{after}");
+
+    // Validation happens before storage: an out-of-range value is refused
+    // rather than stored and then silently ignored at read time.
+    let bad = exfil(&j, &["plugin", "set", "scan", "top-ports", "99999"]);
+    assert!(!bad.status.success());
+    assert!(err(&bad).contains("out of range"), "{}", err(&bad));
+    assert!(
+        out(&exfil(&j, &["plugin", "get", "scan"])).contains("500"),
+        "a rejected value disturbed the stored one"
+    );
+
+    // Unknown names are named, not silently accepted.
+    assert!(!exfil(&j, &["plugin", "set", "scan", "nope", "1"])
+        .status
+        .success());
+    assert!(!exfil(&j, &["plugin", "get", "nosuch"]).status.success());
+
+    // Removing restores the layer underneath; removing twice is not an error.
+    let rm = exfil(&j, &["plugin", "remove", "scan", "top-ports"]);
+    assert!(rm.status.success(), "{}", err(&rm));
+    assert!(out(&exfil(&j, &["plugin", "get", "scan"])).contains("[default]"));
+    assert!(out(&exfil(&j, &["plugin", "remove", "scan", "top-ports"])).contains("no override"));
+}

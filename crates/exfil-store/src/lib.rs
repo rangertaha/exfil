@@ -951,6 +951,45 @@ impl Store {
         Ok(rows.into_iter().next().map(|r| r.setting_value))
     }
 
+    /// Drop a stored override, returning whether one was there. With `key` as
+    /// `None`, drops every override for the plugin.
+    ///
+    /// Removing an override is not the same as setting a value: it restores
+    /// whatever the config file or the field's own default says, which is the
+    /// only way back to "unset" once something has been stored.
+    pub async fn remove_plugin_setting(&self, plugin: &str, key: Option<&str>) -> Result<usize> {
+        let existing = self.list_plugin_settings(plugin).await?;
+        let hits = match key {
+            Some(k) => existing.iter().filter(|(name, _)| name == k).count(),
+            None => existing.len(),
+        };
+        if hits == 0 {
+            return Ok(0);
+        }
+        match key {
+            Some(k) => {
+                self.db
+                    .query("DELETE type::thing('plugin_setting', [$p, $k])")
+                    .bind(("p", plugin.to_string()))
+                    .bind(("k", k.to_string()))
+                    .await
+                    .context("remove plugin setting")?
+                    .check()
+                    .context("plugin setting delete failed")?;
+            }
+            None => {
+                self.db
+                    .query("DELETE plugin_setting WHERE plugin = $p")
+                    .bind(("p", plugin.to_string()))
+                    .await
+                    .context("remove plugin settings")?
+                    .check()
+                    .context("plugin settings delete failed")?;
+            }
+        }
+        Ok(hits)
+    }
+
     /// List every setting override for a plugin as `(key, value)`.
     pub async fn list_plugin_settings(&self, plugin: &str) -> Result<Vec<(String, String)>> {
         #[derive(Deserialize)]
@@ -1978,6 +2017,30 @@ mod tests {
             Some("500".to_string())
         );
         assert_eq!(store.list_plugin_settings("scan").await.unwrap().len(), 2);
+
+        // Removing an override restores the layer beneath it; removing what is
+        // not there is not an error, just a zero.
+        assert_eq!(
+            store
+                .remove_plugin_setting("scan", Some("max-pages"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store.get_plugin_setting("scan", "max-pages").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .remove_plugin_setting("scan", Some("max-pages"))
+                .await
+                .unwrap(),
+            0
+        );
+        // …and with no key, every override for the plugin goes at once.
+        assert_eq!(store.remove_plugin_setting("scan", None).await.unwrap(), 1);
+        assert!(store.list_plugin_settings("scan").await.unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

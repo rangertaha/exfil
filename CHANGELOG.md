@@ -10,6 +10,21 @@ and this project adheres to
 
 ### Added
 
+- `exfil plugin list|get|set|remove`, so plugin settings are reachable without a
+  prompt. `plugin config` was the only way in and is interactive, which put
+  every setting out of reach of a CI job, a Dockerfile or a script.
+  - `get` names the *source* of each value — `[override]`, `[config]` or
+    `[default]`. A setting can come from three places, and being shown only the
+    number leaves you guessing which one you are looking at and which file to
+    edit to change it.
+  - `set` validates against the field's own schema before storing. An override
+    that fails validation is ignored at read time, which looks exactly like the
+    setting having no effect.
+  - `remove` drops an override and says what the value falls back to, so
+    "removed" is not mistaken for "unset". With no key it clears the plugin.
+  - `Store::remove_plugin_setting` backs it; there was previously no way to
+    take an override back off once stored.
+
 - An end-to-end test suite (`crates/exfil-cli/tests/e2e.rs`) driving the real
   binary through whole journeys rather than one command at a time, because the
   interesting failures live *between* commands. Seven of them: a named run

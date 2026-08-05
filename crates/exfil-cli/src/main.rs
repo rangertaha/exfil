@@ -312,13 +312,38 @@ enum Command {
     /// precedence over `[plugins.<name>]` in the config file).
     Plugin {
         #[command(subcommand)]
-        action: PluginCmd,
+        action: Option<PluginCmd>,
     },
 }
 
 /// Plugin setting actions.
 #[derive(Subcommand)]
 enum PluginCmd {
+    /// List the configurable plugins (the default).
+    List,
+    /// Show a plugin's settings: each one's effective value and where that
+    /// value came from.
+    Get {
+        /// Plugin name, e.g. `scan`.
+        plugin: String,
+    },
+    /// Set one setting, stored as a catalog override.
+    Set {
+        /// Plugin name, e.g. `scan`.
+        plugin: String,
+        /// Setting key, e.g. `top-ports`.
+        key: String,
+        /// New value, validated against the setting's own schema.
+        value: String,
+    },
+    /// Drop a stored override, restoring the config file's value or the
+    /// built-in default. With no key, drops every override on the plugin.
+    Remove {
+        /// Plugin name, e.g. `scan`.
+        plugin: String,
+        /// Setting key. Omit to clear them all.
+        key: Option<String>,
+    },
     /// Interactively walk every setting on a plugin — a select menu for
     /// fixed choices, a validated prompt for free-form input — pre-filled
     /// with each setting's current effective value.
@@ -509,7 +534,15 @@ async fn main() -> Result<()> {
             .await?
         }
         Command::Completions { shell } => cmd_completions(shell),
-        Command::Plugin { action } => match action {
+        Command::Plugin { action } => match action.unwrap_or(PluginCmd::List) {
+            PluginCmd::List => cmd_plugin_list(),
+            PluginCmd::Get { plugin } => cmd_plugin_get(cfg, &plugin).await?,
+            PluginCmd::Set { plugin, key, value } => {
+                cmd_plugin_set(cfg, &plugin, &key, &value).await?
+            }
+            PluginCmd::Remove { plugin, key } => {
+                cmd_plugin_remove(cfg, &plugin, key.as_deref()).await?
+            }
             PluginCmd::Config { plugin } => cmd_plugin_config(cfg, &plugin).await?,
         },
     }
@@ -602,6 +635,98 @@ async fn resolve_plugin_setting(
         }
     }
     field.default.to_string()
+}
+
+/// List the plugins that publish a config schema.
+fn cmd_plugin_list() {
+    for schema in PLUGIN_SCHEMAS {
+        println!("{:<12} {} setting(s)", schema.name, schema.fields.len());
+    }
+    println!("{} plugin(s)", PLUGIN_SCHEMAS.len());
+}
+
+/// Show a plugin's settings with each value's provenance.
+///
+/// The provenance is the point: a value has up to three possible sources
+/// (a stored override, the config file, the built-in default) and being told
+/// only the number leaves you guessing which one you are looking at — and
+/// which file to edit to change it.
+async fn cmd_plugin_get(config: Option<&std::path::Path>, plugin: &str) -> Result<()> {
+    let Some(schema) = PLUGIN_SCHEMAS.iter().find(|p| p.name == plugin) else {
+        anyhow::bail!("unknown plugin {plugin:?} (see `exfil plugin list`)");
+    };
+    let overrides = match open_catalog(config).await {
+        Ok(catalog) => catalog
+            .list_plugin_settings(plugin)
+            .await
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let cfg = exfil_config::load(config).ok();
+    println!("# plugin {:?}", schema.name);
+    for field in schema.fields {
+        let value = resolve_plugin_setting(config, plugin, field).await;
+        let source = if overrides.iter().any(|(k, _)| k == field.key) {
+            "override"
+        } else if cfg
+            .as_ref()
+            .and_then(|c| c.plugin_field(plugin, field.key))
+            .is_some()
+        {
+            "config"
+        } else {
+            "default"
+        };
+        println!("{:<14} {:<20} [{source}]", field.key, value);
+        println!("               {}", field.description);
+    }
+    Ok(())
+}
+
+/// Store one setting as a catalog override, after validating it.
+async fn cmd_plugin_set(
+    config: Option<&std::path::Path>,
+    plugin: &str,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let Some((_, field)) = find_plugin_field(plugin, key) else {
+        anyhow::bail!("unknown setting {plugin}.{key} (see `exfil plugin get {plugin}`)");
+    };
+    // Validate before storing: an override that fails its own schema would be
+    // silently ignored at read time, which looks exactly like the setting
+    // having no effect.
+    let normalized = field
+        .validate(value)
+        .map_err(|e| anyhow::anyhow!("invalid value for {plugin}.{key}: {e}"))?;
+    open_catalog(config)
+        .await?
+        .set_plugin_setting(plugin, key, &normalized)
+        .await?;
+    println!("set {plugin}.{key} = {normalized}");
+    Ok(())
+}
+
+/// Drop one override, or all of a plugin's.
+async fn cmd_plugin_remove(
+    config: Option<&std::path::Path>,
+    plugin: &str,
+    key: Option<&str>,
+) -> Result<()> {
+    if PLUGIN_SCHEMAS.iter().all(|p| p.name != plugin) {
+        anyhow::bail!("unknown plugin {plugin:?} (see `exfil plugin list`)");
+    }
+    let n = open_catalog(config)
+        .await?
+        .remove_plugin_setting(plugin, key)
+        .await?;
+    match (n, key) {
+        (0, Some(k)) => println!("no override on {plugin}.{k}"),
+        (0, None) => println!("no overrides on {plugin}"),
+        // Say what it fell back to, so "removed" is not mistaken for "unset".
+        (n, _) => println!("removed {n} override(s); {plugin} now uses its config/default values"),
+    }
+    Ok(())
 }
 
 /// Interactively walk every setting on a plugin: a select menu for fixed
