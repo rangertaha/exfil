@@ -44,6 +44,20 @@ Examples:
 
 Docs: https://rangertaha.github.io/exfil/";
 
+/// Whether `path` lies inside the directory `root`.
+///
+/// A plain `starts_with` on the string matches a *sibling* whose name extends
+/// the root's — `/repo/app` would claim `/repo/app-legacy/.env` — so a
+/// `--fail-on` gate failed builds over findings from a tree it never scanned.
+/// The comparison has to land on a separator boundary.
+fn path_is_under(path: &str, root: &str) -> bool {
+    let root = root.trim_end_matches(['/', '\\']);
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+}
+
 /// Exit quietly when the reader of our stdout goes away.
 ///
 /// Rust ignores `SIGPIPE`, so `exfil search | head -5` does not stop at the
@@ -840,6 +854,15 @@ async fn cmd_scan(
     };
     let target = target::parse(spec.as_deref(), &opts)?;
 
+    // A path that is not there is a typo, not an empty tree. Without this,
+    // `exfil scan ./sr --fail-on critical` (for `./src`) scanned nothing,
+    // printed a summary, and exited 0 — a gate certifying a tree never read.
+    if let Target::Path(p) = &target {
+        if !p.exists() {
+            anyhow::bail!("{} does not exist", p.display());
+        }
+    }
+
     // Reaching a remote system is a permission, not a parse result. Before
     // this, a colon in the target string was enough to put exfil on the
     // network — `exfil scan example.com:22` looked like a typo for a path and
@@ -1021,7 +1044,7 @@ async fn cmd_scan(
             .filter(|m| {
                 gate_scope
                     .as_ref()
-                    .is_none_or(|root| m.path.starts_with(root))
+                    .is_none_or(|root| path_is_under(&m.path, root))
             })
             .filter(|m| m.severity.is_some_and(|s| s.weight() >= threshold.weight()))
             .count();

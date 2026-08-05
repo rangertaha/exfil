@@ -533,3 +533,55 @@ fn a_closed_pipe_is_not_a_crash() {
         done.status.code()
     );
 }
+
+/// The `--fail-on` gate must be bounded by the tree that was scanned, on a
+/// path boundary — not by a string prefix that a sibling directory shares.
+#[test]
+fn fail_on_does_not_match_a_sibling_by_prefix() {
+    let j = Journey::new("gate-prefix");
+
+    // `app-legacy` shares a string prefix with `app` but is a different tree.
+    let legacy = j.base.join("app-legacy");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(
+        legacy.join("leak.env"),
+        "export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF\n",
+    )
+    .unwrap();
+    let app = j.base.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("ok.rs"), "fn main() {}\n").unwrap();
+
+    assert!(exfil(&j, &["scan", legacy.to_str().unwrap()])
+        .status
+        .success());
+
+    let o = exfil(
+        &j,
+        &["scan", app.to_str().unwrap(), "--fail-on", "critical"],
+    );
+    assert!(
+        o.status.success(),
+        "gated on a sibling that merely shares a prefix:\n{}",
+        err(&o)
+    );
+}
+
+/// A target that does not exist is a typo, not an empty tree — and must never
+/// let a gate certify a tree nothing read.
+#[test]
+fn a_missing_target_is_an_error_not_a_clean_scan() {
+    let j = Journey::new("missing");
+    let missing = j.base.join("does-not-exist");
+
+    let o = exfil(
+        &j,
+        &["scan", missing.to_str().unwrap(), "--fail-on", "critical"],
+    );
+    assert!(
+        !o.status.success(),
+        "a missing path scanned clean:\n{}",
+        out(&o)
+    );
+    assert!(err(&o).contains("does not exist"), "{}", err(&o));
+}

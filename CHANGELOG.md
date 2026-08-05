@@ -736,6 +736,16 @@ and this project adheres to
 
 ### Fixed
 
+- `--fail-on` matched a *sibling* directory by string prefix. The gate's scope
+  check was `path.starts_with(root)` with no separator boundary, so scanning
+  `/repo/app` counted a finding under `/repo/app-legacy` and failed the build
+  over a tree it never read — the bug the scoping fix was meant to prevent,
+  reintroduced one level down.
+- Scanning a path that does not exist reported success. `exfil scan ./sr
+  --fail-on critical` (a typo for `./src`) printed a summary, scanned nothing
+  and exited 0, so the gate certified a tree nothing had read. A missing target
+  is now an error.
+
 - `search run = nightly` (with spaces) returned nothing. The `run=` branch
   emits two SQL statements and the index of the row-bearing one was re-derived
   afterwards by a *different* test than the one that chose the branch —
