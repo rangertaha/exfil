@@ -11,7 +11,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 blake3 = "1"
 tokio = { workspace = true }
-surrealdb = { version = "2", default-features = false, features = [
+surrealdb = { version = "3", default-features = false, features = [
     "kv-surrealkv", # embedded on-disk (the default)
     "kv-mem",       # embedded in-memory (tests, ephemeral runs)
     "protocol-ws",  # connect to a remote SurrealDB server / cluster over ws(s)
