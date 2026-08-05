@@ -19,6 +19,34 @@ use async_trait::async_trait;
 use exfil_engine::RemoteFs;
 use regex::Regex;
 
+/// The crawl's bounds, published as settings rather than carried as flags on
+/// `scan`.
+///
+/// They only ever applied to an `http(s)://` target, so as flags they cluttered
+/// every other kind of scan with options that could not affect it. As settings
+/// they live with the plugin they configure and are discoverable through
+/// `exfil plugin get web`.
+pub const PLUGIN_SCHEMA: exfil_config::PluginSchema = exfil_config::PluginSchema {
+    name: "web",
+    fields: &[
+        exfil_config::FieldSchema {
+            key: "max-pages",
+            description: "most pages to fetch when crawling a site",
+            kind: exfil_config::FieldKind::Number {
+                min: 1,
+                max: 10_000,
+            },
+            default: "64",
+        },
+        exfil_config::FieldSchema {
+            key: "max-depth",
+            description: "how many links deep from the seed URL to follow",
+            kind: exfil_config::FieldKind::Number { min: 1, max: 32 },
+            default: "2",
+        },
+    ],
+};
+
 /// Default cap on pages fetched in one crawl.
 const DEFAULT_MAX_PAGES: usize = 64;
 

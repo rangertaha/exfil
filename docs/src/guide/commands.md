@@ -20,7 +20,7 @@ Every scanner is one command, `exfil scan [TARGET] [OPTIONS]` — the **shape of
 | `processes` | Scan the local host's running processes (command lines, exe paths) — passive |
 | `host:port`, or `host1:port1,host2:port2,…` | Grab and scan TCP service banners — active *(authorized testing only)* |
 | a host or IPv4 CIDR + `--ports <list\|ranges\|common>` | Sweep those ports across the host/CIDR, grab banners, and scan them — active *(authorized testing only)*. `common` sweeps the top N ports by real-world frequency (default 100 — see [Plugin settings](#plugin-settings)) |
-| an `http://` or `https://` URL | Crawl the site and scan the pages; `--max-pages`/`--max-depth` bound the crawl, `--driver <webdriver-url>` renders JS-heavy sites — active *(authorized testing only)* |
+| an `http://` or `https://` URL | Crawl the site and scan the pages; the `web` plugin's `max-pages`/`max-depth` bound the crawl (`exfil plugin get web`), `--driver <webdriver-url>` renders JS-heavy sites — active *(authorized testing only)* |
 
 **`-a`/`--active` is a permission, not a label.** Every target above marked
 *active* is **refused** without it — exfil never reaches the network because a

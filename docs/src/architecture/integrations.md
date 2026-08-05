@@ -155,7 +155,7 @@ flowchart TD
   IPv4 CIDR plus a `--ports` spec (list, ranges, or `common`) into that target list.
 - `WebFs` / `webdriver::WebDriverFs` ([`remote/web.rs`](../../crates/exfil-remote/src/web.rs),
   [`remote/webdriver.rs`](../../crates/exfil-remote/src/webdriver.rs)) crawl a seed
-  URL up to `--max-pages`/`--max-depth`; the WebDriver variant renders each page
+  URL up to the `web` plugin's `max-pages`/`max-depth`; the WebDriver variant renders each page
   first, for JavaScript-heavy sites a plain HTTP fetch can't see.
 
 Because each implements `RemoteFs`, the scanners "never know the bytes came from

@@ -388,6 +388,18 @@ and this project adheres to
 
 ### Changed
 
+- **The crawl's bounds moved off `scan` and onto the plugin that owns them.**
+  `--max-pages` and `--max-depth` only ever applied to an `http(s)://` target,
+  so as flags they cluttered every scan that could not use them — part of why
+  `scan --help` was the longest in the tool. They are now settings on a new
+  `web` plugin schema, reachable with `exfil plugin get web` and
+  `exfil plugin set web max-pages 200`, resolved through the same
+  override → config → default chain as every other setting.
+
+  `--driver` stays a flag for now: a WebDriver endpoint is a property of the
+  machine you run on rather than a preference, and `FieldKind` has no free-text
+  variant to hold a URL.
+
 - **`--active` is a permission, not a label.** It used to tag the summary line,
   and the *actual* decision to reach the network was inferred from the target's
   shape — a colon in the string was enough, so `exfil scan example.com:22` read

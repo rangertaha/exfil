@@ -153,12 +153,6 @@ enum Command {
         /// (`22,80,8000-8010`) or `common`.
         #[arg(long, value_name = "PORTS", requires = "target")]
         ports: Option<String>,
-        /// Maximum pages to fetch when `target` is a URL.
-        #[arg(long, default_value_t = 64)]
-        max_pages: usize,
-        /// Maximum link depth from the seed when `target` is a URL.
-        #[arg(long, default_value_t = 2)]
-        max_depth: usize,
         /// Render pages through a WebDriver server (e.g.
         /// `http://localhost:4444`) when `target` is a URL, to crawl
         /// JavaScript-heavy, dynamic sites.
@@ -456,8 +450,6 @@ async fn main() -> Result<()> {
         Command::Scan {
             target,
             ports,
-            max_pages,
-            max_depth,
             driver,
             active,
             passive,
@@ -472,8 +464,6 @@ async fn main() -> Result<()> {
                 cfg,
                 target,
                 ports,
-                max_pages,
-                max_depth,
                 driver.as_deref(),
                 explicit_scan_mode(active, passive),
                 fail_on,
@@ -586,7 +576,10 @@ fn explicit_scan_mode(active: bool, passive: bool) -> Option<ScanMode> {
 /// Every plugin's published config schema (see `exfil_config::PluginSchema`),
 /// gathered from the plugin crates that each define their own — the same
 /// "define it, register it" seam as `Source`/`Reporter`/`RemoteFs`.
-const PLUGIN_SCHEMAS: &[exfil_config::PluginSchema] = &[exfil_remote::netscan::PLUGIN_SCHEMA];
+const PLUGIN_SCHEMAS: &[exfil_config::PluginSchema] = &[
+    exfil_remote::netscan::PLUGIN_SCHEMA,
+    exfil_remote::web::PLUGIN_SCHEMA,
+];
 
 /// Find a plugin's schema and one of its fields by name.
 fn find_plugin_field(
@@ -800,8 +793,6 @@ async fn cmd_scan(
     config: Option<&std::path::Path>,
     spec: Option<String>,
     ports: Option<String>,
-    max_pages: usize,
-    max_depth: usize,
     driver: Option<&str>,
     mode: Option<ScanMode>,
     fail_on: Option<exfil_core::Severity>,
@@ -810,21 +801,29 @@ async fn cmd_scan(
     model_name: &str,
     name: Option<String>,
 ) -> Result<()> {
-    // `common` expands to this many ports; configurable per the scan plugin's
-    // published schema.
-    let top_ports = match find_plugin_field("scan", "top-ports") {
-        Some((_, field)) => resolve_plugin_setting(config, "scan", field)
-            .await
-            .parse()
-            .unwrap_or(100),
-        None => 100,
-    };
+    // Bounds come from the plugins that own them, not from flags on `scan`.
+    // `setting` resolves override → config → schema default, so the fallback
+    // here only fires if a plugin stops publishing the field at all.
+    async fn setting(
+        config: Option<&std::path::Path>,
+        plugin: &str,
+        key: &str,
+        fallback: usize,
+    ) -> usize {
+        match find_plugin_field(plugin, key) {
+            Some((_, field)) => resolve_plugin_setting(config, plugin, field)
+                .await
+                .parse()
+                .unwrap_or(fallback),
+            None => fallback,
+        }
+    }
     let opts = target::Options {
         ports,
-        max_pages: Some(max_pages),
-        max_depth: Some(max_depth),
+        max_pages: Some(setting(config, "web", "max-pages", 64).await),
+        max_depth: Some(setting(config, "web", "max-depth", 2).await),
         driver: driver.map(String::from),
-        top_ports,
+        top_ports: setting(config, "scan", "top-ports", 100).await as u16,
     };
     let target = target::parse(spec.as_deref(), &opts)?;
 
@@ -855,7 +854,8 @@ async fn cmd_scan(
     if (budget.is_some() || ranked) && !target.honors_plan() {
         eprintln!(
             "warning: --budget/--ranked apply only to a local path scan; \
-             ignored for this target (use --max-pages or --ports to bound it)"
+             ignored for this target (bound it with `exfil plugin set web \
+             max-pages` or --ports)"
         );
     }
 

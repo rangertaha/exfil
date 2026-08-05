@@ -190,7 +190,7 @@ pub struct Outcome {
 /// `plan` (ranking model + budget) applies only to a local tree walk. The
 /// remote sources enumerate a bounded set they have already fetched — a crawl's
 /// pages, a sweep's banners — so there is nothing to rank or cut short; their
-/// equivalent knobs are `--max-pages` and `--ports`.
+/// equivalent knobs are the `web` plugin's `max-pages` setting and `--ports`.
 pub async fn run(
     target: Target,
     pipeline: &Pipeline,
