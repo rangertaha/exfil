@@ -317,19 +317,49 @@ impl Reporter for TextReporter {
             writeln!(w, "{}", fit::line(m, self.width))?;
         }
         writeln!(w)?;
-        writeln!(
-            w,
-            "{} finding(s) across {} file(s), {} scan(s); risk score {}",
-            a.findings.len(),
-            a.files,
-            a.scans,
-            a.risk_score()
-        )?;
-        for (sev, n) in a.severity_counts() {
-            writeln!(w, "  {:<8} {}", format!("{sev:?}").to_lowercase(), n)?;
-        }
-        write_hotspots(w, a, self.width)?;
-        Ok(())
+        write_summary(w, a, self.width)
+    }
+}
+
+/// The tail of a text report: the counts, the per-severity tally and the
+/// directory hotspots — everything except the finding list.
+///
+/// Shared with [`SummaryReporter`] so the glance and the full document cannot
+/// disagree about the same scan.
+fn write_summary(w: &mut dyn Write, a: &Analysis, width: Option<usize>) -> Result<()> {
+    writeln!(
+        w,
+        "{} finding(s) across {} file(s), {} scan(s); risk score {}",
+        a.findings.len(),
+        a.files,
+        a.scans,
+        a.risk_score()
+    )?;
+    for (sev, n) in a.severity_counts() {
+        writeln!(w, "  {:<8} {}", format!("{sev:?}").to_lowercase(), n)?;
+    }
+    write_hotspots(w, a, width)
+}
+
+/// Just the shape of a scan — counts, severities, where they cluster — with no
+/// finding list.
+///
+/// What `exfil analyze` prints. The finding list is what `search` and `report`
+/// are for; repeating it here made `analyze` a slower `report` rather than a
+/// glance at the state of things.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SummaryReporter {
+    /// Columns to fit to, or `None` to never truncate.
+    pub width: Option<usize>,
+}
+
+impl Reporter for SummaryReporter {
+    fn name(&self) -> &str {
+        "summary"
+    }
+
+    fn report(&self, w: &mut dyn Write, a: &Analysis) -> Result<()> {
+        write_summary(w, a, self.width)
     }
 }
 

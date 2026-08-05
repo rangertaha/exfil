@@ -48,7 +48,7 @@
   they consume/produce (`Bytes → Ast → Matches`, `Bytes → Files`); a
   topological scheduler wires them by dependency, so new analyzers slot in
   without touching the engine. Run-level stages sequence fetch → scan → report.
-- **Multiple report formats** — `exfil analyze --format text|json|markdown`
+- **Multiple report formats** — `exfil report --format text|json|markdown`
   renders the findings graph with severity tallies and a risk score.
 - **AST-aware analysis** — Python and JavaScript are parsed with tree-sitter and
   checked for dangerous calls (`eval`, `os.system`, `child_process.exec`,

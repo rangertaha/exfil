@@ -192,7 +192,7 @@ flowchart LR
 
 The **JUnit** reporter ([`report/lib.rs`](../../crates/exfil-report/src/lib.rs),
 `JunitReporter`) is built for CI: runners like Jenkins, GitLab CI, and GitHub
-Actions ingest JUnit XML natively, so `exfil analyze -f junit > results.xml` lets a
+Actions ingest JUnit XML natively, so `exfil report -f junit -o results.xml` lets a
 pipeline **fail the build on findings** and show each one as a failed test. Every
 XML metacharacter in rule names, messages, and snippets is escaped so a crafted
 snippet can't break the document. Zero findings → `tests="0" failures="0"` → the
@@ -200,7 +200,7 @@ build goes green.
 
 ```mermaid
 flowchart LR
-    SCAN["exfil scan"] --> AN["exfil analyze -f junit"]
+    SCAN["exfil scan"] --> AN["exfil report -f junit"]
     AN --> XML["results.xml"]
     XML --> CI["CI runner"]
     CI -->|"failures > 0"| RED["❌ build fails,<br/>findings shown as tests"]

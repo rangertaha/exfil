@@ -105,11 +105,11 @@ fn scan_search_get_clean_roundtrip() {
         "{}",
         stdout(&out)
     );
-    let out = exfil(&sb.store, &["analyze", "--format", "json"]);
+    let out = exfil(&sb.store, &["report", "--format", "json"]);
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json report");
     assert_eq!(v["summary"]["findings"], 1);
-    let out = exfil(&sb.store, &["analyze", "-f", "xml"]);
+    let out = exfil(&sb.store, &["report", "-f", "xml"]);
     assert!(!out.status.success(), "unknown format must error");
 
     // get: the file record is addressable by its content hash.

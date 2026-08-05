@@ -75,7 +75,7 @@ Two levels of dependency-ordered orchestration replace the old fixed
   invocation **fetch → scan → report**, sharing the graph through `RunCtx` and
   communicating *through* it (scan writes findings, report reads them). Fetch
   is a declared stub until sources (M2) land; reporting is live via
-  `exfil-report` (`exfil analyze --format text|json|markdown`).
+  `exfil-report` (`exfil report --format text|json|markdown`).
 
 Plugins are `Box<dyn Trait>` registered in registries at startup (compiled-in).
 
@@ -191,7 +191,8 @@ exfil sources | pull | update | datasets | rules
 exfil scan [path]        # parallel, incremental, streaming
 exfil search [query]     # SurrealQL under the hood (rule/lang/cwe/severity)
 exfil graph  [query]     # findings graph (dot/json) via traversal
-exfil analyze [query]    # whole-graph report (text/json/markdown/junit/sarif)
+exfil analyze [query]    # summary: counts, severities, hotspots
+exfil report  [query]    # full report (text/json/markdown/junit/sarif/pdf)
 exfil enrich             # annotate findings with MITRE CWE names
 exfil config | clean | gc | mcp | get <id>
 ```

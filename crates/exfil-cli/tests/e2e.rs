@@ -114,13 +114,23 @@ fn a_named_scan_is_addressable_by_every_read_path() {
         out(&by_filter)
     );
 
-    let analyzed = exfil(&j, &["analyze", "-n", "nightly", "-f", "json"]);
-    let a: serde_json::Value = serde_json::from_str(&out(&analyzed)).expect("json report");
     let reported = exfil(&j, &["report", "-n", "nightly", "-f", "json"]);
-    let r: serde_json::Value = serde_json::from_str(&out(&reported)).expect("json report");
-    assert_eq!(
-        a["summary"]["findings"], r["summary"]["findings"],
-        "analyze and report disagree about the same run"
+    let a: serde_json::Value = serde_json::from_str(&out(&reported)).expect("json report");
+
+    // `analyze` is the glance over the same run: no finding list, but its
+    // counts must match the document's or the two are lying to each other.
+    let glance = exfil(&j, &["analyze", "-n", "nightly"]);
+    assert!(glance.status.success(), "{}", err(&glance));
+    let n = a["summary"]["findings"].as_u64().unwrap();
+    assert!(
+        out(&glance).contains(&format!("{n} finding(s)")),
+        "analyze and report disagree about the same run:\n{}",
+        out(&glance)
+    );
+    assert!(
+        !out(&glance).contains("aws-access-key-id"),
+        "analyze should summarize, not list findings:\n{}",
+        out(&glance)
     );
     assert!(
         a["summary"]["findings"].as_u64().unwrap() >= 3,
@@ -129,7 +139,7 @@ fn a_named_scan_is_addressable_by_every_read_path() {
 
     // A run that was never created resolves to nothing rather than everything —
     // the failure mode that would make a filter silently useless.
-    let empty = exfil(&j, &["analyze", "-n", "no-such-run", "-f", "json"]);
+    let empty = exfil(&j, &["report", "-n", "no-such-run", "-f", "json"]);
     let e: serde_json::Value = serde_json::from_str(&out(&empty)).expect("json report");
     assert_eq!(e["summary"]["findings"], 0, "{e}");
 }
@@ -146,7 +156,7 @@ fn rescanning_an_unchanged_tree_adds_nothing() {
         let v: serde_json::Value = serde_json::from_str(&out(o)).unwrap();
         v["summary"]["findings"].as_u64().unwrap()
     };
-    let before = count(&exfil(&j, &["analyze", "-f", "json"]));
+    let before = count(&exfil(&j, &["report", "-f", "json"]));
 
     let second = exfil(&j, &["scan", j.tree.to_str().unwrap()]);
     assert!(second.status.success(), "{}", err(&second));
@@ -157,7 +167,7 @@ fn rescanning_an_unchanged_tree_adds_nothing() {
     );
     assert_eq!(
         before,
-        count(&exfil(&j, &["analyze", "-f", "json"])),
+        count(&exfil(&j, &["report", "-f", "json"])),
         "a no-op rescan changed the finding count"
     );
 }
@@ -331,10 +341,10 @@ fn a_scan_does_not_ingest_its_own_store() {
     };
     assert!(run(&["scan", j.tree.to_str().unwrap()]).status.success());
     let first: serde_json::Value =
-        serde_json::from_str(&out(&run(&["analyze", "-f", "json"]))).unwrap();
+        serde_json::from_str(&out(&run(&["report", "-f", "json"]))).unwrap();
     assert!(run(&["scan", j.tree.to_str().unwrap()]).status.success());
     let second: serde_json::Value =
-        serde_json::from_str(&out(&run(&["analyze", "-f", "json"]))).unwrap();
+        serde_json::from_str(&out(&run(&["report", "-f", "json"]))).unwrap();
 
     assert_eq!(
         first["summary"]["files"], second["summary"]["files"],

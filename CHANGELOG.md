@@ -373,6 +373,15 @@ and this project adheres to
 
 ### Changed
 
+- **`analyze` is now a summary, not a second `report`.** It was byte-identical
+  to `report` — same query, same `-f`, every flag — so two commands existed
+  where one had no capability the other lacked. `analyze` now prints only the
+  shape of a scan (counts, per-severity tally, directory hotspots) and drops
+  `--format`; the finding list is what `search` and `report` are for. Each
+  command has a job the other does not: a glance between scans, and an artifact
+  you keep. Both render through one `write_summary`, so they cannot disagree
+  about the same scan — an e2e test asserts their counts match.
+
 - **One vocabulary across the nouns.** `datasets` becomes `dataset` (you act on
   one at a time; `list` is the plural), and its verbs become `list`/`get`/
   `add`/`remove`/`update` — `show` and `rm` are gone. `model` already used

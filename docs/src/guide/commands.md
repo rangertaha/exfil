@@ -46,7 +46,8 @@ also uploads a SARIF report to code scanning.
 |---|---|
 | `exfil search [query] [-n N]` | Query stored findings, worst-first (by field like `severity=critical`, or free text; `-n` caps output) |
 | `exfil get <id>` | Print a stored record by id (e.g. `file:<blake3-hash>`) |
-| `exfil analyze` | Analyze the whole graph and render a report (`--format text\|json\|markdown\|junit\|sarif`) |
+| `exfil analyze` | Summarize the graph: counts, severities, and where findings cluster |
+| `exfil report` | Render the full report (`--format text\|json\|markdown\|junit\|sarif\|pdf`, `--out FILE`) |
 
 The raw graph and the active ruleset are not CLI commands; they are available to
 agents as the `graph` and `rules` tools over [`exfil mcp`](#mcp).

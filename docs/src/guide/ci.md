@@ -48,7 +48,7 @@ jobs:
         run: exfil scan .
 
       - name: Render SARIF
-        run: exfil analyze --format sarif > exfil.sarif
+        run: exfil report --format sarif --out exfil.sarif
 
       - name: Upload to code scanning
         uses: github/codeql-action/upload-sarif@v3
@@ -69,7 +69,7 @@ SARIF upload run regardless:
 
       - name: Render SARIF
         if: always()            # upload findings even when the gate failed
-        run: exfil analyze --format sarif > exfil.sarif
+        run: exfil report --format sarif --out exfil.sarif
 ```
 
 ## Other CI systems (JUnit)
@@ -79,7 +79,7 @@ reporters) can read a JUnit report, where each finding is a failing test case:
 
 ```sh
 exfil scan .
-exfil analyze --format junit > exfil-junit.xml
+exfil report --format junit --out exfil-junit.xml
 ```
 
 A clean scan produces a passing suite (zero failures), so the report goes green

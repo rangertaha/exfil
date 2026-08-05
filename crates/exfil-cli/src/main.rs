@@ -216,13 +216,13 @@ enum Command {
         #[arg(short = 'l', long)]
         limit: Option<usize>,
     },
-    /// Analyze the whole findings graph and render a report.
+    /// Summarize the findings graph: how many, how bad, and where they cluster.
+    ///
+    /// No finding list — that is what `search` and `report` are for. This is
+    /// the glance you take between scans.
     Analyze {
         /// Optional finding filter (same syntax as `search`).
         query: Option<String>,
-        /// Report format: text, json, markdown, junit, or sarif.
-        #[arg(short, long, default_value = "text")]
-        format: String,
         /// Report on one run's findings only. Sugar for the `run=<name>`
         /// filter, so it composes with a query rather than replacing it.
         #[arg(short, long, value_name = "RUN")]
@@ -459,11 +459,9 @@ async fn main() -> Result<()> {
             .await?
         }
         Command::Search { query, limit } => cmd_search(&store_dir, cfg, query, limit).await?,
-        Command::Analyze {
-            query,
-            format,
-            name,
-        } => cmd_analyze(&store_dir, cfg, run_query(query, name)?, &format).await?,
+        Command::Analyze { query, name } => {
+            cmd_analyze(&store_dir, cfg, run_query(query, name)?).await?
+        }
         Command::Report {
             query,
             format,
@@ -1121,18 +1119,16 @@ async fn cmd_analyze(
     store_dir: &std::path::Path,
     config: Option<&std::path::Path>,
     query: Option<String>,
-    format: &str,
 ) -> Result<()> {
+    use exfil_report::Reporter;
     let store = open_findings(store_dir, config).await?;
+    let analysis =
+        exfil_engine::run::gather_analysis(&store, query.as_deref().unwrap_or("")).await?;
     let mut stdout = std::io::stdout().lock();
-    exfil_engine::run::analyze(
-        &store,
-        query.as_deref().unwrap_or(""),
-        format,
-        progress::display_width(),
-        &mut stdout,
-    )
-    .await
+    exfil_report::SummaryReporter {
+        width: progress::display_width(),
+    }
+    .report(&mut stdout, &analysis)
 }
 
 /// Train the path model on everything the store already knows and save it to
