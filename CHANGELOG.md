@@ -597,6 +597,14 @@ and this project adheres to
 
 ### Removed
 
+- `Store::create_edge`, `Store::delete_edge` (and their shared `edit_edge`
+  body) and `Store::cwe_count`. Public API with no caller anywhere in the
+  workspace or the desktop app — their only references were their own tests, so
+  they read as supported surface that nothing actually depended on. The same
+  shape as the `list_runs` gap fixed one commit earlier, and the reason to look
+  for the rest. `EDGE_TABLES` stays: the snapshot export and `neighbors` use it.
+  `cwe_catalog()` remains the way to count CWE entries.
+
 - **Eight CLI commands: `pull`, `feeds`, `rules`, `run`, `check`, `normalize`,
   `graph` and `enrich`** — twenty-two top-level commands down to fourteen. Every
   one of them survives as an MCP tool (`pull`, `feeds`, `rules`, `normalize`,

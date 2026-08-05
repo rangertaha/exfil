@@ -850,11 +850,6 @@ impl Store {
         Ok(self.cwe_catalog().await?.remove(&want))
     }
 
-    /// Number of stored CWE entries.
-    pub async fn cwe_count(&self) -> Result<usize> {
-        Ok(self.cwe_catalog().await?.len())
-    }
-
     /// Add or update a feed URL in the catalog, keyed by name. A feed is a URL
     /// that publishes detection data; `feeds pull` fetches it into a dataset.
     pub async fn upsert_feed(&self, name: &str, url: &str) -> Result<()> {
@@ -1211,45 +1206,6 @@ impl Store {
             .check()
             .context("set_field statement failed")?;
         Ok(old)
-    }
-
-    /// Create a graph edge `from -rel-> to`. `rel` must be a known edge table.
-    pub async fn create_edge(&self, rel: &str, from_id: &str, to_id: &str) -> Result<()> {
-        self.edit_edge(rel, from_id, to_id, true).await
-    }
-
-    /// Delete the graph edge `from -rel-> to`.
-    pub async fn delete_edge(&self, rel: &str, from_id: &str, to_id: &str) -> Result<()> {
-        self.edit_edge(rel, from_id, to_id, false).await
-    }
-
-    /// Shared body of [`create_edge`]/[`delete_edge`].
-    async fn edit_edge(&self, rel: &str, from_id: &str, to_id: &str, create: bool) -> Result<()> {
-        if !EDGE_TABLES.contains(&rel) {
-            bail!("unknown edge relation {rel:?}");
-        }
-        let rid = |id: &str| -> Result<RecordId> {
-            let (t, k) = id
-                .split_once(':')
-                .ok_or_else(|| anyhow::anyhow!("id must be table:key"))?;
-            Ok(RecordId::from((t, k)))
-        };
-        let from = rid(from_id)?;
-        let to = rid(to_id)?;
-        let q = if create {
-            format!("RELATE $from->{rel}->$to")
-        } else {
-            format!("DELETE {rel} WHERE in = $from AND out = $to")
-        };
-        self.db
-            .query(q)
-            .bind(("from", from))
-            .bind(("to", to))
-            .await
-            .with_context(|| format!("edit edge {rel}"))?
-            .check()
-            .context("edge statement failed")?;
-        Ok(())
     }
 
     /// The nodes directly connected to `node_id` (`table:key`) by any graph
@@ -1827,28 +1783,6 @@ mod tests {
             .await
             .is_err());
 
-        // create_edge then it shows up as a neighbor; delete_edge removes it.
-        store
-            .create_edge("contained_in", "file:aaa", "file:bbb")
-            .await
-            .unwrap();
-        let neigh = store.neighbors("file:aaa").await.unwrap();
-        assert!(neigh
-            .iter()
-            .any(|n| n.id == "file:bbb" && n.rel == "contained_in"));
-        store
-            .delete_edge("contained_in", "file:aaa", "file:bbb")
-            .await
-            .unwrap();
-        let neigh = store.neighbors("file:aaa").await.unwrap();
-        assert!(!neigh.iter().any(|n| n.rel == "contained_in"), "{neigh:?}");
-
-        // Unknown relations are rejected.
-        assert!(store
-            .create_edge("bogus", "file:aaa", "file:bbb")
-            .await
-            .is_err());
-
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2130,9 +2064,9 @@ mod tests {
             },
         ];
         assert_eq!(store.upsert_cwe(&entries).await.unwrap(), 2);
-        assert_eq!(store.cwe_count().await.unwrap(), 2);
 
         let map = store.cwe_catalog().await.unwrap();
+        assert_eq!(map.len(), 2);
         assert!(
             map.contains_key("CWE-798"),
             "keys: {:?}",
