@@ -22,16 +22,31 @@ Every scanner is one command, `exfil scan [TARGET] [OPTIONS]` — the **shape of
 | a host or IPv4 CIDR + `--ports <list\|ranges\|common>` | Sweep those ports across the host/CIDR, grab banners, and scan them — active *(authorized testing only)*. `common` sweeps the top N ports by real-world frequency (default 100 — see [Plugin settings](#plugin-settings)) |
 | an `http://` or `https://` URL | Crawl the site and scan the pages; `--max-pages`/`--max-depth` bound the crawl, `--driver <webdriver-url>` renders JS-heavy sites — active *(authorized testing only)* |
 
-`-a`/`--active` and `-p`/`--passive` label the scan's summary line explicitly
-(otherwise it's inferred from the target shape above); they're cosmetic only
-and don't change what gets scanned.
+**`-a`/`--active` is a permission, not a label.** Every target above marked
+*active* is **refused** without it — exfil never reaches the network because a
+target string happened to parse that way. `--passive` asserts the opposite: it
+fails if the target is not local, so a CI job can guarantee a scan stays on the
+machine rather than assuming it.
+
+```sh
+exfil scan example.com:22        # refused: pass --active to permit it
+exfil scan -a example.com:22     # permitted
+exfil scan --passive ./src       # guaranteed local, and says so if not
+```
 
 ### Gating CI
 
-`--fail-on <severity>` makes `scan` exit non-zero when any stored finding is at
-or above the given level (`info|low|medium|high|critical`), so a pipeline step
-fails the build on real problems — this applies to any target shape, not just
-local paths:
+`--fail-on <severity>` makes `scan` **exit 2** when a stored finding is at or
+above the given level (`info|low|medium|high|critical`), so a pipeline step
+fails the build on real problems. Exit 2 is distinct from exit 1, which means
+exfil itself failed, so CI can treat "findings exceeded the threshold"
+differently from "the tool broke". Applies to any target shape, not just local
+paths.
+
+The gate reads *stored* state, not only what the run re-read — an incremental
+scan re-reads just the changed files, and a critical in an unchanged file is
+still a critical — but it is bounded by the tree being scanned, so one store
+holding several roots never fails a build on a tree it did not look at:
 
 ```sh
 exfil scan --fail-on high  # exit 1 if any high/critical finding exists

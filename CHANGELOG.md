@@ -373,6 +373,17 @@ and this project adheres to
 
 ### Changed
 
+- **`--active` is a permission, not a label.** It used to tag the summary line,
+  and the *actual* decision to reach the network was inferred from the target's
+  shape — a colon in the string was enough, so `exfil scan example.com:22` read
+  like a typo for a path and behaved like a port scan. Targets that leave this
+  machine (`host:port` banners, a host/CIDR sweep, an `http(s)://` crawl) are
+  now **refused** without `-a`, before any connection is attempted.
+  `--passive` becomes the opposite assertion — it fails if the target is not
+  local — so a CI job can guarantee a scan stays on the machine instead of
+  assuming it. `-p` is no longer bound to `--passive`, freeing it for
+  `--plugin`.
+
 - **`analyze` is now a summary, not a second `report`.** It was byte-identical
   to `report` — same query, same `-f`, every flag — so two commands existed
   where one had no capability the other lacked. `analyze` now prints only the

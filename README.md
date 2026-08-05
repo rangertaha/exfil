@@ -79,7 +79,7 @@ scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 |---|---|
 | `exfil scan [path]` | Scan a directory tree for secrets and security issues |
 | `exfil scan processes` | Scan the local host's running processes |
-| `exfil scan example.com:22` | Grab and scan a TCP service banner (or `10.0.0.0/28 --ports 22,80,443` to sweep a CIDR) |
+| `exfil scan -a example.com:22` | Grab and scan a TCP service banner (`-a` permits reaching the network; or `-a 10.0.0.0/28 --ports 22,80,443` to sweep a CIDR) |
 | `exfil search [query]` | Query stored findings (by field or free text) |
 | `exfil analyze` | Summarize the graph: counts, severities, where they cluster |
 | `exfil report` | Render the full report (`--format text\|json\|markdown\|junit\|sarif\|pdf`, `--out FILE`) |

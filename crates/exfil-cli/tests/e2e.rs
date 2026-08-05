@@ -351,3 +351,26 @@ fn a_scan_does_not_ingest_its_own_store() {
         "the store's own files were scanned back into it"
     );
 }
+
+/// Reaching a remote system is a permission, not something a target string can
+/// grant itself. Nothing here opens a socket: the refusal happens before any
+/// connection is attempted, which is the whole point.
+#[test]
+fn network_targets_are_refused_without_active() {
+    let j = Journey::new("permission");
+
+    for target in ["example.invalid:22", "https://example.invalid/"] {
+        let o = exfil(&j, &["scan", target]);
+        assert!(!o.status.success(), "{target} was scanned without --active");
+        assert!(err(&o).contains("--active"), "{target}: {}", err(&o));
+    }
+
+    // `--passive` asks a different question and gets a different answer.
+    let o = exfil(&j, &["scan", "--passive", "example.invalid:22"]);
+    assert!(!o.status.success());
+    assert!(err(&o).contains("not local"), "{}", err(&o));
+
+    // A local tree is unaffected, and `--passive` on one is simply true.
+    let o = exfil(&j, &["scan", "--passive", j.tree.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", err(&o));
+}

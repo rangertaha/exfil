@@ -164,15 +164,16 @@ enum Command {
         /// JavaScript-heavy, dynamic sites.
         #[arg(long, value_name = "URL")]
         driver: Option<String>,
-        /// Tag this as an active scan (it reached a remote system) in the
-        /// summary. Inferred from the target when neither this nor
-        /// `--passive` is given.
+        /// Permit reaching remote systems (authorized testing only). Targets
+        /// that leave this machine — `host:port` banners, a host/CIDR sweep,
+        /// an `http(s)://` crawl — are refused without it, so a scan never
+        /// touches the network merely because a target string parsed that way.
         #[arg(short = 'a', long, conflicts_with = "passive")]
         active: bool,
-        /// Tag this as a passive scan (local system only) in the summary.
-        /// Inferred from the target when neither this nor `--active` is
-        /// given.
-        #[arg(short = 'p', long, conflicts_with = "active")]
+        /// Assert that this scan stays local, failing if the target would
+        /// reach out. The default is already local; this makes it a guarantee
+        /// a CI job can rely on rather than an assumption.
+        #[arg(long, conflicts_with = "active")]
         passive: bool,
         /// Exit non-zero if any finding is at or above this severity
         /// (info|low|medium|high|critical). Useful as a CI gate.
@@ -701,6 +702,28 @@ async fn cmd_scan(
         top_ports,
     };
     let target = target::parse(spec.as_deref(), &opts)?;
+
+    // Reaching a remote system is a permission, not a parse result. Before
+    // this, a colon in the target string was enough to put exfil on the
+    // network — `exfil scan example.com:22` looked like a typo for a path and
+    // behaved like a port scan. `--active` has to be asked for, and
+    // `--passive` is how a CI job asserts it will never happen.
+    let reaches_out = !matches!(target, Target::Path(_) | Target::Processes);
+    if reaches_out {
+        let what = spec.as_deref().unwrap_or("this target");
+        // Checked before the general case so an explicit `--passive` gets the
+        // answer to the question it actually asked.
+        if mode == Some(ScanMode::Passive) {
+            anyhow::bail!("--passive was given, but {what} is not local");
+        }
+        if mode != Some(ScanMode::Active) {
+            anyhow::bail!(
+                "{what} would reach a remote system; pass --active to permit \
+                 it (authorized testing only)"
+            );
+        }
+    }
+
     announce(&target, opts.ports.is_some());
     // Ranking and budgets only apply to a local tree walk. Say so rather than
     // accepting the flag and quietly ignoring it.
