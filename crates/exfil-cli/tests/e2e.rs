@@ -32,6 +32,30 @@ fn err(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// The `n` from a trailing `"{n} finding(s)"` line.
+///
+/// Tests assert on the number rather than the phrase: every one of these
+/// summary lines is printed whatever the count, so `contains("finding(s)")` is
+/// satisfied by `0 finding(s)` and cannot fail.
+fn finding_count(text: &str) -> u64 {
+    text.lines()
+        .rev()
+        .find_map(|l| l.strip_suffix(" finding(s)"))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no `N finding(s)` line in:\n{text}"))
+}
+
+/// The `m` from a scan summary's `"({m} unchanged)"`.
+///
+/// Same trap: the summary line always contains the word `unchanged`, so
+/// asserting the word proves only that a scan printed a summary.
+fn unchanged_count(text: &str) -> u64 {
+    text.lines()
+        .find_map(|l| l.split_once(" unchanged)"))
+        .and_then(|(head, _)| head.rsplit_once('(')?.1.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no `(N unchanged)` in:\n{text}"))
+}
+
 /// A scan target with enough variety that ranking and reporting have something
 /// to say: secrets in some places, clean files in others, several directories.
 struct Journey {
@@ -69,6 +93,24 @@ impl Journey {
             "def handle(req):\n    return os.system(req)\n",
         )
         .unwrap();
+
+        // A secret inside an archive. Nothing in this suite used to reach the
+        // container path, so every journey asserted over a tree where files and
+        // records were one-to-one — the arrangement in which an archive losing
+        // its contents on rescan is invisible.
+        {
+            use std::io::Write;
+            let mut buf = Vec::new();
+            {
+                let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+                w.start_file("app/.env", opts).unwrap();
+                w.write_all(b"AWS_ACCESS_KEY_ID=AKIA9999999999ZZZZZZ\n")
+                    .unwrap();
+                w.finish().unwrap();
+            }
+            std::fs::write(tree.join("deploy/bundle.zip"), &buf).unwrap();
+        }
 
         // Bulk that should stay quiet, so "found nothing here" is meaningful.
         let docs = tree.join("docs/guide");
@@ -108,14 +150,23 @@ fn a_named_scan_is_addressable_by_every_read_path() {
     // The run's own findings, reached three different ways, must agree.
     let by_filter = exfil(&j, &["search", "run=nightly"]);
     assert!(by_filter.status.success(), "{}", err(&by_filter));
+    // The count, not the word: the output ends `"{n} finding(s)"`, so asserting
+    // the phrase is present is satisfied by `0 finding(s)` — which is exactly
+    // the result a broken `run=` filter produces.
+    let searched = finding_count(&out(&by_filter));
     assert!(
-        out(&by_filter).contains("finding(s)"),
-        "{}",
+        searched > 0,
+        "`search run=nightly` found nothing:\n{}",
         out(&by_filter)
     );
 
     let reported = exfil(&j, &["report", "-n", "nightly", "-f", "json"]);
     let a: serde_json::Value = serde_json::from_str(&out(&reported)).expect("json report");
+    assert_eq!(
+        searched,
+        a["summary"]["findings"].as_u64().unwrap(),
+        "search and report disagree about the same run"
+    );
 
     // `analyze` is the glance over the same run: no finding list, but its
     // counts must match the document's or the two are lying to each other.
@@ -158,17 +209,47 @@ fn rescanning_an_unchanged_tree_adds_nothing() {
     };
     let before = count(&exfil(&j, &["report", "-f", "json"]));
 
+    let first_unchanged = unchanged_count(&out(&first));
+    assert_eq!(
+        first_unchanged, 0,
+        "nothing can be unchanged on a first scan"
+    );
+
     let second = exfil(&j, &["scan", j.tree.to_str().unwrap()]);
     assert!(second.status.success(), "{}", err(&second));
+    // The *count*, not the word: `"scanned N files (M unchanged)"` prints
+    // `unchanged` whatever M is, so the old `contains("unchanged")` was
+    // satisfied by a scan that re-read every file — the precise failure this
+    // test exists to catch.
     assert!(
-        out(&second).contains("unchanged"),
-        "expected the stat fast-path:\n{}",
+        unchanged_count(&out(&second)) > 0,
+        "the stat fast-path did not fire:\n{}",
         out(&second)
     );
     assert_eq!(
         before,
         count(&exfil(&j, &["report", "-f", "json"])),
         "a no-op rescan changed the finding count"
+    );
+
+    // And the rescan must still vouch for the same records the first scan did,
+    // not merely avoid adding new ones — `gc` deletes whatever the latest scan
+    // does not reference, so a shrinking record set is silent data loss.
+    let files = |o: &Output| -> u64 {
+        let v: serde_json::Value = serde_json::from_str(&out(o)).unwrap();
+        v["summary"]["files"].as_u64().unwrap()
+    };
+    let before_files = files(&exfil(&j, &["report", "-f", "json"]));
+    assert!(exfil(&j, &["store", "gc"]).status.success());
+    assert_eq!(
+        before_files,
+        files(&exfil(&j, &["report", "-f", "json"])),
+        "gc collected records the rescan should have kept alive"
+    );
+    assert_eq!(
+        before,
+        count(&exfil(&j, &["report", "-f", "json"])),
+        "gc collected findings the rescan should have kept alive"
     );
 }
 
@@ -191,11 +272,28 @@ fn every_report_format_renders_the_same_scan() {
             "json" => {
                 serde_json::from_slice::<serde_json::Value>(&bytes).expect("valid json");
             }
-            "junit" | "sarif" => {
+            // Each format is checked against its *own* marker. The old
+            // `contains("testsuite") || contains("\"runs\"")` was applied to
+            // both, so `report -f sarif` emitting JUnit would have passed it.
+            "junit" => {
                 let text = String::from_utf8_lossy(&bytes);
                 assert!(
-                    text.contains("testsuite") || text.contains("\"runs\""),
-                    "{format} does not look like {format}"
+                    text.contains("<testsuite"),
+                    "junit is not JUnit XML:\n{text}"
+                );
+                assert!(!text.contains("\"runs\""), "junit emitted SARIF");
+            }
+            "sarif" => {
+                let doc: serde_json::Value =
+                    serde_json::from_slice(&bytes).expect("sarif is not valid json");
+                assert!(
+                    doc["runs"].is_array(),
+                    "sarif lacks its `runs` array: {doc}"
+                );
+                assert!(
+                    doc["$schema"].as_str().is_some_and(|s| s.contains("sarif"))
+                        || doc["version"].is_string(),
+                    "sarif lacks a version/schema: {doc}"
                 );
             }
             "pdf" => {
@@ -317,10 +415,16 @@ fn piped_output_is_never_truncated() {
         listed.lines().any(|l| l.contains(&root)),
         "an absolute path was truncated in piped output:\n{listed}"
     );
-    assert!(
-        !listed.contains('…'),
-        "piped output contains an elision marker:\n{listed}"
-    );
+    // The claim is that the *location* is never fitted, not that no ellipsis
+    // appears anywhere: a snippet windowed around a match on a very long line
+    // legitimately carries one, so checking the whole line conflates the two.
+    for line in listed.lines().filter(|l| l.contains(&root)) {
+        let location = line.split_whitespace().next().unwrap_or_default();
+        assert!(
+            !location.contains('…'),
+            "a location prefix was elided in piped output: {location}"
+        );
+    }
 }
 
 /// The store directory is never scanned into itself — the recursion that would
