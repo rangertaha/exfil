@@ -10,6 +10,20 @@ and this project adheres to
 
 ### Added
 
+- An end-to-end test suite (`crates/exfil-cli/tests/e2e.rs`) driving the real
+  binary through whole journeys rather than one command at a time, because the
+  interesting failures live *between* commands. Seven of them: a named run
+  addressed by every read path (and a name that matches nothing resolving to
+  nothing rather than everything); a no-op rescan taking the stat fast-path and
+  adding no findings; all six report formats rendering the same scan, checked
+  for being the format they claim; train → `model list`/`get` → a budgeted scan
+  stating its coverage and refusing to also certify the tree; the MCP surface
+  agreeing with the CLI about the store it just wrote; piped output keeping
+  whole `path:line:col` prefixes; and a store nested inside its own scan target
+  not being ingested back into itself. Builds its own tree in a temp directory,
+  so it needs no `e2e/generate.py` run first and no fixture edit can silently
+  change what is asserted.
+
 - **`exfil train --model <kind>` and `exfil scan --model <name>`** — the path
   model is now a choice rather than a fixed algorithm. `path-hmm` (the default)
   is the sequence model; `dir-prior` is the parent-directory frequency prior
