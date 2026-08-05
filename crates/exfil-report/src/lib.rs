@@ -453,12 +453,14 @@ impl Reporter for MarkdownReporter {
                     .severity
                     .map(|s| format!("{s:?}").to_lowercase())
                     .unwrap_or_else(|| "-".into());
-                // Escape pipes so a snippet can't break the table.
-                let snippet = m.snippet.replace('|', "\\|");
                 writeln!(
                     w,
                     "| {} | {} | {}:{} | `{}` |",
-                    m.rule, sev, m.path, m.line, snippet
+                    md_cell(&m.rule),
+                    sev,
+                    md_cell(&m.path),
+                    m.line,
+                    md_cell(&m.snippet)
                 )?;
             }
         }
@@ -472,8 +474,14 @@ impl Reporter for MarkdownReporter {
 /// failures), so the build goes green when clean.
 pub struct JunitReporter;
 
-/// Escape the five XML metacharacters so a rule name or snippet can't break the
-/// document or inject markup. Used for both element text and attribute values.
+/// Escape a rule name, path or snippet for XML text and attribute values.
+///
+/// Escaping the five metacharacters is not enough. Snippets are arbitrary bytes
+/// from a scanned file — an ANSI-coloured log, a file whose NUL sits past the
+/// 8 KiB binary sniff — and **C0 control characters are illegal in XML 1.0 at
+/// any escaping**. Emitting one produces a document every parser rejects, from
+/// a command that exited 0, so the CI ingest fails rather than the build gate.
+/// Tab, newline and carriage return are the three C0 characters XML allows.
 fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -483,6 +491,30 @@ fn xml_escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            // Illegal in XML 1.0 and unrepresentable by a character reference.
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Escape a value for one cell of a Markdown table.
+///
+/// Every field in a row is untrusted: a `|` in a path (legal on Linux) adds a
+/// column and shifts every cell after it, a backtick inside a code span closes
+/// it early, and a newline ends the row. Escaping only the snippet — which is
+/// what this did before — left the rule name and path free to break the table.
+fn md_cell(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '|' => out.push_str("\\|"),
+            '`' => out.push_str("\\`"),
+            // A row is one line; a literal newline would split it in two.
+            '\n' | '\r' => out.push(' '),
+            c if (c as u32) < 0x20 => out.push(' '),
             _ => out.push(c),
         }
     }
@@ -1079,5 +1111,82 @@ mod tests {
         let (root, names) = strip_common_prefix(&rows);
         assert_eq!(root.as_deref(), Some("src"));
         assert_eq!(names, vec!["auth", "."]);
+    }
+
+    /// Every reporter, walked with one deliberately hostile finding.
+    ///
+    /// Escaping is per-format and each format got it separately — and each one
+    /// was separately incomplete: JUnit passed C0 controls that are illegal in
+    /// XML at any escaping, Markdown escaped the snippet's pipes but left the
+    /// rule and path free to add columns, and the PDF dropped the `…` that
+    /// marks an elision so truncated paths read as whole. A per-format fix
+    /// leaves the next format to rediscover the same list, so this walks
+    /// `FORMATS` itself: a new reporter that forgets fails here.
+    #[test]
+    fn every_format_survives_hostile_finding_text() {
+        let hostile = Match {
+            // Untrusted in all three fields, not just the snippet.
+            rule: "rule|with<pipe>&amp".into(),
+            path: "/tmp/a|b/<script>/c.env".into(),
+            line: 1,
+            col: 1,
+            snippet: "tok=\u{1b}[0m\u{0}\u{7} `code` | \"q\" <x> & \u{2026}".into(),
+            severity: Some(Severity::Critical),
+            cwe: Some("CWE-798".into()),
+            cve: None,
+        };
+        let a = Analysis {
+            findings: vec![hostile],
+            files: 1,
+            scans: 1,
+        };
+
+        for format in FORMATS {
+            let reporter = reporter_for(format).expect("every listed format resolves");
+            let mut buf = Vec::new();
+            reporter
+                .report(&mut buf, &a)
+                .unwrap_or_else(|e| panic!("{format} failed to render: {e}"));
+            assert!(!buf.is_empty(), "{format} produced nothing");
+
+            match *format {
+                "json" | "sarif" => {
+                    serde_json::from_slice::<serde_json::Value>(&buf)
+                        .unwrap_or_else(|e| panic!("{format} emitted invalid JSON: {e}"));
+                }
+                "junit" => {
+                    let text = String::from_utf8(buf).expect("junit is utf-8");
+                    // C0 controls are illegal in XML 1.0 however they are
+                    // escaped, so their absence is the assertion.
+                    let illegal: Vec<u32> = text
+                        .chars()
+                        .map(|c| c as u32)
+                        .filter(|c| (*c < 0x20 && ![0x09, 0x0a, 0x0d].contains(c)) || *c == 0x7f)
+                        .collect();
+                    assert!(
+                        illegal.is_empty(),
+                        "junit emitted illegal XML chars {illegal:x?}"
+                    );
+                    // And the markup must not have been broken open.
+                    assert!(!text.contains("<script>"), "junit leaked raw markup");
+                }
+                "markdown" => {
+                    let text = String::from_utf8(buf).expect("markdown is utf-8");
+                    for row in text
+                        .lines()
+                        .filter(|l| l.starts_with("| `") || l.starts_with("| rule"))
+                    {
+                        // A row must keep its column count: 4 cells, 5 pipes.
+                        let bars =
+                            row.chars().filter(|c| *c == '|').count() - row.matches("\\|").count();
+                        assert_eq!(bars, 5, "markdown row broke its columns: {row}");
+                    }
+                }
+                "pdf" => {
+                    assert!(buf.starts_with(b"%PDF-"), "pdf lacks its header");
+                }
+                _ => {}
+            }
+        }
     }
 }

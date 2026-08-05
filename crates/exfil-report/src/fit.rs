@@ -98,7 +98,14 @@ pub fn fit_parts(m: &Match, width: usize) -> (String, Option<&'static str>, Stri
         .saturating_sub(MIN_SNIPPET + 1)
         .max(MIN_SNIPPET)
         .min(budget);
-    let loc = elide_left(&loc, max_loc);
+    // `elide_left` spends a column on the `…`, so a cap of 0 still yields one
+    // character and overruns the width. Below two columns there is nothing
+    // useful to show, so show nothing rather than exceed what was asked for.
+    let loc = if max_loc < 2 {
+        String::new()
+    } else {
+        elide_left(&loc, max_loc)
+    };
 
     // Whatever the location left, minus its separating space. Under two columns
     // there is no room for even one character plus the `…`, so drop the snippet

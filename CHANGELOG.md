@@ -736,6 +736,33 @@ and this project adheres to
 
 ### Fixed
 
+- `search run = nightly` (with spaces) returned nothing. The `run=` branch
+  emits two SQL statements and the index of the row-bearing one was re-derived
+  afterwards by a *different* test than the one that chose the branch —
+  `starts_with("run=")` against `key.trim() == "run"`. They agreed on `run=x`
+  and disagreed on `run = x`, which took the graph join and then read the `LET`
+  slot. A filter is now parsed once into SQL + binding + result slot, so there
+  is no second derivation to fall out of step.
+- `findings_with_ids` claimed to reuse the search filter's grammar but
+  re-implemented a stricter one: it omitted `run` and split on `=` without
+  trimming, so `rule = aws-key` was an error there and a match in `search`.
+  Both go through the one parser now.
+- A free-text search was not trimmed while every `key=value` branch was, so
+  `exfil search "aws-key "` — a trailing space from a shell completion — found
+  nothing while `rule=aws-key ` found everything.
+- JUnit reports emitted C0 control characters verbatim. They are illegal in XML
+  1.0 at *any* escaping, so a snippet from an ANSI-coloured log produced a
+  document every parser rejects, from a command that exited 0 — the CI ingest
+  failed rather than the build gate.
+- Markdown reports escaped only the snippet's pipes. A `|` in a path (legal on
+  Linux) added a column and shifted every cell after it; a backtick in a
+  snippet closed the code span early. Every cell is escaped now.
+- The PDF reporter dropped the `…` that marks an elision, so a truncated path
+  rendered as a complete-looking one pointing nowhere, and PII `•` masks
+  vanished. Unrepresentable characters are transliterated rather than deleted.
+- `fit::fitted_line` could return a line wider than the width it was given when
+  the width left no room for the location.
+
 - Piping any command into `head`, `less` or `grep -m` panicked. Rust ignores
   `SIGPIPE`, so `exfil search | head -5` kept writing past the fifth line until
   the closed pipe surfaced as an I/O error, which `println!` turned into a

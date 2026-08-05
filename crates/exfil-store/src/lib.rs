@@ -86,6 +86,93 @@ DEFINE INDEX IF NOT EXISTS finding_severity ON finding FIELDS severity;
 DEFINE INDEX IF NOT EXISTS file_path ON file FIELDS path;
 "#;
 
+/// A parsed finding filter: the SQL to run, what to bind, and **which result
+/// slot holds the rows**.
+///
+/// The three used to be decided separately. The `run=` branch emits two
+/// statements (a `LET` then the `SELECT`), and the index of the row-bearing
+/// slot was re-derived afterwards by a *different* predicate than the one that
+/// chose the branch — `starts_with("run=")` against `k.trim() == "run"`. They
+/// agreed on `run=x` and disagreed on `run = x`, which took the two-statement
+/// path and then read the `LET` slot, returning nothing.
+///
+/// Deriving the same fact twice is what made that possible, so the branch now
+/// carries its own index and there is nothing to keep in step. `search_findings`
+/// and `findings_with_ids` both parse through here, so the accepted grammar
+/// cannot drift between them either.
+struct FilterPlan {
+    sql: String,
+    bind: Option<String>,
+    /// Result slot holding the rows — non-zero only for multi-statement SQL.
+    slot: usize,
+}
+
+impl FilterPlan {
+    /// Fields that may be compared directly. Whitelisted because an identifier
+    /// cannot be bound as a parameter — only the *value* side is user text.
+    const FIELDS: &'static [&'static str] = &["rule", "cwe", "severity", "path"];
+
+    /// Parse `filter` against a `SELECT … FROM finding` prefix.
+    ///
+    /// Empty selects everything; `key=value` compares a whitelisted field, with
+    /// `run` resolved through the graph; anything else is free text matched
+    /// against the rule name. Keys and values are trimmed, so `rule = aws` and
+    /// `rule=aws` mean the same thing — and so does a filter a shell completion
+    /// left a trailing space on.
+    fn parse(filter: &str, select: &str) -> Result<Self> {
+        let filter = filter.trim();
+        Ok(match filter.split_once('=') {
+            // `run` is not a column: findings hang off file content, which
+            // outlives any one run. "Findings from run X" therefore means
+            // findings on a file that run included — a join across
+            // `finding->in_file->file` and `scan->includes->file`, resolved
+            // here so callers never have to know the graph shape.
+            Some((k, v)) if k.trim() == "run" => Self {
+                sql: format!(
+                    "LET $files = array::flatten((SELECT VALUE ->includes->file \
+                     FROM scan WHERE name = $v)); \
+                     {select} WHERE ->in_file->file CONTAINSANY $files"
+                ),
+                bind: Some(v.trim().to_string()),
+                slot: 1,
+            },
+            Some((k, v)) => {
+                let k = k.trim();
+                if !Self::FIELDS.contains(&k) {
+                    bail!("unknown search field {k:?} (use rule/cwe/severity/path/run)");
+                }
+                Self {
+                    sql: format!("{select} WHERE {k} = $v"),
+                    bind: Some(v.trim().to_string()),
+                    slot: 0,
+                }
+            }
+            None if filter.is_empty() => Self {
+                sql: select.to_string(),
+                bind: None,
+                slot: 0,
+            },
+            None => Self {
+                sql: format!("{select} WHERE rule CONTAINS $v"),
+                bind: Some(filter.to_string()),
+                slot: 0,
+            },
+        })
+    }
+
+    /// Execute and deserialize the row-bearing slot.
+    async fn run<T>(self, db: &Surreal<Any>) -> Result<Vec<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let mut q = db.query(self.sql);
+        if let Some(v) = self.bind {
+            q = q.bind(("v", v));
+        }
+        Ok(q.await?.take(self.slot)?)
+    }
+}
+
 /// A handle to one opened exfil database.
 ///
 /// Cloning is cheap: the inner SurrealDB handle is reference-counted, so
@@ -315,46 +402,8 @@ impl Store {
     /// The field name is checked against a whitelist because identifiers can't
     /// be bound as `$params` — only the *value* side is user-controlled text.
     pub async fn search_findings(&self, filter: &str) -> Result<Vec<Match>> {
-        // `match` can destructure: `split_once('=')` yields Some((key, value))
-        // when a '=' exists, and the arms bind those pieces directly.
-        let (sql, bind): (String, Option<(String, String)>) = match filter.split_once('=') {
-            // `run` is not a column: findings hang off file content, which
-            // outlives any one run. "Findings from run X" therefore means
-            // findings on a file that run included — a join across
-            // `finding->in_file->file` and `scan->includes->file`, resolved
-            // here so callers never have to know the graph shape.
-            Some((k, v)) if k.trim() == "run" => (
-                "LET $files = array::flatten((SELECT VALUE ->includes->file \
-                 FROM scan WHERE name = $v)); \
-                 SELECT * OMIT id FROM finding \
-                 WHERE ->in_file->file CONTAINSANY $files"
-                    .into(),
-                Some(("v".into(), v.trim().to_string())),
-            ),
-            Some((k, v)) => {
-                let k = k.trim();
-                if !["rule", "cwe", "severity", "path"].contains(&k) {
-                    bail!("unknown search field {k:?} (use rule/cwe/severity/path/run)");
-                }
-                (
-                    format!("SELECT * OMIT id FROM finding WHERE {k} = $v"),
-                    Some(("v".into(), v.trim().to_string())),
-                )
-            }
-            None if filter.is_empty() => ("SELECT * OMIT id FROM finding".into(), None),
-            None => (
-                "SELECT * OMIT id FROM finding WHERE rule CONTAINS $v".into(),
-                Some(("v".into(), filter.to_string())),
-            ),
-        };
-        let mut q = self.db.query(sql);
-        if let Some((k, v)) = bind {
-            q = q.bind((k, v));
-        }
-        // The `run` branch is two statements (a LET then the SELECT), so the
-        // rows come from the second result rather than the first.
-        let idx = usize::from(filter.trim_start().starts_with("run="));
-        let mut rows: Vec<Match> = q.await.context("search findings")?.take(idx)?;
+        let plan = FilterPlan::parse(filter, "SELECT * OMIT id FROM finding")?;
+        let mut rows: Vec<Match> = plan.run(&self.db).await.context("search findings")?;
         // Worst-first: highest severity leads so the most serious findings are
         // seen first; unrated findings sort last. Stable, so same-severity
         // findings keep their storage order.
@@ -586,26 +635,14 @@ impl Store {
             #[serde(flatten)]
             m: Match,
         }
-        // Reuse search_findings' filter contract, but keep the id.
-        let base = "SELECT type::string(id) AS fid, * OMIT id FROM finding";
-        let mut res = if let Some((k, v)) = filter.split_once('=') {
-            const FIELDS: &[&str] = &["rule", "cwe", "severity", "path"];
-            if !FIELDS.contains(&k) {
-                bail!("unknown search field {k:?}");
-            }
-            self.db
-                .query(format!("{base} WHERE {k} = $v"))
-                .bind(("v", v.to_string()))
-                .await?
-        } else if filter.is_empty() {
-            self.db.query(base).await?
-        } else {
-            self.db
-                .query(format!("{base} WHERE rule CONTAINS $v"))
-                .bind(("v", filter.to_string()))
-                .await?
-        };
-        let rows: Vec<Row> = res.take(0)?;
+        // The same parser `search_findings` uses. This used to re-implement the
+        // grammar and drifted: it omitted `run`, and split on `=` without
+        // trimming, so `rule = aws` was an error here and a match there.
+        let plan = FilterPlan::parse(
+            filter,
+            "SELECT type::string(id) AS fid, * OMIT id FROM finding",
+        )?;
+        let rows: Vec<Row> = plan.run(&self.db).await.context("findings with ids")?;
         Ok(rows.into_iter().map(|r| (r.fid, r.m)).collect())
     }
 
@@ -1601,6 +1638,27 @@ mod tests {
 
         // `run=` reaches findings through the graph, not a column.
         assert_eq!(store.search_findings("run=t1").await.unwrap().len(), 2);
+        // Spacing around `=` must not change which result slot is read: the
+        // branch and the slot used to be decided by two different predicates,
+        // so `run = t1` took the graph join and then read the `LET` slot.
+        assert_eq!(store.search_findings("run = t1").await.unwrap().len(), 2);
+        assert_eq!(store.search_findings(" run=t1 ").await.unwrap().len(), 2);
+        // Free text is trimmed like every other branch.
+        assert_eq!(store.search_findings("aws-key ").await.unwrap().len(), 1);
+        // …and both entry points accept the same grammar.
+        assert_eq!(
+            store.findings_with_ids("run=t1").await.unwrap().len(),
+            2,
+            "findings_with_ids diverged from search_findings"
+        );
+        assert_eq!(
+            store
+                .findings_with_ids("rule = aws-key")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(store.search_findings("run=nope").await.unwrap().len(), 0);
 
         // The run is listable and addressable by the name it was given.
@@ -1614,6 +1672,15 @@ mod tests {
         // another run may still stand behind the same files.
         assert_eq!(store.remove_run("t1").await.unwrap(), 1);
         assert!(store.list_runs().await.unwrap().is_empty());
+        // The `includes` edges go with it — SurrealDB cascades a TYPE RELATION
+        // when the record on either end is deleted, so nothing is left behind.
+        let mut res = store
+            .db
+            .query("SELECT count() AS n FROM includes GROUP ALL")
+            .await
+            .unwrap();
+        let rows: Vec<serde_json::Value> = res.take(0).unwrap();
+        assert_eq!(rows.first().and_then(|v| v["n"].as_u64()).unwrap_or(0), 0);
         assert_eq!(store.search_findings("").await.unwrap().len(), 2);
         assert_eq!(store.remove_run("t1").await.unwrap(), 0);
 

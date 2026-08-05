@@ -66,6 +66,24 @@ fn rgb(r: f32, g: f32, b: f32) -> Color {
     })
 }
 
+/// Render `s` in the single-byte encoding the base-14 fonts use.
+///
+/// The characters this tool actually emits above U+00FF are the ellipsis `fit`
+/// uses to mark an elision and the bullet the PII masks use, and both *carry
+/// meaning* — dropping them makes a truncated value look whole. They get ASCII
+/// stand-ins; anything else unrepresentable becomes `?`, which at least shows
+/// that something was there.
+fn latin1(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '…' => "...".to_string(),
+            '•' => "*".to_string(),
+            c if c < '\u{100}' => c.to_string(),
+            _ => "?".to_string(),
+        })
+        .collect()
+}
+
 /// A page being filled: the ops written so far and the cursor's height.
 struct Writer {
     pages: Vec<PdfPage>,
@@ -100,14 +118,14 @@ impl Writer {
             Op::SetFillColor {
                 col: rgb(col.0, col.1, col.2),
             },
-            // PDF strings are not UTF-8, and the base-14 fonts are single-byte
-            // encoded, so anything outside Latin-1 cannot be represented. Drop
-            // it rather than emit a mojibake glyph: a report is read, and a
-            // wrong character is worse than a missing one.
+            // PDF strings are not UTF-8 and the base-14 fonts are single-byte
+            // encoded, so anything outside Latin-1 cannot be represented.
+            // Transliterate rather than drop: silently deleting the `…` that
+            // `fit` inserts turns a truncated path into one that reads as
+            // complete, which is worse than either the right glyph or an
+            // obviously wrong one.
             Op::ShowText {
-                items: vec![TextItem::Text(
-                    text.chars().filter(|c| *c < '\u{100}').collect(),
-                )],
+                items: vec![TextItem::Text(latin1(text))],
             },
             Op::EndTextSection,
         ]);
