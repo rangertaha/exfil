@@ -264,7 +264,9 @@ pub async fn scan(
     name: &str,
 ) -> Result<String> {
     let target = target::parse(Some(spec), opts)?;
-    let built = build_pipeline(ctx.config()).await?;
+    // Always redacting: an agent surface hands findings to a model and into a
+    // transcript, which is the last place a live credential should travel.
+    let built = build_pipeline(ctx.config(), exfil_core::SnippetPolicy::Redact).await?;
     let store = ctx.findings().await?;
     // A local walk must exclude the store itself; remote targets have no
     // directory to skip.
@@ -281,6 +283,9 @@ pub async fn scan(
         budget,
         ruleset: exfil_engine::setup::ruleset_fingerprint(ctx.config()).await,
         name: name.to_string(),
+        // The default policy: ignore files do not narrow a scan. An agent
+        // asking exfil to scan a tree gets the whole tree, same as the CLI.
+        walk: exfil_engine::WalkPolicy::default(),
     };
 
     let ignored_budget = budget.is_some() && !target.honors_plan();

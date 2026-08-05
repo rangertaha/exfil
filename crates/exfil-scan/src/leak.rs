@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Rule, Severity};
+use exfil_core::{Match, Rule, Severity, Snippet};
 use exfil_task::{Artifact, ArtifactKind, FileTask, Indicators};
 use sha1::{Digest, Sha1};
 
@@ -66,7 +66,7 @@ impl LeakScanner {
                     path: path.to_string(),
                     line: 0,
                     col: 1,
-                    snippet: format!("email in breach corpus: {email}"),
+                    snippet: Snippet::describe(format!("email in breach corpus: {email}")),
                     severity: Some(Severity::High),
                     cwe: Some("CWE-359".into()),
                     cve: None,

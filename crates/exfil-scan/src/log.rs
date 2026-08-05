@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 use regex::Regex;
 
 use crate::Scanner;
@@ -120,13 +120,18 @@ impl Scanner for LogScanner {
         let mut matches = Vec::new();
         for (idx, line) in text.lines().enumerate() {
             for p in &self.patterns {
-                if p.re.is_match(line) {
+                // One finding per suspicious line: the finding is "this line is
+                // suspicious", not "this token is". Locating the match anyway is
+                // what lets the snippet be windowed around it rather than being
+                // the whole line, however long that line turns out to be.
+                if let Some(m) = p.re.find(line) {
+                    let col = line[..m.start()].chars().count() as u32 + 1;
                     matches.push(Match {
                         rule: p.rule.into(),
                         path: path_str.clone(),
                         line: idx as u32 + 1,
-                        col: 1,
-                        snippet: line.trim().to_string(),
+                        col,
+                        snippet: Snippet::in_line(line, col, m.as_str()),
                         severity: Some(p.severity),
                         cwe: Some(p.cwe.into()),
                         cve: None,

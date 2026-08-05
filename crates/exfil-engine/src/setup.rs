@@ -69,7 +69,10 @@ pub struct BuiltPipeline {
 /// YARA rules and ClamAV signatures from the files listed under
 /// `[plugins.yara]` / `[plugins.clamav]` in config. Non-compiling external
 /// regex patterns are reported in [`BuiltPipeline::skipped`] and skipped.
-pub async fn build_pipeline(config: Option<&Path>) -> Result<BuiltPipeline> {
+pub async fn build_pipeline(
+    config: Option<&Path>,
+    policy: exfil_core::SnippetPolicy,
+) -> Result<BuiltPipeline> {
     let mut rules = exfil_scan::builtin_rules();
     // YARA rules from feeds are stored as `yara:<source>` in the catalog;
     // split them out and compile them into the YARA scanner.
@@ -90,7 +93,7 @@ pub async fn build_pipeline(config: Option<&Path>) -> Result<BuiltPipeline> {
         load_plugin_files(config, "yara", "rules")
     );
     let (pipeline, skipped) =
-        exfil_scan::pipeline_with_rules(rules, &clamav_signatures, &yara_rules)?;
+        exfil_scan::pipeline_with_rules(rules, &clamav_signatures, &yara_rules, policy)?;
     Ok(BuiltPipeline { pipeline, skipped })
 }
 
@@ -193,7 +196,9 @@ mod tests {
         let cfg = dir.join("config.toml");
         std::fs::write(&cfg, "store = \".exfil\"\n").unwrap();
 
-        let built = build_pipeline(Some(&cfg)).await.unwrap();
+        let built = build_pipeline(Some(&cfg), Default::default())
+            .await
+            .unwrap();
         let names: Vec<&str> = built.pipeline.tasks().iter().map(|t| t.name()).collect();
         assert!(names.contains(&"regex"), "{names:?}");
         // The AST extractor must precede its taint consumer.

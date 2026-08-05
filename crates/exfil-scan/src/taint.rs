@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 use exfil_task::{Artifact, ArtifactKind, Ast, FileTask};
 
 /// Whether a callee name denotes an untrusted-input source. Covers Python, JS,
@@ -152,7 +152,7 @@ impl TaintScanner {
                     path: path.to_string(),
                     line: c.line,
                     col: 1,
-                    snippet: format!("{how} {} ({})", c.callee, sink.what),
+                    snippet: Snippet::describe(format!("{how} {} ({})", c.callee, sink.what)),
                     severity: Some(Severity::Critical),
                     cwe: Some(sink.cwe.into()),
                     cve: None,

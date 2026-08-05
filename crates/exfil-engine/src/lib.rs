@@ -29,7 +29,7 @@ pub mod plan;
 pub mod run;
 pub mod setup;
 
-pub use plan::{Budget, ScanPlan};
+pub use plan::{Budget, ScanPlan, WalkPolicy, DEFAULT_SKIP_DIRS};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -76,23 +76,91 @@ pub struct Summary {
     pub unchanged: u64,
     /// Files that could not be read (permission, races); they are skipped.
     pub errors: u64,
+    /// Files that were recorded but whose *content* was never examined.
+    ///
+    /// Separate from [`errors`](Self::errors), which is about files that could
+    /// not be opened at all, and from [`skipped`](Self::skipped), which is about
+    /// files a budget never reached. These were opened, hashed and filed — they
+    /// simply were not searched, so "no findings here" is not something this
+    /// scan is entitled to say about them.
+    pub unexamined: Unexamined,
     /// Files a [`Budget`](plan::Budget) stopped the scan before reaching.
     ///
     /// Non-zero means **this scan did not look at everything** — the caller
     /// must say so rather than letting a partial run read as a clean one.
     pub skipped: u64,
-    /// Candidate files the walk found, whether or not they were examined.
-    /// Equals `files + skipped` for a ranked scan.
+    /// Files the walk found **on disk**, whether or not they were examined.
+    ///
+    /// Counts paths, never the entries expanded out of an archive — those have
+    /// no path for a walk to have found. Both walks agree on this, so
+    /// [`coverage`](Self::coverage) is comparable between them.
     pub candidates: u64,
     /// The ruleset changed since the last scan, so the stat fast-path was
     /// bypassed and every file was re-examined under the new rules.
     pub ruleset_changed: bool,
 }
 
+/// Content a scan recorded but did not search, by reason.
+///
+/// A scanner's summary is a claim about a tree, and every one of these is a
+/// place where the claim is narrower than it looks. They were previously
+/// invisible: an oversize file and a file whose scanners all errored both landed
+/// in [`Summary::files`] and were reported as scanned, so "0 findings" over a
+/// tree of them read exactly like a clean result.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Unexamined {
+    /// Larger than [`MAX_SCAN_BYTES`]: stat'ed, hashed and recorded, but never
+    /// read into memory, so no scanner saw the contents.
+    pub oversize: u64,
+    /// A task failed on this file. Its findings are *unknown*, not absent —
+    /// the distinction the old `Err(_) => no findings` erased.
+    pub failed: u64,
+}
+
+impl Unexamined {
+    /// Total files not searched.
+    pub fn total(&self) -> u64 {
+        self.oversize + self.failed
+    }
+
+    /// Whether anything went unsearched.
+    pub fn any(&self) -> bool {
+        self.total() > 0
+    }
+
+    /// A short phrase for a summary line, e.g. `2 too large, 1 failed`.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if self.oversize > 0 {
+            parts.push(format!("{} too large", self.oversize));
+        }
+        if self.failed > 0 {
+            parts.push(format!("{} failed", self.failed));
+        }
+        parts.join(", ")
+    }
+}
+
 impl Summary {
     /// Whether a budget stopped this scan short of the whole tree.
     pub fn is_partial(&self) -> bool {
         self.skipped > 0
+    }
+
+    /// Whether this scan searched everything it set out to.
+    ///
+    /// The question `--fail-on` and any "clean tree" claim should be asking:
+    /// a budget that stopped early, a file too large to read, one whose
+    /// scanners errored, and one that could not be opened are different
+    /// reasons, but they have the same consequence — there is content this run
+    /// cannot vouch for.
+    pub fn is_complete(&self) -> bool {
+        !self.is_partial() && !self.unexamined.any() && self.errors == 0
+    }
+
+    /// Files whose content was actually searched.
+    pub fn examined(&self) -> u64 {
+        self.files.saturating_sub(self.unexamined.total())
     }
 
     /// Fraction of candidate files actually examined, in `0.0..=1.0`.
@@ -108,6 +176,8 @@ impl Summary {
 /// for files expanded from an archive — the content hash of the container.
 struct FileResult {
     meta: FileMeta,
+    /// Whether this file's content was searched, and if not, why.
+    examined: Examined,
     matches: Vec<Match>,
     /// The parsed AST, when a language task produced one (for `has_ast`).
     ast: Option<exfil_task::Ast>,
@@ -117,16 +187,80 @@ struct FileResult {
     contained_in: Option<String>,
 }
 
+/// Whether a file's content was searched.
+///
+/// Carried per file rather than inferred from an empty match list, because
+/// "nothing was found" and "nothing was looked for" are different claims and
+/// only one of them supports calling a tree clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Examined {
+    /// Content was read and handed to the pipeline.
+    Yes,
+    /// Over [`MAX_SCAN_BYTES`]; recorded and hashed, never read.
+    Oversize,
+    /// A task returned an error for this file.
+    Failed,
+}
+
 /// What a walker thread concluded about one on-disk file. A single archive
 /// yields several results: the archive itself plus every file expanded from it.
 enum WalkOutcome {
     /// Read, hashed, and scanned; the container plus any expanded descendants.
     Scanned(Vec<FileResult>),
-    /// Stat fast-path hit: size+mtime match the stored record, so the file
-    /// was not read. The stored hash keeps it in this scan's `includes`.
-    Unchanged { hash: String },
+    /// Stat fast-path hit: size+mtime match the stored record, so the file was
+    /// not read. Carries the stored hashes it stands for — the file itself plus,
+    /// when it is a container, everything the last scan expanded out of it —
+    /// which keeps all of them in this scan's `includes`.
+    ///
+    /// The plural is the point. This variant used to carry a single hash while
+    /// [`Scanned`](Self::Scanned) carried a whole tree, so an unchanged archive
+    /// silently dropped its contents from the scan record and `gc` collected
+    /// them as unreferenced. Both variants now describe the same thing — a set
+    /// of file records this scan vouches for — so the two paths cannot disagree
+    /// about what a container means.
+    Unchanged { hashes: Vec<String> },
     /// The file could not be stat'ed or read.
     Error,
+}
+
+/// What the previous scan knows, consulted before deciding to re-read a file.
+///
+/// The two halves travel together because they answer one question between
+/// them: *which stored records does this path still stand for?* Consulting the
+/// stat cache without the containment edges is what let an unchanged container
+/// certify itself but not its contents.
+#[derive(Debug, Default)]
+struct ScanIndex {
+    /// Absolute path → the stat row recorded for it.
+    files: HashMap<String, FileStat>,
+    /// Container content hash → the hashes expanded out of it last scan.
+    contained: HashMap<String, Vec<String>>,
+}
+
+impl ScanIndex {
+    /// The stat row for `abs`, if the last scan recorded one.
+    fn get(&self, abs: &Path) -> Option<&FileStat> {
+        self.files.get(&abs.display().to_string())
+    }
+
+    /// Every file record an unchanged `hash` stands for: itself, plus — for a
+    /// container — everything expanded out of it, transitively. Deduplicated,
+    /// so identical nested content cannot make this loop.
+    fn closure(&self, hash: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![hash.to_string()];
+        while let Some(h) = stack.pop() {
+            if !seen.insert(h.clone()) {
+                continue;
+            }
+            if let Some(children) = self.contained.get(&h) {
+                stack.extend(children.iter().cloned());
+            }
+            out.push(h);
+        }
+        out
+    }
 }
 
 /// Live progress events emitted while a scan runs.
@@ -144,33 +278,56 @@ pub enum ScanEvent {
     FileDone,
 }
 
-/// Configure the walk shared by [`scan`] and its pre-count: gitignore-aware,
-/// includes dotfiles, and skips `.git`, `.exfil`, and the store directory
-/// itself (`skip`, compared by canonical path so any `--store` location is
-/// excluded even when it sits inside the scanned tree).
-fn walk_builder(root: &Path, skip: Option<&Path>) -> WalkBuilder {
+/// Configure the walk shared by [`scan`] and its pre-count.
+///
+/// Every exclusion a scan applies is decided here, from one
+/// [`WalkPolicy`](plan::WalkPolicy): dotfiles are always included, ignore files
+/// are honoured only if the policy says so, the policy's directory list is
+/// skipped, and so is the store directory itself (`skip`, compared by canonical
+/// path so any `--store` location is excluded even when it sits inside the
+/// scanned tree).
+///
+/// Note what is *not* here: a default that quietly narrows the scan. The walk
+/// used to inherit the `ignore` crate's gitignore handling, which meant the
+/// files a project deliberately keeps out of git — its `.env`, its keys — were
+/// the files exfil never looked at.
+fn walk_builder(root: &Path, skip: Option<&Path>, policy: &plan::WalkPolicy) -> WalkBuilder {
     let skip = skip.and_then(|p| std::fs::canonicalize(p).ok());
+    let policy = policy.clone();
     let mut builder = WalkBuilder::new(root);
     builder
-        .hidden(false) // scan dotfiles; .gitignore is still honored
+        .hidden(false) // dotfiles are content too
+        .ignore(policy.respect_gitignore)
+        .git_ignore(policy.respect_gitignore)
+        .git_global(policy.respect_gitignore)
+        .git_exclude(policy.respect_gitignore)
+        .parents(policy.respect_gitignore)
+        // Honour the rules wherever they are found, not only inside a checkout.
+        // Asking for `.gitignore` to be respected and silently getting a full
+        // scan because the tree is an unpacked tarball is the same class of
+        // surprise this policy exists to remove.
+        .require_git(false)
         .filter_entry(move |e| {
-            if e.file_name() == ".exfil" || e.file_name() == ".git" {
-                return false;
-            }
-            match (&skip, e.file_type()) {
-                (Some(skip), Some(ft)) if ft.is_dir() => {
-                    std::fs::canonicalize(e.path()).ok().as_deref() != Some(skip)
+            let is_dir = e.file_type().is_some_and(|ft| ft.is_dir());
+            if is_dir {
+                if e.file_name().to_str().is_some_and(|n| policy.skips(n)) {
+                    return false;
                 }
-                _ => true,
+                if let Some(skip) = &skip {
+                    if std::fs::canonicalize(e.path()).ok().as_deref() == Some(skip.as_path()) {
+                        return false;
+                    }
+                }
             }
+            true
         });
     builder
 }
 
 /// Count the regular files a scan of `root` will visit, using the same walk
 /// filters as the scan itself. Cheap (stat-only) pre-pass for progress totals.
-fn count_files(root: &Path, skip: Option<&Path>) -> u64 {
-    walk_builder(root, skip)
+fn count_files(root: &Path, skip: Option<&Path>, policy: &plan::WalkPolicy) -> u64 {
+    walk_builder(root, skip, policy)
         .build()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
@@ -229,7 +386,7 @@ async fn scan_streaming(
     plan: &ScanPlan,
 ) -> Result<Summary> {
     if let Some(ev) = &events {
-        let _ = ev.send(ScanEvent::Total(count_files(root, skip_dir)));
+        let _ = ev.send(ScanEvent::Total(count_files(root, skip_dir, &plan.walk)));
     }
     let (index, ruleset_changed) = stat_index(store, plan).await;
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -241,7 +398,7 @@ async fn scan_streaming(
     // Parallel walk: worker threads read/hash/scan and send results over a
     // channel; progress events stream immediately from the workers.
     let (tx, rx) = mpsc::channel::<WalkOutcome>();
-    let walker = walk_builder(root, skip_dir).build_parallel();
+    let walker = walk_builder(root, skip_dir, &plan.walk).build_parallel();
 
     walker.run(|| {
         let tx = tx.clone();
@@ -293,10 +450,14 @@ async fn scan_streaming(
         ..Summary::default()
     };
     let mut hashes = Vec::new();
+    // One outcome per on-disk path, which is what `candidates` counts — not
+    // `summary.files`, which also counts every entry expanded out of an archive
+    // and so made `coverage()` mean something different here than in the ranked
+    // walk that reports the same field.
     while let Ok(res) = rx.recv() {
+        summary.candidates += 1;
         persist_outcome(store, res, &mut summary, &mut hashes).await?;
     }
-    summary.candidates = summary.files;
 
     store
         .commit_scan(
@@ -323,10 +484,7 @@ async fn scan_streaming(
 /// pull a new dataset and every unchanged file becomes a file those rules have
 /// never seen. Returning an empty index makes the next scan re-examine
 /// everything exactly once, after which the recorded fingerprint matches again.
-async fn stat_index(
-    store: &Store,
-    plan: &ScanPlan,
-) -> (std::sync::Arc<HashMap<String, FileStat>>, bool) {
+async fn stat_index(store: &Store, plan: &ScanPlan) -> (std::sync::Arc<ScanIndex>, bool) {
     let changed = if plan.ruleset.is_empty() {
         false // caller didn't say; don't invalidate on a guess
     } else {
@@ -342,10 +500,13 @@ async fn stat_index(
         }
     };
     if changed {
-        return (std::sync::Arc::new(HashMap::new()), true);
+        return (std::sync::Arc::new(ScanIndex::default()), true);
     }
     (
-        std::sync::Arc::new(store.file_index().await.unwrap_or_default()),
+        std::sync::Arc::new(ScanIndex {
+            files: store.file_index().await.unwrap_or_default(),
+            contained: store.containment_index().await.unwrap_or_default(),
+        }),
         false,
     )
 }
@@ -386,7 +547,7 @@ async fn scan_ranked(
         .unwrap_or(0);
 
     // ── Phase 1: enumerate and score (stat only, no reads) ──────────────────
-    let mut candidates: Vec<Candidate> = walk_builder(root, skip_dir)
+    let mut candidates: Vec<Candidate> = walk_builder(root, skip_dir, &plan.walk)
         .build()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
@@ -560,27 +721,11 @@ async fn scan_ranked(
 /// size+mtime test the streaming walk uses. `abs` must already be canonical —
 /// the store keys its index by canonical path. A file the store has never seen
 /// counts as changed.
-fn is_changed(
-    abs: &Path,
-    md: Option<&std::fs::Metadata>,
-    index: &HashMap<String, FileStat>,
-) -> bool {
+fn is_changed(abs: &Path, md: Option<&std::fs::Metadata>, index: &ScanIndex) -> bool {
     let Some(md) = md else {
         return true;
     };
-    let mtime = md
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default();
-    if mtime.is_empty() {
-        return true;
-    }
-    match index.get(&abs.display().to_string()) {
-        Some(prev) => prev.size != md.len() || prev.mtime != mtime,
-        None => true,
-    }
+    !index.get(abs).is_some_and(|prev| prev.still_matches(md))
 }
 
 /// Write one walk outcome into the store, accumulating counters. Shared by the
@@ -594,40 +739,66 @@ async fn persist_outcome(
     match outcome {
         WalkOutcome::Scanned(results) => {
             for fr in results {
-                summary.files += 1;
-                summary.matches += fr.matches.len() as u64;
-                store.upsert_file(&fr.meta).await?;
-                // Replace, don't append: stale findings from earlier scans of
-                // this content are removed before the fresh ones go in.
-                store.clear_findings(&fr.meta.hash).await?;
-                for m in &fr.matches {
-                    store.add_finding(m, &fr.meta.hash).await?;
-                }
-                if let Some(ast) = &fr.ast {
-                    if !ast.symbols.is_empty() {
-                        let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
-                        store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
-                    }
-                }
-                if let Some(ind) = &fr.indicators {
-                    if !ind.is_empty() {
-                        let value = serde_json::to_value(ind).unwrap_or_default();
-                        store.upsert_indicators(&fr.meta.hash, &value).await?;
-                    }
-                }
-                if let Some(container) = &fr.contained_in {
-                    store.relate_contained_in(&fr.meta.hash, container).await?;
-                }
-                hashes.push(fr.meta.hash);
+                persist_file_result(store, fr, summary, hashes).await?;
             }
         }
-        WalkOutcome::Unchanged { hash } => {
-            summary.files += 1;
-            summary.unchanged += 1;
-            hashes.push(hash);
+        // One unchanged path can stand for several stored records (an archive
+        // and its entries). Counting them all is what makes a rescan's summary
+        // comparable to the first scan's, which reported the same records.
+        WalkOutcome::Unchanged { hashes: unchanged } => {
+            summary.files += unchanged.len() as u64;
+            summary.unchanged += unchanged.len() as u64;
+            hashes.extend(unchanged);
         }
         WalkOutcome::Error => summary.errors += 1,
     }
+    Ok(())
+}
+
+/// Write one file's records into the store and count it into `summary`.
+///
+/// The *only* place a [`FileResult`] becomes rows. There used to be two copies
+/// of this sequence — one for the local walk, one for `scan_remote` — even
+/// though the local copy's own documentation claimed it was what kept the walks
+/// persisting identically. Two copies of a write path is how a graph ends up
+/// with edges on one code path and not the other, which is precisely the shape
+/// of the bug where an unchanged archive lost its contents.
+async fn persist_file_result(
+    store: &Store,
+    fr: FileResult,
+    summary: &mut Summary,
+    hashes: &mut Vec<String>,
+) -> Result<()> {
+    summary.files += 1;
+    summary.matches += fr.matches.len() as u64;
+    match fr.examined {
+        Examined::Yes => {}
+        Examined::Oversize => summary.unexamined.oversize += 1,
+        Examined::Failed => summary.unexamined.failed += 1,
+    }
+    store.upsert_file(&fr.meta).await?;
+    // Replace, don't append: stale findings from earlier scans of this content
+    // are removed before the fresh ones go in.
+    store.clear_findings(&fr.meta.hash).await?;
+    for m in &fr.matches {
+        store.add_finding(m, &fr.meta.hash).await?;
+    }
+    if let Some(ast) = &fr.ast {
+        if !ast.symbols.is_empty() {
+            let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
+            store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
+        }
+    }
+    if let Some(ind) = &fr.indicators {
+        if !ind.is_empty() {
+            let value = serde_json::to_value(ind).unwrap_or_default();
+            store.upsert_indicators(&fr.meta.hash, &value).await?;
+        }
+    }
+    if let Some(container) = &fr.contained_in {
+        store.relate_contained_in(&fr.meta.hash, container).await?;
+    }
+    hashes.push(fr.meta.hash);
     Ok(())
 }
 
@@ -702,13 +873,15 @@ pub async fn scan_remote(
         // scanning work but not the allocation. It is the weaker of the two
         // guards, and mitigated by this loop being sequential — peak memory is
         // one file, not one per walker thread.
-        let processed = if content.len() as u64 > MAX_SCAN_BYTES {
+        let oversize = content.len() as u64 > MAX_SCAN_BYTES;
+        let processed = if oversize {
             Processed::default()
         } else {
             run_pipeline(Path::new(&path), content, pipeline)
         };
         results.push(FileResult {
             meta,
+            examined: examined_state(oversize, processed.failed),
             matches: processed.matches,
             ast: processed.ast,
             indicators: processed.indicators,
@@ -717,34 +890,12 @@ pub async fn scan_remote(
         expand_into(&hash, processed.expanded, &host, pipeline, 1, &mut results);
 
         for fr in results {
-            summary.files += 1;
-            summary.matches += fr.matches.len() as u64;
             if let Some(ev) = &events {
                 for m in &fr.matches {
                     let _ = ev.send(ScanEvent::Match(m.clone()));
                 }
             }
-            store.upsert_file(&fr.meta).await?;
-            store.clear_findings(&fr.meta.hash).await?;
-            for m in &fr.matches {
-                store.add_finding(m, &fr.meta.hash).await?;
-            }
-            if let Some(ast) = &fr.ast {
-                if !ast.symbols.is_empty() {
-                    let symbols = serde_json::to_value(&ast.symbols).unwrap_or_default();
-                    store.upsert_ast(&fr.meta.hash, &ast.lang, &symbols).await?;
-                }
-            }
-            if let Some(ind) = &fr.indicators {
-                if !ind.is_empty() {
-                    let value = serde_json::to_value(ind).unwrap_or_default();
-                    store.upsert_indicators(&fr.meta.hash, &value).await?;
-                }
-            }
-            if let Some(container) = &fr.contained_in {
-                store.relate_contained_in(&fr.meta.hash, container).await?;
-            }
-            hashes.push(fr.meta.hash);
+            persist_file_result(store, fr, &mut summary, &mut hashes).await?;
         }
         if let Some(ev) = &events {
             let _ = ev.send(ScanEvent::FileDone);
@@ -795,22 +946,18 @@ fn process_file(
     path: &Path,
     host: &str,
     pipeline: &Pipeline,
-    index: &HashMap<String, FileStat>,
+    index: &ScanIndex,
 ) -> Result<WalkOutcome> {
     let md = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
-    let mtime = md
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default();
+    let mtime = exfil_core::mtime_stamp(&md).unwrap_or_default();
     let abs: PathBuf = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
-    // Stat fast-path: an unchanged file keeps its stored records and findings.
-    if let Some(prev) = index.get(&abs.display().to_string()) {
-        if prev.size == md.len() && prev.mtime == mtime && !mtime.is_empty() {
+    // Stat fast-path: an unchanged file keeps its stored records and findings —
+    // and so does everything the last scan expanded out of it.
+    if let Some(prev) = index.get(&abs) {
+        if prev.still_matches(&md) {
             return Ok(WalkOutcome::Unchanged {
-                hash: prev.hash.clone(),
+                hashes: index.closure(&prev.hash),
             });
         }
     }
@@ -857,6 +1004,7 @@ fn process_file(
     };
     results.push(FileResult {
         meta,
+        examined: examined_state(oversize, processed.failed),
         matches: processed.matches,
         ast: processed.ast,
         indicators: processed.indicators,
@@ -867,9 +1015,21 @@ fn process_file(
     Ok(WalkOutcome::Scanned(results))
 }
 
+/// Classify one file's treatment from the two ways content goes unsearched.
+fn examined_state(oversize: bool, failed: bool) -> Examined {
+    match (oversize, failed) {
+        (true, _) => Examined::Oversize,
+        (_, true) => Examined::Failed,
+        _ => Examined::Yes,
+    }
+}
+
 /// What running the pipeline over one file's bytes yielded.
 #[derive(Default)]
 struct Processed {
+    /// Whether a task errored. The old `Err(_) => Processed::default()` made a
+    /// failed scan and a clean file produce identical results.
+    failed: bool,
     matches: Vec<Match>,
     expanded: Vec<exfil_core::VirtualFile>,
     ast: Option<exfil_task::Ast>,
@@ -898,12 +1058,16 @@ fn run_pipeline(path: &Path, content: Vec<u8>, pipeline: &Pipeline) -> Processed
     };
     match result {
         Ok(out) => Processed {
+            failed: false,
             matches: out.matches,
             expanded: out.expanded,
             ast: out.ast,
             indicators: out.indicators,
         },
-        Err(_) => Processed::default(),
+        Err(_) => Processed {
+            failed: true,
+            ..Processed::default()
+        },
     }
 }
 
@@ -926,6 +1090,7 @@ fn expand_into(
         let vpath = PathBuf::from(&vf.path);
         let processed = run_pipeline(&vpath, vf.content, pipeline);
         out.push(FileResult {
+            examined: examined_state(false, processed.failed),
             meta: FileMeta {
                 path: vf.path.clone(),
                 abs: vf.path,
@@ -1448,8 +1613,13 @@ rule Detect_Evil {
         $a
 }
 "#;
-        let (pipeline, skipped) =
-            exfil_scan::pipeline_with_rules(exfil_scan::builtin_rules(), "", yara_rules).unwrap();
+        let (pipeline, skipped) = exfil_scan::pipeline_with_rules(
+            exfil_scan::builtin_rules(),
+            "",
+            yara_rules,
+            Default::default(),
+        )
+        .unwrap();
         assert!(skipped.is_empty());
         let store = Store::open_findings(&store_dir).await.unwrap();
         let summary = scan(&tree, &pipeline, &store, Some(&store_dir), None)
@@ -1469,6 +1639,188 @@ rule Detect_Evil {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Regression: the fast path compared mtimes truncated to whole seconds, so
+    /// an edit that kept the file's length and landed in the same second as the
+    /// previous scan was indistinguishable from no edit at all — and a rescan
+    /// certified the file unchanged forever after. Writing a live credential
+    /// over a same-length placeholder is exactly that shape.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_same_size_edit_within_one_second_is_still_a_change() {
+        use std::time::Duration;
+
+        let base = std::env::temp_dir().join(format!("exfil-engine-subsec-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+        let file = tree.join("app.conf");
+
+        // Both versions are the same length; only the content differs.
+        let before = "TOKEN=aaaaaaaaaaaaaaaaaaaaaaaa\n";
+        let after = "k=AKIA0123456789ABCDEF ppppppp\n";
+        assert_eq!(before.len(), after.len());
+
+        // Pin the mtime to a whole second, so the second write can land in the
+        // same second by construction rather than by racing the clock.
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let set_mtime = |nanos: u32| {
+            let f = std::fs::File::options().write(true).open(&file).unwrap();
+            f.set_modified(UNIX_EPOCH + Duration::new(secs, nanos))
+                .unwrap();
+        };
+
+        std::fs::write(&file, before).unwrap();
+        set_mtime(0);
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+        let first = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(first.matches, 0, "the placeholder holds no credential");
+
+        // Same length, same whole second — only the nanoseconds differ.
+        std::fs::write(&file, after).unwrap();
+        set_mtime(400_000_000);
+
+        let second = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(
+            second.unchanged, 0,
+            "a file whose content moved is not unchanged"
+        );
+        assert_eq!(second.matches, 1, "the key written into it must be found");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Regression: the stat fast-path returned only the container's own hash,
+    /// so an unchanged archive kept itself in the scan's `includes` while its
+    /// entries dropped out — and `gc`, which deletes files no surviving scan
+    /// references, collected the findings inside it. Two scans and a gc were
+    /// enough to lose a credential the first scan had reported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unchanged_container_keeps_its_contents_in_the_scan() {
+        let base = std::env::temp_dir().join(format!("exfil-engine-held-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&tree).unwrap();
+
+        // A zip whose *entry* carries the secret; the archive itself is binary.
+        let mut zip = Vec::new();
+        {
+            use std::io::Write;
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut zip));
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+            w.start_file("app/.env", opts).unwrap();
+            w.write_all(b"AWS=AKIA9999999999ZZZZZZ\n").unwrap();
+            w.finish().unwrap();
+        }
+        std::fs::write(tree.join("bundle.zip"), &zip).unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+        let store = Store::open_findings(&base.join("store")).await.unwrap();
+
+        let first = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(first.files, 2, "the archive and the entry inside it");
+        assert_eq!(first.matches, 1);
+
+        // Nothing touched: the fast path fires, and must still vouch for both.
+        let second = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(
+            (second.files, second.unchanged),
+            (2, 2),
+            "an unchanged archive stands for its entries too"
+        );
+
+        // gc keeps only what the latest scan references. The entry must be in it.
+        let stats = store.gc().await.unwrap();
+        assert_eq!(stats.files, 0, "nothing in the tree is stale: {stats:?}");
+        assert_eq!(stats.findings, 0, "no finding may be collected: {stats:?}");
+
+        let found = store.search_findings("").await.unwrap();
+        assert_eq!(found.len(), 1, "the key inside the archive survives");
+        assert!(found[0].path.contains("bundle.zip!"), "{:?}", found[0].path);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Regression: the walk inherited the `ignore` crate's gitignore handling,
+    /// so `.env` and `*.pem` — gitignored by every project that has any sense,
+    /// and the likeliest place a live credential sits — were never scanned, and
+    /// the run reported a clean tree anyway.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gitignored_files_are_scanned_unless_the_policy_says_otherwise() {
+        let base = std::env::temp_dir().join(format!("exfil-engine-ignore-{}", std::process::id()));
+        let tree = base.join("tree");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(tree.join("node_modules/dep")).unwrap();
+        std::fs::write(tree.join(".gitignore"), ".env\n*.pem\n").unwrap();
+        std::fs::write(tree.join(".env"), "AWS=AKIA0123456789ABCDEF\n").unwrap();
+        std::fs::write(tree.join("key.pem"), "AWS=AKIA1111111111111111\n").unwrap();
+        std::fs::write(tree.join("tracked.txt"), "AWS=AKIA2222222222222222\n").unwrap();
+        // Vendored code is skipped by the default directory list, not by the
+        // ignore rules — a cost decision that survives the default flip.
+        std::fs::write(
+            tree.join("node_modules/dep/leak.env"),
+            "AWS=AKIA3333333333333333\n",
+        )
+        .unwrap();
+
+        let pipeline = default_pipeline().unwrap();
+
+        let store = Store::open_findings(&base.join("s1")).await.unwrap();
+        let all = scan(&tree, &pipeline, &store, None, None).await.unwrap();
+        assert_eq!(all.matches, 3, "gitignored credentials are scanned");
+        let paths: Vec<String> = store
+            .search_findings("")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        assert!(paths.iter().any(|p| p.ends_with(".env")), "{paths:?}");
+        assert!(paths.iter().any(|p| p.ends_with("key.pem")), "{paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.contains("node_modules")),
+            "vendored trees stay skipped: {paths:?}"
+        );
+
+        // Opting back in restores the old, narrower walk.
+        let store2 = Store::open_findings(&base.join("s2")).await.unwrap();
+        let plan = ScanPlan {
+            walk: plan::WalkPolicy {
+                respect_gitignore: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let narrowed = scan_with_plan(&tree, &pipeline, &store2, None, None, &plan)
+            .await
+            .unwrap();
+        assert_eq!(narrowed.matches, 1, "only the tracked file");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_walk_policy_always_skips_exfils_own_directories() {
+        let policy = plan::WalkPolicy::default();
+        // Unconditional, whatever the configured list says.
+        for name in [".git", ".exfil"] {
+            assert!(policy.skips(name), "{name}");
+        }
+        assert!(policy.skips("node_modules"));
+        assert!(!policy.skips("src"));
+
+        // A replaced list drops the build-directory defaults but not these.
+        let custom = plan::WalkPolicy {
+            skip_dirs: vec!["fixtures".into()],
+            ..Default::default()
+        };
+        assert!(custom.skips(".git") && custom.skips("fixtures"));
+        assert!(!custom.skips("node_modules"), "the list was replaced");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1506,7 +1858,17 @@ rule Detect_Evil {
         assert_eq!((files_after, scans_after), (1, 1));
         let found = store.search_findings("").await.unwrap();
         assert_eq!(found.len(), 1);
-        assert!(found[0].snippet.contains("AKIA9999999999999999"));
+        // The surviving finding is the new one — identified by its redacted
+        // form, since the store deliberately does not keep the raw credential.
+        assert!(
+            found[0].snippet.contains("AKIA••••••••••••9999"),
+            "{}",
+            found[0].snippet
+        );
+        assert!(
+            !found[0].snippet.contains("AKIA9999999999999999"),
+            "the store must not hold the credential in the clear"
+        );
 
         // gc is idempotent: a second pass removes nothing.
         assert_eq!(store.gc().await.unwrap(), Default::default());

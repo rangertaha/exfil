@@ -87,6 +87,7 @@ pub fn normalize(m: &Match) -> CimEvent {
 mod tests {
     use super::*;
     use exfil_core::Severity;
+    use exfil_core::Snippet;
 
     fn m(rule: &str, snippet: &str) -> Match {
         Match {
@@ -94,7 +95,7 @@ mod tests {
             path: "f".into(),
             line: 1,
             col: 1,
-            snippet: snippet.into(),
+            snippet: Snippet::describe(snippet),
             severity: Some(Severity::High),
             cwe: None,
             cve: None,

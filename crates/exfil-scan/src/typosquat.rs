@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 use exfil_task::{Artifact, ArtifactKind, FileTask, Indicators};
 
 /// Registrable labels of high-value brands frequently impersonated. Compared
@@ -114,7 +114,7 @@ impl DomainTyposquatScanner {
                     path: path.to_string(),
                     line: 0,
                     col: 1,
-                    snippet: what,
+                    snippet: Snippet::describe(what),
                     severity: Some(Severity::High),
                     cwe: Some("CWE-1007".into()),
                     cve: None,
@@ -148,69 +148,11 @@ impl FileTask for DomainTyposquatScanner {
     }
 }
 
-/// Whether `label` is a homoglyph or single-edit lookalike of `brand` (but not
-/// an exact match). Brands shorter than 4 chars are skipped to avoid noise.
+/// Whether `label` impersonates `brand` — the shared near-miss test, which
+/// also supplies the short-name floor and the homoglyph folding this scanner
+/// used to carry its own copy of.
 fn is_lookalike(label: &str, brand: &str) -> bool {
-    if brand.len() < 4 || label == brand {
-        return false;
-    }
-    // Homoglyph fold catches multi-char digit swaps (g00gle → google) that a
-    // single-edit check would miss.
-    if normalize_homoglyphs(label) == brand {
-        return true;
-    }
-    osa_distance(label, brand) == 1
-}
-
-/// Fold common homoglyph substitutions to a canonical letter form: lookalike
-/// digits to letters, and the `rn`/`vv` ligature tricks.
-fn normalize_homoglyphs(s: &str) -> String {
-    let s = s.replace("rn", "m").replace("vv", "w");
-    s.chars()
-        .map(|c| match c {
-            '0' => 'o',
-            '1' => 'l',
-            '3' => 'e',
-            '4' => 'a',
-            '5' => 's',
-            '7' => 't',
-            '9' => 'g',
-            other => other,
-        })
-        .collect()
-}
-
-/// Optimal string alignment (Damerau-Levenshtein with adjacent transpositions)
-/// distance between `a` and `b`.
-fn osa_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (n, m) = (a.len(), b.len());
-    if n == 0 {
-        return m;
-    }
-    if m == 0 {
-        return n;
-    }
-    let mut d = vec![vec![0usize; m + 1]; n + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=n {
-        for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[n][m]
+    crate::nearmiss::impersonates(label, brand)
 }
 
 #[cfg(test)]
@@ -276,12 +218,12 @@ mod tests {
 
     #[test]
     fn osa_distance_basics() {
-        assert_eq!(osa_distance("paypal", "paypa1"), 1);
-        assert_eq!(osa_distance("ab", "ba"), 1); // transposition
-        assert_eq!(osa_distance("abc", "abc"), 0);
+        assert_eq!(crate::nearmiss::distance("paypal", "paypa1"), 1);
+        assert_eq!(crate::nearmiss::distance("ab", "ba"), 1); // transposition
+        assert_eq!(crate::nearmiss::distance("abc", "abc"), 0);
         // Empty-operand fast paths.
-        assert_eq!(osa_distance("", "abc"), 3);
-        assert_eq!(osa_distance("abc", ""), 3);
+        assert_eq!(crate::nearmiss::distance("", "abc"), 3);
+        assert_eq!(crate::nearmiss::distance("abc", ""), 3);
     }
 
     #[test]

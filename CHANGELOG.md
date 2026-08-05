@@ -388,6 +388,53 @@ and this project adheres to
 
 ### Changed
 
+- **A scan now reads gitignored files by default**, with `--respect-gitignore`
+  to opt back out. What a project keeps out of version control and what a
+  security scanner should ignore are different questions, and for the files
+  that matter most — `.env`, `*.pem`, `*.key`, `credentials.json` — the answers
+  are opposite. The walk had silently inherited the `ignore` crate's default,
+  so those files were never scanned, no flag existed to include them, and the
+  run reported a clean tree regardless. The README's own headline example
+  (`./.env:1:26 CRIT [aws-access-key-id] …`) was output exfil could not produce
+  in a real repository.
+  - Every exclusion a scan applies now comes from one `WalkPolicy` on the
+    `ScanPlan`, rather than being partly a library default, partly two
+    hardcoded names in a filter, and partly nothing written down at all.
+  - Build and vendor directories are still skipped, but as a stated cost
+    decision rather than a side effect of ignore rules: `DEFAULT_SKIP_DIRS`
+    covers `node_modules`, `target`, `vendor`, `dist` and the rest, and
+    `[plugins.scan] skip-dirs` replaces the list. `.git` and `.exfil` are
+    unconditional and cannot be re-enabled.
+  - `--respect-gitignore` honours those rules wherever they are found, not only
+    inside a git checkout, so the flag means what it says on an unpacked
+    tarball too.
+
+- **Findings no longer carry the credentials they found.** A snippet now shows
+  the matched value masked (`AWS_ACCESS_KEY_ID=AKIA••••••••••••CDEF`), so the
+  store, the JSON/SARIF reports, the CI log and any uploaded code-scanning
+  result stop being copies of the secrets. `exfil scan --show-secrets` renders
+  them in the clear for when you need the value in order to revoke it. The PII
+  scanner already did this, and documented why; nothing had made the scanner
+  that finds *credentials* agree.
+  - `Match::snippet` is a `Snippet` rather than a `String`, and every way of
+    producing one is a named constructor carrying the policy. Fifteen scanners
+    each built a `Match` literal by hand, so there was nowhere a snippet policy
+    could live and no way for the scanners to be made consistent. A new scanner
+    now has to say which kind of snippet it is building.
+  - Snippets are bounded at 200 characters, windowed *around the match* rather
+    than from the start of the line. A 1 MB minified file used to produce a 1 MB
+    snippet per finding, repeated in full in every machine-readable report; the
+    same scan now renders a 1.4 KB JSON report.
+
+- **File modification stamps are recorded at nanosecond precision.** The
+  incremental fast path compared mtimes truncated to whole seconds, which made
+  a same-length edit landing in the same second as the previous scan
+  indistinguishable from no edit at all — and once certified unchanged, a file
+  stayed that way. Writing a credential over a same-length placeholder is
+  exactly that shape. Existing stores carry second-resolution stamps, so the
+  first scan after upgrading re-reads every file once and matches normally
+  thereafter.
+
 - **The crawl's bounds moved off `scan` and onto the plugin that owns them.**
   `--max-pages` and `--max-depth` only ever applied to an `http(s)://` target,
   so as flags they cluttered every scan that could not use them — part of why
@@ -735,6 +782,50 @@ and this project adheres to
   the `russh` RUSTSEC-2025-0090/0091 advisories previously tracked here.
 
 ### Fixed
+
+- **Mainstream packages were reported as typosquats of each other.** `nuxt` and
+  `nest` are one edit from `next`, and `preact` is one edit from `react`, so all
+  three were flagged `High` — failing an entirely healthy build under
+  `--fail-on high`. Spelling similarity is evidence, not a verdict; a
+  `NOT_TYPOSQUATS` list beside the popular-package list carries the half the
+  scanner cannot infer.
+  - The package and domain checks now share one `nearmiss` test, having
+    previously carried two copies of the same edit-distance routine that had
+    drifted apart. The package check thereby gains homoglyph folding it never
+    had (`l0dash` → `lodash` is now caught) and a floor on protected-name
+    length, which is what stops the three-character `vue` from flagging `vuex`.
+    `vue` and `syn` are dropped from the popular list rather than left in it
+    silently doing nothing.
+
+- **A zip could hide its payload behind padding.** The archive expander capped
+  by central-directory *index*, so it examined the first `max_entries` records
+  whatever they were, while the tar expander capped by files *emitted* — one
+  limit, one name, two meanings. Ten thousand empty directory entries, a few
+  dozen bytes each, therefore made everything filed after them invisible: a
+  600 KB archive whose payload sat at entry 10,001 scanned clean. Both
+  expanders (and the ISO and SQLite ones) now drive a shared
+  `container::Emitter`, where the cap counts files emitted and entries that
+  yield nothing cost nothing. The SQLite expander had the same hole with empty
+  tables and is closed by the same change.
+
+- **Only the first match per rule per line was reported.** The regex scanner —
+  the primary secrets detector — used `Regex::find` where the PII scanner used
+  `find_iter`, so two credentials on one line reported one. Since a minified
+  bundle is a single line, one such file yielded at most one finding per rule
+  however many keys it held. Both scanners now go through one `text::hits`
+  helper that reports every match and owns the line/column arithmetic, and
+  findings are ordered by position rather than by rule registration.
+
+- **`store gc` deleted findings inside unchanged archives.** The stat fast path
+  returned only the container's own hash while a full scan returned the whole
+  tree, so on a rescan an archive kept itself in the scan's `includes` and its
+  entries dropped out — and `gc`, which deletes files no surviving scan
+  references, collected them. Two scans and a gc were enough to lose a
+  credential the first scan had reported. The fast path now returns the same
+  shape a scan does: the file plus everything the last scan expanded out of it,
+  resolved through a new `Store::containment_index`. A rescan's file count is
+  consequently comparable to the first scan's, where it used to be short by the
+  number of archive entries.
 
 - `--fail-on` matched a *sibling* directory by string prefix. The gate's scope
   check was `path.starts_with(root)` with no separator boundary, so scanning

@@ -239,7 +239,7 @@ fn layout(a: &Analysis) -> Vec<PdfPage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exfil_core::Match;
+    use exfil_core::{Match, Snippet};
 
     fn hit(rule: &str, sev: Severity) -> Match {
         Match {
@@ -247,7 +247,7 @@ mod tests {
             path: "/srv/app/.env".into(),
             line: 3,
             col: 1,
-            snippet: "AWS_SECRET=…".into(),
+            snippet: Snippet::verbatim("AWS_SECRET=…"),
             severity: Some(sev),
             cwe: None,
             cve: None,
@@ -294,7 +294,7 @@ mod tests {
         // Base-14 fonts are single-byte encoded; a snippet from a UTF-8 source
         // file can carry anything. Better absent than wrong.
         let mut m = hit("pii-email", Severity::Medium);
-        m.snippet = "住所 café".into();
+        m.snippet = Snippet::verbatim("住所 café");
         let a = Analysis {
             findings: vec![m],
             files: 1,
@@ -307,7 +307,7 @@ mod tests {
 #[cfg(test)]
 mod dump {
     use super::*;
-    use exfil_core::Match;
+    use exfil_core::{Match, Snippet};
     /// Not a test of behaviour — a hook to eyeball a real file when changing
     /// the layout. Ignored so it never runs in CI.
     #[test]
@@ -319,7 +319,7 @@ mod dump {
                 path: format!("/srv/app/module{i}/config/.env"),
                 line: i + 1,
                 col: 1,
-                snippet: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG".into(),
+                snippet: Snippet::verbatim("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG"),
                 severity: Some(if i % 3 == 0 {
                     Severity::Critical
                 } else {

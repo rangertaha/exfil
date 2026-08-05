@@ -12,10 +12,15 @@
 //!
 //! # Safety
 //!
-//! Untrusted archives are hostile input, so expansion is bounded: a per-entry
-//! size cap, a total-output cap, and an entry-count cap defuse decompression
-//! bombs. Anything over a limit is skipped, and unreadable archives yield no
-//! files rather than failing the scan.
+//! Untrusted archives are hostile input, so expansion is bounded by the shared
+//! [`container::Limits`](crate::container::Limits): a per-file size cap, a
+//! total-output cap, and a file-count cap defuse decompression bombs. Anything
+//! over a limit is skipped, and unreadable archives yield no files rather than
+//! failing the scan.
+//!
+//! The caps bound *output*, never how much of the archive is inspected — an
+//! archive is only as safe as the parts of it that were actually looked at, and
+//! padding the front of one is far cheaper than authoring the payload behind it.
 
 use std::io::Read;
 use std::path::Path;
@@ -24,26 +29,7 @@ use anyhow::Result;
 use exfil_core::VirtualFile;
 use exfil_task::{Artifact, ArtifactKind, FileTask};
 
-/// Caps that bound the work an archive can cause.
-#[derive(Debug, Clone, Copy)]
-pub struct Limits {
-    /// Largest single decompressed entry to keep (bytes).
-    pub per_entry: usize,
-    /// Largest total decompressed output across all entries (bytes).
-    pub total: usize,
-    /// Maximum number of entries to expand.
-    pub max_entries: usize,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            per_entry: 32 * 1024 * 1024, // 32 MiB
-            total: 256 * 1024 * 1024,    // 256 MiB
-            max_entries: 10_000,
-        }
-    }
-}
+use crate::container::{Emitter, Limits};
 
 /// Expands supported archives into their contained files.
 #[derive(Debug, Default)]
@@ -114,7 +100,7 @@ impl FileTask for ArchiveExpander {
             Some(Kind::Zip) => expand_zip(&container, bytes, &self.limits),
             Some(Kind::Tar) => expand_tar(&container, bytes, &self.limits),
             Some(Kind::TarGz) => {
-                let decoded = gunzip(bytes, self.limits.total);
+                let decoded = gunzip(bytes, self.limits.max_total_bytes);
                 expand_tar(&container, &decoded, &self.limits)
             }
             Some(Kind::Gz) => expand_gz(path, &container, bytes, &self.limits),
@@ -122,11 +108,6 @@ impl FileTask for ArchiveExpander {
         };
         Ok(Artifact::Files(files))
     }
-}
-
-/// Build the `container!inner` display path used for expanded entries.
-fn vpath(container: &str, inner: &str) -> String {
-    format!("{container}!{inner}")
 }
 
 /// Decompress a single gzip stream, bounded by `cap` bytes.
@@ -138,44 +119,48 @@ fn gunzip(bytes: &[u8], cap: usize) -> Vec<u8> {
 }
 
 /// Expand a zip archive, skipping directories and oversize entries.
+///
+/// Every entry in the central directory is *inspected*; only the ones that
+/// yield a file spend budget. Walking the whole directory is what stops an
+/// archive padded with empty entries from pushing real content out of reach —
+/// this used to stop at index `max_entries` and miss everything after it.
 fn expand_zip(container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualFile> {
     let reader = std::io::Cursor::new(bytes);
     let Ok(mut archive) = zip::ZipArchive::new(reader) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut total = 0usize;
-    let count = archive.len().min(limits.max_entries);
-    for i in 0..count {
+    let mut out = Emitter::new(container, *limits);
+    for i in 0..archive.len() {
+        if out.is_full() {
+            break;
+        }
         let Ok(entry) = archive.by_index(i) else {
             continue;
         };
         if !entry.is_file() {
             continue;
         }
-        // Skip entries whose declared size alone blows the per-entry cap.
-        if entry.size() as usize > limits.per_entry {
+        // Refuse on the declared size before decompressing, so a bomb never
+        // gets the chance to inflate.
+        if entry.size() as usize > limits.max_file_bytes {
             continue;
         }
         let name = entry.name().to_string();
         let mut buf = Vec::new();
         if entry
-            .take(limits.per_entry as u64)
+            .take(limits.max_file_bytes as u64)
             .read_to_end(&mut buf)
             .is_err()
         {
             continue;
         }
-        total += buf.len();
-        if total > limits.total {
+        // A half-decompressed member is not half a file, so oversize entries
+        // are dropped rather than clamped.
+        if out.push(&name, buf).is_stop() {
             break;
         }
-        out.push(VirtualFile {
-            path: vpath(container, &name),
-            content: buf,
-        });
     }
-    out
+    out.finish()
 }
 
 /// Expand a (already-decompressed) tar archive.
@@ -184,14 +169,12 @@ fn expand_tar(container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualFile
     let Ok(entries) = archive.entries() else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut total = 0usize;
+    let mut out = Emitter::new(container, *limits);
     for entry in entries.flatten() {
-        if out.len() >= limits.max_entries {
+        if out.is_full() {
             break;
         }
-        let is_file = entry.header().entry_type().is_file();
-        if !is_file {
+        if !entry.header().entry_type().is_file() {
             continue;
         }
         let name = entry
@@ -200,38 +183,35 @@ fn expand_tar(container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualFile
             .unwrap_or_else(|_| "?".into());
         let mut buf = Vec::new();
         if entry
-            .take(limits.per_entry as u64)
+            .take(limits.max_file_bytes as u64)
             .read_to_end(&mut buf)
             .is_err()
         {
             continue;
         }
-        total += buf.len();
-        if total > limits.total {
+        if out.push(&name, buf).is_stop() {
             break;
         }
-        out.push(VirtualFile {
-            path: vpath(container, &name),
-            content: buf,
-        });
     }
-    out
+    out.finish()
 }
 
 /// Expand a single-member gzip file (`foo.txt.gz` → `foo.txt`).
 fn expand_gz(path: &Path, container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualFile> {
-    let decoded = gunzip(bytes, limits.per_entry);
+    let decoded = gunzip(bytes, limits.max_file_bytes);
     if decoded.is_empty() {
         return Vec::new();
     }
-    // Drop the trailing `.gz` for the inner name.
+    // Drop one trailing `.gz` for the inner name — `strip_suffix`, not
+    // `trim_end_matches`, which would eat every repetition and turn
+    // `archive.gz.gz` into `archive`.
     let inner = exfil_core::leaf_name(path)
-        .map(|n| n.trim_end_matches(".gz").to_string())
+        .map(|n| n.strip_suffix(".gz").unwrap_or(n).to_string())
+        .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "content".into());
-    vec![VirtualFile {
-        path: vpath(container, &inner),
-        content: decoded,
-    }]
+    let mut out = Emitter::new(container, *limits);
+    out.push(&inner, decoded);
+    out.finish()
 }
 
 #[cfg(test)]
@@ -305,9 +285,10 @@ mod tests {
         let big = vec![b'a'; 2048];
         let bytes = zip_of(&[("big.txt", &big), ("small.txt", b"ok")]);
         let exp = ArchiveExpander::with_limits(Limits {
-            per_entry: 1024,
-            total: 1 << 20,
-            max_entries: 100,
+            max_file_bytes: 1024,
+            max_total_bytes: 1 << 20,
+            max_files: 100,
+            ..Limits::default()
         });
         let Artifact::Files(files) = exp
             .run(Path::new("a.zip"), &Artifact::Bytes(bytes))
@@ -379,9 +360,10 @@ mod tests {
         let e = vec![b'x'; 400];
         let bytes = zip_of(&[("a", &e), ("b", &e), ("c", &e)]);
         let exp = ArchiveExpander::with_limits(Limits {
-            per_entry: 1 << 20,
-            total: 900,
-            max_entries: 100,
+            max_file_bytes: 1 << 20,
+            max_total_bytes: 900,
+            max_files: 100,
+            ..Limits::default()
         });
         let Artifact::Files(files) = exp
             .run(Path::new("z.zip"), &Artifact::Bytes(bytes))
@@ -397,9 +379,10 @@ mod tests {
         let e = b"x".as_slice();
         let bytes = tar_of(&[("a", e), ("b", e), ("c", e)]);
         let exp = ArchiveExpander::with_limits(Limits {
-            per_entry: 1 << 20,
-            total: 1 << 20,
-            max_entries: 2,
+            max_file_bytes: 1 << 20,
+            max_total_bytes: 1 << 20,
+            max_files: 2,
+            ..Limits::default()
         });
         let Artifact::Files(files) = exp
             .run(Path::new("z.tar"), &Artifact::Bytes(bytes))
@@ -408,6 +391,52 @@ mod tests {
             unreachable!()
         };
         assert_eq!(files.len(), 2, "capped at max_entries");
+    }
+
+    /// Regression: the zip walk stopped at central-directory index
+    /// `max_entries`, so entries that emitted nothing still consumed the
+    /// budget. Padding an archive with empty directory entries — cheap to
+    /// author, a few dozen bytes each — hid everything filed behind them.
+    #[test]
+    fn directory_padding_cannot_hide_a_later_entry() {
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+            for i in 0..12 {
+                w.add_directory(format!("pad{i:05}"), opts).unwrap();
+            }
+            w.start_file("payload.env", opts).unwrap();
+            w.write_all(b"AWS=AKIA0123456789ABCDEF\n").unwrap();
+            w.finish().unwrap();
+        }
+        // A budget smaller than the padding: under the old index-based cap the
+        // walk never reached the payload at all.
+        let exp = ArchiveExpander::with_limits(Limits {
+            max_files: 4,
+            ..Limits::default()
+        });
+        let Artifact::Files(files) = exp
+            .run(Path::new("evade.zip"), &Artifact::Bytes(buf))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(files.len(), 1, "directories must not spend the budget");
+        assert_eq!(files[0].path, "evade.zip!payload.env");
+    }
+
+    #[test]
+    fn gz_suffix_is_stripped_once_not_repeatedly() {
+        let mut gz = Vec::new();
+        {
+            let mut enc = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+            enc.write_all(b"data").unwrap();
+            enc.finish().unwrap();
+        }
+        // `trim_end_matches` would strip both suffixes and yield `backup`.
+        let files = run("backup.gz.gz", gz);
+        assert_eq!(files[0].path, "backup.gz.gz!backup.gz");
     }
 
     #[test]

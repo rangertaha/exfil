@@ -135,9 +135,80 @@ impl FromStr for Budget {
     }
 }
 
-/// The model and budget a scan runs under.
+/// Directories never descended into, whatever else the policy says.
+///
+/// These hold a project's *output* — build products, vendored dependencies,
+/// caches — and scanning them means reporting findings in code nobody here
+/// wrote, thousands of times over. Skipping them is a cost decision, so it is
+/// stated here rather than inferred from ignore files, and
+/// [`WalkPolicy::skip_dirs`] can replace the list outright.
+///
+/// `.git` and `.exfil` are not on it: those are unconditional (see
+/// [`WalkPolicy::skips`]), because a scan of exfil's own store finding exfil's
+/// own recorded secrets is noise no configuration should be able to opt into.
+pub const DEFAULT_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "vendor",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".gradle",
+    ".terraform",
+];
+
+/// Which files a scan looks at at all.
+///
+/// Separated from [`Budget`] because the two answer different questions. A
+/// budget stops a scan early and says so — [`Summary::is_partial`] exists for
+/// exactly that. A walk policy decides what was never a candidate in the first
+/// place, and until it was written down that decision was invisible: the walk
+/// honoured `.gitignore` by default, so `.env`, `*.pem` and every other
+/// credential file a project quite properly keeps out of git was silently
+/// unscanned, and the run still reported a clean tree.
+///
+/// [`Summary::is_partial`]: crate::Summary::is_partial
+#[derive(Debug, Clone)]
+pub struct WalkPolicy {
+    /// Honour `.gitignore`/`.ignore` rules found in the tree.
+    ///
+    /// Off by default, which inverts the `ignore` crate's own default. What a
+    /// project excludes from version control and what a security scanner should
+    /// ignore are different questions with, very often, opposite answers — the
+    /// files most worth scanning are the ones most carefully kept out of git.
+    pub respect_gitignore: bool,
+    /// Directory names to skip, replacing [`DEFAULT_SKIP_DIRS`].
+    pub skip_dirs: Vec<String>,
+}
+
+impl Default for WalkPolicy {
+    fn default() -> Self {
+        Self {
+            respect_gitignore: false,
+            skip_dirs: DEFAULT_SKIP_DIRS.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl WalkPolicy {
+    /// Whether a directory with this name is skipped. Applies exfil's own
+    /// unconditional exclusions on top of the configured list.
+    pub fn skips(&self, name: &str) -> bool {
+        name == ".git" || name == ".exfil" || self.skip_dirs.iter().any(|d| d == name)
+    }
+}
+
+/// The model, budget, and walk policy a scan runs under.
 #[derive(Default)]
 pub struct ScanPlan {
+    /// Which files the walk visits at all.
+    pub walk: WalkPolicy,
     /// Path scorer used to rank what to scan first. `None` keeps the
     /// filesystem's own order.
     ///

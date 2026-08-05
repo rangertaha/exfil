@@ -40,7 +40,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity, Symbol};
+use exfil_core::{Match, Severity, Snippet, Symbol};
 use exfil_task::{Artifact, ArtifactKind, Assign, Ast, Call, FileTask};
 use tree_sitter::{Node, Parser};
 
@@ -715,7 +715,7 @@ impl FileTask for DangerousCallScanner {
                     path: path_str.clone(),
                     line: sym.line,
                     col: 1,
-                    snippet: format!("call to {} ({})", sym.name, sink.what),
+                    snippet: Snippet::describe(format!("call to {} ({})", sym.name, sink.what)),
                     severity: Some(sink.severity),
                     cwe: Some(sink.cwe.into()),
                     cve: None,

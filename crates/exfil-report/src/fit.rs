@@ -146,6 +146,7 @@ pub fn line(m: &Match, width: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exfil_core::Snippet;
 
     fn hit() -> Match {
         Match {
@@ -153,7 +154,9 @@ mod tests {
             path: "/a/very/deeply/nested/directory/tree/that/goes/on/config.yaml".into(),
             line: 2,
             col: 5,
-            snippet: "password = \"https://user:hunter2@example.com/some/long/path\"".into(),
+            snippet: Snippet::verbatim(
+                "password = \"https://user:hunter2@example.com/some/long/path\"",
+            ),
             severity: Some(Severity::Critical),
             cwe: None,
             cve: None,
@@ -186,7 +189,7 @@ mod tests {
         let mut m = hit();
         m.path = "a.env".into();
         m.rule = "aws".into();
-        m.snippet = "hit".into();
+        m.snippet = Snippet::verbatim("hit");
         assert_eq!(fitted_line(&m, MAX_WIDTH), match_line(&m));
     }
 
@@ -206,7 +209,7 @@ mod tests {
         // truncate them to a third of the room they actually occupy.
         let mut m = hit();
         m.path = "a.env".into();
-        m.snippet = "•".repeat(200);
+        m.snippet = Snippet::verbatim("•".repeat(200));
         let line = fitted_line(&m, MAX_WIDTH);
         assert!(width_of(&line) <= MAX_WIDTH, "{}", width_of(&line));
         assert!(
@@ -233,7 +236,7 @@ mod tests {
         let mut m = hit();
         m.path = "a.env".into();
         m.rule = "aws".into();
-        m.snippet = "x".into();
+        m.snippet = Snippet::verbatim("x");
         assert_eq!(match_line(&m), "a.env:2:5 CRIT [aws] x");
         m.severity = None;
         assert_eq!(match_line(&m), "a.env:2:5 [aws] x");

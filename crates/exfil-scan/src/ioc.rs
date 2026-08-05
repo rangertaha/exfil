@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Rule, Severity};
+use exfil_core::{Match, Rule, Severity, Snippet};
 
 use crate::Scanner;
 
@@ -137,7 +137,10 @@ impl Scanner for HashIocScanner {
                     path: path.to_string_lossy().into_owned(),
                     line: 1,
                     col: 1,
-                    snippet: format!("file {algo:?} digest matches IOC {:?}", meta.name),
+                    snippet: Snippet::describe(format!(
+                        "file {algo:?} digest matches IOC {:?}",
+                        meta.name
+                    )),
                     severity: meta.severity.or(Some(Severity::Critical)),
                     cwe: meta.cwe.clone().or_else(|| Some("CWE-506".into())),
                     cve: None,

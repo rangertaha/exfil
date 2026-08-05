@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 use regex::Regex;
 
 use crate::Scanner;
@@ -117,56 +117,54 @@ impl Scanner for PiiScanner {
         let path_str = path.to_string_lossy().into_owned();
         let mut matches = Vec::new();
 
-        for (idx, line) in text.lines().enumerate() {
-            for p in &self.patterns {
-                for m in p.re.find_iter(line) {
-                    let raw = m.as_str();
-                    if let Some(check) = p.validate {
-                        if !check(raw) {
-                            continue;
-                        }
+        for p in &self.patterns {
+            for hit in crate::text::hits(&text, &p.re) {
+                if let Some(check) = p.validate {
+                    if !check(hit.text) {
+                        continue;
                     }
-                    let col = line[..m.start()].chars().count() as u32 + 1;
-                    matches.push(Match {
-                        rule: p.rule.into(),
-                        path: path_str.clone(),
-                        line: idx as u32 + 1,
-                        col,
-                        // Masked so the finding never stores the raw PII.
-                        snippet: format!("{}: {}", p.label, mask(raw)),
-                        severity: Some(p.severity),
-                        cwe: Some(p.cwe.into()),
-                        cve: None,
-                    });
                 }
+                matches.push(Match {
+                    rule: p.rule.into(),
+                    path: path_str.clone(),
+                    line: hit.line,
+                    col: hit.col,
+                    // Masked so the finding never stores the raw PII. Card
+                    // numbers keep their own PCI-shaped rule; everything else
+                    // goes through the shared mask, so PII and credential
+                    // findings are redacted the same way.
+                    snippet: match mask_card(hit.text) {
+                        Some(masked) => Snippet::verbatim(format!("{}: {masked}", p.label)),
+                        None => Snippet::mask_value(p.label, hit.text),
+                    },
+                    severity: Some(p.severity),
+                    cwe: Some(p.cwe.into()),
+                    cve: None,
+                });
             }
         }
+        matches.sort_by_key(|m| (m.line, m.col));
         Ok(matches)
     }
 }
 
-/// Mask a PII value: keep the first and last visible characters, replace the
-/// middle with bullets (credit cards keep the last four, PCI-style). Runs of
-/// mask characters are capped so a long value can't produce a huge snippet.
-fn mask(raw: &str) -> String {
+/// Mask a card-like value PCI-style — last four digits only — or `None` when
+/// `raw` is not a bare run of digits and separators.
+///
+/// This is the one masking rule PII keeps for itself: "last four" is a payments
+/// convention about card numbers, not a general property of secrets. Everything
+/// else uses [`Snippet::mask_value`], so a leaked password and a leaked email
+/// are redacted the same way.
+fn mask_card(raw: &str) -> Option<String> {
     let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-    // Card-like: keep last 4.
-    if digits.len() >= 13
-        && raw
+    if digits.len() < 13
+        || !raw
             .chars()
             .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')
     {
-        let keep = &digits[digits.len() - 4..];
-        return format!("{}{}", "•".repeat(12), keep);
+        return None;
     }
-    let chars: Vec<char> = raw.chars().collect();
-    if chars.len() <= 4 {
-        return "•".repeat(chars.len());
-    }
-    let head: String = chars[..2].iter().collect();
-    let tail: String = chars[chars.len() - 2..].iter().collect();
-    let mid = (chars.len() - 4).min(8);
-    format!("{head}{}{tail}", "•".repeat(mid))
+    Some(format!("{}{}", "•".repeat(12), &digits[digits.len() - 4..]))
 }
 
 /// Luhn checksum over the digits of `raw` (ignoring spaces/dashes). Valid card
@@ -323,8 +321,15 @@ mod tests {
 
     #[test]
     fn validator_edge_cases() {
-        // mask: values of four chars or fewer become all bullets.
-        assert_eq!(mask("abc"), "•".repeat(3));
+        // mask_card: only a bare run of digits and separators is card-shaped,
+        // and it keeps the last four PCI-style. Everything else returns None
+        // and falls through to the shared redaction.
+        assert_eq!(
+            mask_card("4111 1111 1111 1111").as_deref(),
+            Some("••••••••••••1111")
+        );
+        assert_eq!(mask_card("123-45-6789"), None, "too few digits for a card");
+        assert_eq!(mask_card("GB82WEST12345698765432"), None, "letters present");
 
         // luhn: out-of-range lengths reject; a valid Visa exercises the
         // doubling-over-nine subtraction; a bad checksum fails.

@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 
 /// Connect timeout / read timeout for a WHOIS query.
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -131,7 +131,7 @@ pub fn check(whois: &str, domain: &str, today: i64, recent_days: i64, path: &str
         path: path.to_string(),
         line: 0,
         col: 1,
-        snippet: format!("{domain} registered {age} day(s) ago"),
+        snippet: Snippet::describe(format!("{domain} registered {age} day(s) ago")),
         severity: Some(Severity::Medium),
         cwe: Some("CWE-1007".into()),
         cve: None,

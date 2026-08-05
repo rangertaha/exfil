@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 
 use crate::Scanner;
 
@@ -103,7 +103,7 @@ impl Scanner for YaraScanner {
                 path: path_str.clone(),
                 line: 1,
                 col: 1,
-                snippet: format!("YARA rule {:?} matched", rule.identifier()),
+                snippet: Snippet::describe(format!("YARA rule {:?} matched", rule.identifier())),
                 severity,
                 cwe,
                 cve: None,

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+exfil-core = { workspace = true }
 exfil-config = { workspace = true }
 exfil-store = { workspace = true }
 exfil-scan = { workspace = true }
@@ -17,9 +18,6 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "io-util"] }
-
-[dev-dependencies]
-exfil-core = { workspace = true }
 
 [lints]
 workspace = true

@@ -225,6 +225,19 @@ enum Command {
         /// scan cannot certify that a tree is clean.
         #[arg(long, value_name = "BUDGET")]
         budget: Option<exfil_engine::Budget>,
+        /// Show matched credentials in the clear instead of masking them.
+        /// Findings are masked by default so the store, the JSON/SARIF reports
+        /// and CI logs do not themselves become copies of the secrets — pass
+        /// this when you need the value in order to go and revoke it.
+        #[arg(long)]
+        show_secrets: bool,
+        /// Skip files excluded by `.gitignore` (and `.ignore`) rules in the
+        /// tree. Off by default: what a project keeps out of version control
+        /// and what a security scanner should ignore are different questions,
+        /// and `.env`, `*.pem` and friends are usually both gitignored and
+        /// exactly what you are looking for.
+        #[arg(long)]
+        respect_gitignore: bool,
         /// Scan worst-first using the trained path model, without stopping
         /// early. Same results as an ordinary scan, reached sooner.
         #[arg(long)]
@@ -498,6 +511,8 @@ async fn main() -> Result<()> {
             passive,
             fail_on,
             budget,
+            respect_gitignore,
+            show_secrets,
             ranked,
             model,
             name,
@@ -511,6 +526,8 @@ async fn main() -> Result<()> {
                 explicit_scan_mode(active, passive),
                 fail_on,
                 budget,
+                respect_gitignore,
+                show_secrets,
                 ranked,
                 &model,
                 name,
@@ -810,6 +827,32 @@ fn prompt_field(field: &'static exfil_config::FieldSchema, current: &str) -> Res
     }
 }
 
+/// The walk policy for this run: the `--respect-gitignore` flag, plus any
+/// `skip-dirs` the config file replaces the built-in list with.
+///
+/// Which directories are worth skipping is a property of a project, not of
+/// exfil — a monorepo's `vendor/` may be the most interesting tree in it — so
+/// the list is one editable value rather than a constant baked into the walk.
+/// An unreadable config falls back to the defaults instead of failing the scan.
+fn walk_policy(
+    config: Option<&std::path::Path>,
+    respect_gitignore: bool,
+) -> exfil_engine::WalkPolicy {
+    let configured = exfil_config::load(config)
+        .ok()
+        .map(|cfg| cfg.plugin_strings("scan", "skip-dirs"))
+        .filter(|dirs| !dirs.is_empty());
+    exfil_engine::WalkPolicy {
+        respect_gitignore,
+        skip_dirs: configured.unwrap_or_else(|| {
+            exfil_engine::DEFAULT_SKIP_DIRS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }),
+    }
+}
+
 /// Dispatch a scan by the shape of `target` — resolved by
 /// [`exfil_remote::target`], which the MCP server uses too, so a spec means the
 /// same thing however it arrives. Progress renders live: a ratatui gauge on a
@@ -824,6 +867,8 @@ async fn cmd_scan(
     mode: Option<ScanMode>,
     fail_on: Option<exfil_core::Severity>,
     budget: Option<exfil_engine::Budget>,
+    respect_gitignore: bool,
+    show_secrets: bool,
     ranked: bool,
     model_name: &str,
     name: Option<String>,
@@ -895,7 +940,15 @@ async fn cmd_scan(
         );
     }
 
-    let built = build_pipeline(config).await?;
+    // Masked unless asked otherwise: a finding outlives the run that made it,
+    // and the store, the reports and the CI log are all worse places for a live
+    // credential than the file it was already in.
+    let snippet_policy = if show_secrets {
+        exfil_core::SnippetPolicy::ShowSecrets
+    } else {
+        exfil_core::SnippetPolicy::Redact
+    };
+    let built = build_pipeline(config, snippet_policy).await?;
     if !built.skipped.is_empty() {
         eprintln!(
             "skipped {} rule(s) with unsupported patterns",
@@ -996,6 +1049,7 @@ async fn cmd_scan(
         budget,
         ruleset: fingerprint,
         name: name.unwrap_or_default(),
+        walk: walk_policy(config, respect_gitignore),
     };
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1048,6 +1102,29 @@ async fn cmd_scan(
             })
             .filter(|m| m.severity.is_some_and(|s| s.weight() >= threshold.weight()))
             .count();
+        // A gate that passes is a claim the tree is clean, so it has to say
+        // when that claim is narrower than it sounds. Not fatal — unreadable
+        // and oversize files are facts about the tree, not failures — but never
+        // silent, because "0 findings" over content nothing searched reads
+        // exactly like a clean result.
+        if breaching == 0 && !outcome.summary.is_complete() {
+            let s = &outcome.summary;
+            let mut why = Vec::new();
+            if s.unexamined.any() {
+                why.push(s.unexamined.describe());
+            }
+            if s.errors > 0 {
+                why.push(format!("{} unreadable", s.errors));
+            }
+            if s.is_partial() {
+                why.push(format!("{} not reached", s.skipped));
+            }
+            eprintln!(
+                "! gate passed, but {} file(s) went unsearched ({})",
+                s.unexamined.total() + s.errors + s.skipped,
+                why.join(", ")
+            );
+        }
         if breaching > 0 {
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -1085,8 +1162,18 @@ fn summary_line(outcome: &target::Outcome) -> String {
     let mode = outcome.mode;
     match &outcome.target {
         Target::Path(_) => format!(
-            "scanned {} files ({} unchanged): {} new matches, {} unreadable ({mode})",
-            s.files, s.unchanged, s.matches, s.errors
+            "scanned {} files ({} unchanged): {} new matches, {} unreadable{} ({mode})",
+            s.files,
+            s.unchanged,
+            s.matches,
+            s.errors,
+            // Content that was filed but never searched belongs on the line
+            // that says what the scan did, not only in a hint below it.
+            if s.unexamined.any() {
+                format!(", {} unexamined", s.unexamined.describe())
+            } else {
+                String::new()
+            }
         ),
         Target::Processes => format!(
             "scanned {} processes: {} matches, {} unreadable ({mode})",

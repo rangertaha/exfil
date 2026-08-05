@@ -633,7 +633,7 @@ impl Reporter for SarifReporter {
                     "ruleId": m.rule,
                     "ruleIndex": rule_index[m.rule.as_str()],
                     "level": sarif_level(m.severity),
-                    "message": { "text": if m.snippet.is_empty() { m.rule.clone() } else { m.snippet.clone() } },
+                    "message": { "text": if m.snippet.is_empty() { m.rule.clone() } else { m.snippet.to_string() } },
                     "locations": [ { "physicalLocation": physical } ],
                 })
             })
@@ -660,6 +660,7 @@ impl Reporter for SarifReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exfil_core::Snippet;
 
     fn finding(rule: &str, sev: Severity) -> Match {
         Match {
@@ -667,7 +668,7 @@ mod tests {
             path: "a.env".into(),
             line: 1,
             col: 1,
-            snippet: "k = v | x".into(),
+            snippet: Snippet::verbatim("k = v | x"),
             severity: Some(sev),
             cwe: None,
             cve: None,
@@ -858,7 +859,7 @@ mod tests {
     #[test]
     fn junit_escapes_xml_metacharacters() {
         let mut m = finding("rule<&>\"'", Severity::High);
-        m.snippet = "a < b && c > d \"q\"".into();
+        m.snippet = Snippet::verbatim("a < b && c > d \"q\"");
         m.path = "x&y.env".into();
         let a = Analysis {
             findings: vec![m],
@@ -885,7 +886,7 @@ mod tests {
             path: path.into(),
             line: 1,
             col: 1,
-            snippet: "x".into(),
+            snippet: Snippet::verbatim("x"),
             severity: Some(sev),
             cwe: None,
             cve: None,
@@ -925,7 +926,7 @@ mod tests {
             path: path.into(),
             line: 1,
             col: 1,
-            snippet: "x".into(),
+            snippet: Snippet::verbatim("x"),
             severity: Some(sev),
             cwe: None,
             cve: None,
@@ -983,7 +984,8 @@ mod tests {
         let mut a = sample();
         for (i, m) in a.findings.iter_mut().enumerate() {
             m.path = format!("/a/deeply/nested/tree/of/directories/number{i}/config.yaml");
-            m.snippet = "password = \"https://user:hunter2@example.com/long/path\"".into();
+            m.snippet =
+                Snippet::verbatim("password = \"https://user:hunter2@example.com/long/path\"");
         }
         let fitted = render(&TextReporter::fitted(fit::MAX_WIDTH), &a);
         for line in fitted.lines() {
@@ -1020,7 +1022,7 @@ mod tests {
             path: path.into(),
             line: 1,
             col: 1,
-            snippet: "x".into(),
+            snippet: Snippet::verbatim("x"),
             severity: Some(Severity::High),
             cwe: None,
             cve: None,
@@ -1130,7 +1132,7 @@ mod tests {
             path: "/tmp/a|b/<script>/c.env".into(),
             line: 1,
             col: 1,
-            snippet: "tok=\u{1b}[0m\u{0}\u{7} `code` | \"q\" <x> & \u{2026}".into(),
+            snippet: Snippet::verbatim("tok=\u{1b}[0m\u{0}\u{7} `code` | \"q\" <x> & \u{2026}"),
             severity: Some(Severity::Critical),
             cwe: Some("CWE-798".into()),
             cve: None,

@@ -93,6 +93,20 @@ impl Default for Limits {
     }
 }
 
+impl Limits {
+    /// The bounds an image shares with every other container, for the
+    /// [`Emitter`](crate::container::Emitter) that enforces them. Only
+    /// [`max_depth`](Self::max_depth) is specific to a directory tree.
+    fn shared(&self) -> crate::container::Limits {
+        crate::container::Limits {
+            max_input_bytes: self.max_input_bytes,
+            max_files: self.max_files,
+            max_file_bytes: self.max_file_bytes,
+            max_total_bytes: self.max_total_bytes,
+        }
+    }
+}
+
 /// Expands ISO 9660 disc images into the files they contain.
 #[derive(Debug, Clone, Default)]
 pub struct IsoExpander {
@@ -227,24 +241,20 @@ fn extent_bytes(image: &[u8], extent: u32, size: u32) -> Option<&[u8]> {
 /// Accumulator threaded through the recursive walk.
 struct Walk<'a> {
     image: &'a [u8],
-    container: &'a str,
-    limits: Limits,
+    /// Output accounting, shared with every other container expander.
+    out: crate::container::Emitter,
+    /// Deepest directory nesting to follow — the one bound specific to a tree.
+    max_depth: usize,
     /// Whether identifiers in this tree are Joliet UCS-2 rather than ASCII.
     ucs2: bool,
-    out: Vec<VirtualFile>,
-    total: usize,
     /// Extents already descended into, so a self-referential or cyclic image
     /// cannot loop forever.
     seen: HashSet<u32>,
 }
 
 impl Walk<'_> {
-    fn full(&self) -> bool {
-        self.out.len() >= self.limits.max_files || self.total >= self.limits.max_total_bytes
-    }
-
     fn descend(&mut self, extent: u32, size: u32, prefix: &str, depth: usize) {
-        if depth > self.limits.max_depth || self.full() || !self.seen.insert(extent) {
+        if depth > self.max_depth || self.out.is_full() || !self.seen.insert(extent) {
             return;
         }
         let Some(dir) = extent_bytes(self.image, extent, size) else {
@@ -264,7 +274,7 @@ impl Walk<'_> {
                 if rec.name.is_empty() {
                     continue; // "." or ".."
                 }
-                if self.full() {
+                if self.out.is_full() {
                     return;
                 }
                 let child = if prefix.is_empty() {
@@ -275,18 +285,11 @@ impl Walk<'_> {
                 if rec.is_dir {
                     self.descend(rec.extent, rec.size, &child, depth + 1);
                 } else if let Some(data) = extent_bytes(self.image, rec.extent, rec.size) {
-                    let take = data
-                        .len()
-                        .min(self.limits.max_file_bytes)
-                        .min(self.limits.max_total_bytes.saturating_sub(self.total));
-                    if take == 0 {
+                    // Clamped, not skipped: an ISO member is stored uncompressed,
+                    // so a prefix of an oversize one is still readable content.
+                    if self.out.push_clamped(&child, data.to_vec()).is_stop() {
                         return;
                     }
-                    self.total += take;
-                    self.out.push(VirtualFile {
-                        path: format!("{}!{child}", self.container),
-                        content: data[..take].to_vec(),
-                    });
                 }
             }
         }
@@ -329,15 +332,13 @@ pub fn expand(image: &[u8], container: &str, limits: Limits) -> Vec<VirtualFile>
 
     let mut walk = Walk {
         image,
-        container,
-        limits,
+        out: crate::container::Emitter::new(container, limits.shared()),
+        max_depth: limits.max_depth,
         ucs2,
-        out: Vec::new(),
-        total: 0,
         seen: HashSet::new(),
     };
     walk.descend(root.extent, root.size, "", 0);
-    walk.out
+    walk.out.finish()
 }
 
 impl FileTask for IsoExpander {

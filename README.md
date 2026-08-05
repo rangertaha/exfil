@@ -68,16 +68,20 @@ exfil store clean
 Example scan output (severity is color-coded on a terminal):
 
 ```text
-./.env:1:26 CRIT [aws-access-key-id] export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF
-./src/config.toml:1:7 HIGH [password-in-url] db = "postgres://admin:hunter2@db.internal/prod"
+./.env:1:26 CRIT [aws-access-key-id] export AWS_ACCESS_KEY_ID=AKIA••••••••••••CDEF
+./src/config.toml:1:7 HIGH [password-in-url] db = "post••••••••••••ternal/prod"
 scanned 3 files (0 unchanged): 2 new matches, 0 unreadable
 ```
+
+Matched values are masked, so the findings store and the reports you upload
+don't become copies of the secrets. Pass `--show-secrets` when you need the
+value itself in order to revoke it.
 
 ## Common commands
 
 | Command | What it does |
 |---|---|
-| `exfil scan [path]` | Scan a directory tree for secrets and security issues |
+| `exfil scan [path]` | Scan a directory tree for secrets and security issues (including gitignored files — add `--respect-gitignore` to skip them) |
 | `exfil scan processes` | Scan the local host's running processes |
 | `exfil scan -a example.com:22` | Grab and scan a TCP service banner (`-a` permits reaching the network; or `-a 10.0.0.0/28 --ports 22,80,443` to sweep a CIDR) |
 | `exfil search [query]` | Query stored findings (by field or free text) |
@@ -102,12 +106,21 @@ and contents. Each plugin has its own `[plugins.<name>]` table:
 ```toml
 store = ".exfil"
 
+[plugins.scan]
+# Replaces the built-in list of directories the walk never enters.
+skip-dirs = ["node_modules", "target", "vendor", "dist"]
+
 [plugins.regex]
 datasets = []            # empty = built-in security ruleset
 
 [plugins.ast]
 languages = ["go", "python", "javascript", "rust"]
 ```
+
+A scan reads gitignored files by default — a project's `.env` and `*.pem` are
+usually both gitignored and exactly what you want scanned. `--respect-gitignore`
+honours those rules for a run; build and vendor directories are skipped either
+way, via `skip-dirs` above.
 
 The findings store (default `.exfil/`, override with `--store`) is local to the
 scanned project and removed by `exfil store clean`; downloaded datasets live in the

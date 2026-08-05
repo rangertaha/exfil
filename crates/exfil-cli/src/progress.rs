@@ -383,6 +383,7 @@ fn render_tui(rx: Receiver<ScanEvent>) -> SevCounts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exfil_core::Snippet;
     use ratatui::backend::TestBackend;
 
     fn m(rule: &str) -> Match {
@@ -391,7 +392,7 @@ mod tests {
             path: "a.env".into(),
             line: 2,
             col: 5,
-            snippet: "hit".into(),
+            snippet: Snippet::verbatim("hit"),
             severity: None,
             cwe: None,
             cve: None,
@@ -505,7 +506,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut hit = m("aws-access-key-id");
         hit.path = "/deeply/nested/tree/of/directories/somewhere/config.yaml".into();
-        hit.snippet = "export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF".into();
+        hit.snippet = Snippet::verbatim("export AWS_ACCESS_KEY_ID=AKIA0123456789ABCDEF");
         tx.send(ScanEvent::Match(hit)).unwrap();
         drop(tx);
         let mut buf = Vec::new();

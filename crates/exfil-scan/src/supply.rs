@@ -21,7 +21,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 
 use crate::Scanner;
 
@@ -46,6 +46,13 @@ const KNOWN_MALWARE: &[&str] = &[
 ];
 
 /// Very popular packages worth guarding against one-character typosquats.
+///
+/// Names must be at least [`nearmiss::MIN_PROTECTED_LEN`] characters to have
+/// any effect — below that the one-edit neighbourhood is mostly legitimate
+/// packages — so `vue` and `syn` are deliberately absent rather than listed and
+/// silently inert.
+///
+/// [`nearmiss::MIN_PROTECTED_LEN`]: crate::nearmiss::MIN_PROTECTED_LEN
 const POPULAR: &[&str] = &[
     // npm
     "lodash",
@@ -58,7 +65,6 @@ const POPULAR: &[&str] = &[
     "typescript",
     "jquery",
     "moment",
-    "vue",
     "next",
     "eslint",
     "prettier",
@@ -80,7 +86,6 @@ const POPULAR: &[&str] = &[
     "regex",
     "clap",
     "libc",
-    "syn",
     "rand",
 ];
 
@@ -90,43 +95,38 @@ const HOOK_RED_FLAGS: &[&str] = &[
     "curl", "wget", "base64", "eval(", "eval ", "node -e", "| sh", "|sh", "| bash", "|bash",
 ];
 
-/// Damerau-Levenshtein (OSA) edit distance: insertions, deletions,
-/// substitutions, and — crucially for typosquats — adjacent transpositions
-/// (`lodahs` → `lodash`) each count as one edit. Small inputs only (package
-/// names), so the O(n·m) dynamic-programming cost is irrelevant.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[a.len()][b.len()]
-}
+/// Real, widely-installed packages that happen to sit one edit from a name in
+/// [`POPULAR`], and are therefore not typosquats of it.
+///
+/// Spelling similarity is evidence, not a verdict, and this is the half the
+/// scanner cannot infer: `preact` really is one edit from `react`, and it is
+/// also a mainstream framework with millions of installs. Without this list the
+/// scanner reported the npm ecosystem's best-known projects as attacks on each
+/// other — at `High`, which with `--fail-on high` fails an entirely healthy
+/// build.
+///
+/// Kept beside [`POPULAR`] on purpose: adding a name to one is the moment to
+/// ask whether it belongs in the other.
+const NOT_TYPOSQUATS: &[&str] = &[
+    "preact", // one edit from `react`
+    "nuxt",   // one edit from `next`
+    "nest",   // one edit from `next`
+];
 
-/// If `name` looks like a typosquat, return the popular package it imitates:
-/// exactly one edit away and not itself a popular package.
+/// If `name` looks like a typosquat, return the popular package it imitates.
+///
+/// Three things must hold: the name is not itself popular, it is not a known
+/// legitimate near neighbour, and it impersonates a popular name by the shared
+/// [`nearmiss`](crate::nearmiss) test — which is also where this check picked
+/// up homoglyph folding (`l0dash` → `lodash`) and the floor that stops `vue`
+/// from flagging `vuex`.
 fn typosquat_of(name: &str) -> Option<&'static str> {
-    if POPULAR.contains(&name) {
+    if POPULAR.contains(&name) || NOT_TYPOSQUATS.contains(&name) {
         return None;
     }
     POPULAR
         .iter()
-        .find(|p| edit_distance(name, p) == 1)
+        .find(|p| crate::nearmiss::impersonates(name, p))
         .copied()
 }
 
@@ -180,7 +180,7 @@ impl SupplyChainScanner {
             path: path.to_string_lossy().into_owned(),
             line: line_of(content, anchor),
             col: 1,
-            snippet: description,
+            snippet: Snippet::describe(description),
             severity: Some(ind.severity),
             cwe: Some(ind.cwe.to_string()),
             cve: None,
@@ -411,6 +411,35 @@ mod tests {
         );
     }
 
+    /// Regression: spelling similarity was treated as a verdict, so three of
+    /// npm's best-known frameworks were reported as attacks on each other — at
+    /// `High`, which fails a healthy build under `--fail-on high`.
+    #[test]
+    fn mainstream_packages_are_not_typosquats_of_each_other() {
+        for name in ["preact", "nuxt", "nest"] {
+            assert_eq!(typosquat_of(name), None, "{name} is a real package");
+        }
+        // The floor keeps a three-character name from flagging its own
+        // ecosystem's satellites.
+        assert_eq!(typosquat_of("vuex"), None);
+        assert_eq!(typosquat_of("sync"), None);
+
+        // Actual squats still fire, including homoglyphs the package check
+        // never used to fold.
+        assert_eq!(typosquat_of("lodahs"), Some("lodash"));
+        assert_eq!(typosquat_of("l0dash"), Some("lodash"));
+        assert_eq!(typosquat_of("reqeusts"), Some("requests"));
+    }
+
+    #[test]
+    fn a_real_manifest_of_popular_frameworks_is_silent() {
+        let matches = scan(
+            "package.json",
+            r#"{"dependencies": {"nuxt": "3.0.0", "preact": "10.0.0", "nest": "1.0.0", "express": "4.18.0"}}"#,
+        );
+        assert!(matches.is_empty(), "{matches:?}");
+    }
+
     #[test]
     fn clean_manifests_stay_silent() {
         assert!(scan(
@@ -431,11 +460,11 @@ mod tests {
 
     #[test]
     fn edit_distance_basics() {
-        assert_eq!(edit_distance("lodash", "lodash"), 0);
-        assert_eq!(edit_distance("lodahs", "lodash"), 1); // transposition
-        assert_eq!(edit_distance("lodas", "lodash"), 1); // deletion
-        assert_eq!(edit_distance("reqeusts", "requests"), 1); // transposition
-        assert_eq!(edit_distance("banana", "lodash"), 5);
+        assert_eq!(crate::nearmiss::distance("lodash", "lodash"), 0);
+        assert_eq!(crate::nearmiss::distance("lodahs", "lodash"), 1); // transposition
+        assert_eq!(crate::nearmiss::distance("lodas", "lodash"), 1); // deletion
+        assert_eq!(crate::nearmiss::distance("reqeusts", "requests"), 1); // transposition
+        assert_eq!(crate::nearmiss::distance("banana", "lodash"), 5);
         assert_eq!(typosquat_of("serde"), None, "popular names never flag");
         assert_eq!(typosquat_of("serd"), Some("serde"));
         assert_eq!(typosquat_of("tokoi"), Some("tokio"));

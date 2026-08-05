@@ -22,11 +22,39 @@
 //!   threads — required because the engine scans files in parallel. The
 //!   compiler *proves* this; a scanner holding non-thread-safe state simply
 //!   won't compile into the pipeline.
+//!
+//! # Writing a scanner: compose, don't copy
+//!
+//! The trait is the seam for *plugging in*. It is not the whole of what a
+//! scanner needs, and the modules below are the rest — the operations every
+//! scanner performs, each implemented once:
+//!
+//! | Need | Use |
+//! |---|---|
+//! | Find a pattern in text, with line and column | [`text::hits`] |
+//! | Build a finding's snippet | [`Snippet`](exfil_core::Snippet) |
+//! | Emit files from inside a container, within bounds | [`container::Emitter`] |
+//! | Decide if a name imitates a protected one | [`nearmiss::impersonates`] |
+//!
+//! Every one of these exists because it was written two or three times first,
+//! and the copies disagreed in ways that cost detections: one scanner reported
+//! every match on a line while another reported the first; one archive expander
+//! counted entries inspected while another counted files emitted; one masked
+//! the values it found while another stored them in the clear. None of those
+//! were bugs in the plugin *system* — they were the consequence of each plugin
+//! author reaching for the nearest existing plugin and copying it.
+//!
+//! So when adding a scanner: implement [`Scanner`] or
+//! [`FileTask`](exfil_task::FileTask) for the plugging-in, and reach for the
+//! table above for everything else. If what you need is not there, add it there
+//! rather than in your module — the next scanner will need it too, and that is
+//! precisely how the divergences above began.
 
 pub mod ast;
 pub mod builtin;
 pub mod cim;
 pub mod clamav;
+pub mod container;
 pub mod dns;
 pub mod expand;
 pub mod indicator;
@@ -34,11 +62,13 @@ pub mod ioc;
 pub mod iso;
 pub mod leak;
 pub mod log;
+pub mod nearmiss;
 pub mod netioc;
 pub mod pii;
 pub mod sqlite;
 pub mod supply;
 pub mod taint;
+pub mod text;
 pub mod typosquat;
 pub mod whois;
 pub mod yara;
@@ -157,13 +187,17 @@ pub fn pipeline_with_rules(
     rules: Vec<Rule>,
     clamav_signatures: &str,
     yara_rules: &str,
+    policy: exfil_core::SnippetPolicy,
 ) -> Result<(Pipeline, Vec<String>)> {
     let ioc = HashIocScanner::new(&rules);
     let netioc = NetworkIocScanner::new(&rules);
     let leak = LeakScanner::new(&rules);
     let (clamav, _clamav_skipped) = ClamavScanner::from_signatures(clamav_signatures);
     let yara = YaraScanner::from_sources(yara_rules)?;
-    let (regex, skipped) = RegexScanner::new_lenient(rules);
+    let (mut regex, skipped) = RegexScanner::new_lenient(rules);
+    if policy == exfil_core::SnippetPolicy::ShowSecrets {
+        regex = regex.showing_secrets();
+    }
     let pipeline = Pipeline::new(vec![
         Box::new(ArchiveExpander::default()),
         Box::new(SqliteExpander::default()),
@@ -195,6 +229,10 @@ struct Compiled {
 /// Scans text files by matching a set of regex [`Rule`]s line by line.
 pub struct RegexScanner {
     rules: Vec<Compiled>,
+    /// Whether matched values appear in the clear in the findings this
+    /// produces. This is the scanner that finds credentials, so it is the one
+    /// the policy is really about.
+    policy: exfil_core::SnippetPolicy,
 }
 
 impl RegexScanner {
@@ -215,7 +253,10 @@ impl RegexScanner {
                 .with_context(|| format!("compile rule {:?} pattern", rule.name))?;
             compiled.push(Compiled { rule, re });
         }
-        Ok(Self { rules: compiled })
+        Ok(Self {
+            rules: compiled,
+            policy: Default::default(),
+        })
     }
 
     /// Compile rules leniently: patterns that don't compile are skipped (with
@@ -240,7 +281,20 @@ impl RegexScanner {
                 Err(_) => skipped.push(rule.name),
             }
         }
-        (Self { rules: compiled }, skipped)
+        (
+            Self {
+                rules: compiled,
+                policy: Default::default(),
+            },
+            skipped,
+        )
+    }
+
+    /// Show matched values in the clear rather than masking them — for
+    /// rotating a leaked credential, where the value is the point.
+    pub fn showing_secrets(mut self) -> Self {
+        self.policy = exfil_core::SnippetPolicy::ShowSecrets;
+        self
     }
 
     /// Number of compiled rules.
@@ -270,24 +324,31 @@ impl Scanner for RegexScanner {
         let path_str = path.to_string_lossy().into_owned();
         let mut matches = Vec::new();
 
-        for (idx, line) in text.lines().enumerate() {
-            for c in &self.rules {
-                if let Some(m) = c.re.find(line) {
-                    // Column is a 1-based char offset into the line.
-                    let col = line[..m.start()].chars().count() as u32 + 1;
-                    matches.push(Match {
-                        rule: c.rule.name.clone(),
-                        path: path_str.clone(),
-                        line: idx as u32 + 1,
-                        col,
-                        snippet: line.trim().to_string(),
-                        severity: c.rule.severity,
-                        cwe: c.rule.cwe.clone(),
-                        cve: c.rule.cve.clone(),
-                    });
-                }
+        for c in &self.rules {
+            // Every hit, not just the first on each line: two keys side by side
+            // are two findings, and a minified file is one very long line.
+            for hit in crate::text::hits(&text, &c.re) {
+                matches.push(Match {
+                    rule: c.rule.name.clone(),
+                    path: path_str.clone(),
+                    line: hit.line,
+                    col: hit.col,
+                    snippet: exfil_core::Snippet::around(
+                        hit.line_text,
+                        hit.col,
+                        hit.text,
+                        self.policy,
+                    ),
+                    severity: c.rule.severity,
+                    cwe: c.rule.cwe.clone(),
+                    cve: c.rule.cve.clone(),
+                });
             }
         }
+        // Rules are the outer loop, but findings stream to a reader in file
+        // order, so restore it. Stable, so two rules hitting the same spot keep
+        // their registration order.
+        matches.sort_by_key(|m| (m.line, m.col));
         Ok(matches)
     }
 }
@@ -319,9 +380,45 @@ mod tests {
         assert_eq!(m.rule, "aws-key");
         assert_eq!(m.line, 2);
         assert_eq!(m.col, 7); // "key = " is 6 chars, match starts at col 7
-        assert_eq!(m.snippet, "key = AKIA0123456789ABCDEF");
+                              // The line survives; the credential in it does not.
+        assert_eq!(m.snippet.as_str(), "key = AKIA••••••••••••CDEF");
         assert_eq!(m.severity, Some(Severity::High));
         assert_eq!(m.cwe.as_deref(), Some("CWE-798"));
+    }
+
+    /// Regression: the scanner reported only the first hit per rule per line,
+    /// so credentials sharing a line were lost — and a minified bundle, being
+    /// one line, reported one finding however many keys it held.
+    #[test]
+    fn every_secret_on_a_line_is_reported() {
+        let scanner = RegexScanner::new(vec![rule("aws-key", r"AKIA[0-9A-Z]{16}")]).unwrap();
+
+        let side_by_side = scanner
+            .scan(
+                Path::new("two.env"),
+                b"k1=AKIA0123456789ABCDEF k2=AKIAZZZZZZZZZZZZZZZZ\n",
+            )
+            .unwrap();
+        assert_eq!(side_by_side.len(), 2, "{side_by_side:?}");
+        assert_eq!(side_by_side[0].col, 4);
+        assert_eq!(side_by_side[1].col, 28);
+
+        // A file with no newline at all is a single line.
+        let keys: Vec<String> = (0..5).map(|i| format!("AKIA{:016}", i)).collect();
+        let minified = format!("var c={{{}}};", keys.join(" "));
+        let found = scanner
+            .scan(Path::new("bundle.min.js"), minified.as_bytes())
+            .unwrap();
+        assert_eq!(found.len(), 5, "one finding per key, not per line");
+    }
+
+    #[test]
+    fn findings_are_ordered_by_position_not_by_rule() {
+        // `zzz` is registered second but matches first in the file.
+        let scanner = RegexScanner::new(vec![rule("aaa", "late"), rule("zzz", "early")]).unwrap();
+        let found = scanner.scan(Path::new("f"), b"early\nlate\n").unwrap();
+        let rules: Vec<&str> = found.iter().map(|m| m.rule.as_str()).collect();
+        assert_eq!(rules, vec!["zzz", "aaa"], "file order wins");
     }
 
     #[test]

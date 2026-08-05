@@ -19,6 +19,23 @@
 # username = ""        # root user for a remote server
 # password = ""
 
+# ── What a scan walks ────────────────────────────────────────────────────────
+# By default a scan reads everything under the target, including files listed
+# in .gitignore. That is deliberate: a project's .env, *.pem and *.key are
+# usually both gitignored and exactly what a secrets scanner is looking for.
+# Pass `--respect-gitignore` to a single run to honour those rules instead.
+#
+# `skip-dirs` replaces (not extends) the built-in list of directories the walk
+# never descends into — build output and vendored dependencies, where findings
+# belong to code this project did not write. `.git` and `.exfil` are always
+# skipped and cannot be re-enabled.
+# [plugins.scan]
+# skip-dirs = [
+#   "node_modules", "target", "vendor", "dist", "build", ".next",
+#   ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
+#   ".gradle", ".terraform",
+# ]
+
 # ── Scanners ─────────────────────────────────────────────────────────────────
 # The built-in secret/regex, AST, taint, supply-chain, and indicator scanners
 # run by default. The blocks below tune or extend them.

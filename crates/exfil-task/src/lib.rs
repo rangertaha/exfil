@@ -326,6 +326,7 @@ fn toposort(mut tasks: Vec<Box<dyn FileTask>>) -> Result<Vec<Box<dyn FileTask>>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exfil_core::Snippet;
 
     /// A task with declared needs/provides and a recording of whether it ran.
     struct Fake {
@@ -355,7 +356,7 @@ mod tests {
                     path: String::new(),
                     line: 1,
                     col: 1,
-                    snippet: String::new(),
+                    snippet: Snippet::default(),
                     severity: None,
                     cwe: None,
                     cve: None,
@@ -519,7 +520,7 @@ mod tests {
                         path: String::new(),
                         line: 1,
                         col: 1,
-                        snippet: String::new(),
+                        snippet: Snippet::default(),
                         severity: None,
                         cwe: None,
                         cve: None,
@@ -537,7 +538,7 @@ mod tests {
                         path: String::new(),
                         line: 1,
                         col: 1,
-                        snippet: String::new(),
+                        snippet: Snippet::default(),
                         severity: None,
                         cwe: None,
                         cve: None,

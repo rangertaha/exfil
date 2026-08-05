@@ -285,6 +285,34 @@ impl Store {
         Ok(rows.into_iter().map(|f| (f.abs.clone(), f)).collect())
     }
 
+    /// Which stored files were expanded out of which: container content hash →
+    /// the hashes of the entries found inside it, from the `contained_in` edges.
+    ///
+    /// This is the other half of the stat cache. [`file_index`](Self::file_index)
+    /// answers "has this path changed?", but a container that has not changed
+    /// still *stands for* the files inside it, and those have no path of their
+    /// own for the walk to visit. Without this the engine could only re-attach
+    /// an unchanged archive itself to the new scan, leaving its contents out of
+    /// `includes` — where [`gc`](Self::gc) would delete them as unreferenced.
+    pub async fn containment_index(&self) -> Result<HashMap<String, Vec<String>>> {
+        #[derive(Deserialize)]
+        struct Edge {
+            inner: String,
+            container: String,
+        }
+        let mut res = self
+            .db
+            .query("SELECT record::id(`in`) AS inner, record::id(`out`) AS container FROM contained_in")
+            .await
+            .context("load containment index")?;
+        let rows: Vec<Edge> = res.take(0)?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for e in rows {
+            map.entry(e.container).or_default().push(e.inner);
+        }
+        Ok(map)
+    }
+
     /// Delete all findings attached to a file (and their edges), so a rescan
     /// replaces them instead of piling up duplicates.
     pub async fn clear_findings(&self, file_hash: &str) -> Result<()> {
@@ -1447,10 +1475,27 @@ pub struct FileStat {
     pub abs: String,
     /// File size in bytes at last scan.
     pub size: u64,
-    /// Modification time (seconds since epoch, stringly) at last scan.
+    /// Modification time at last scan, as [`exfil_core::mtime_stamp`] renders it.
     pub mtime: String,
     /// blake3 content hash recorded at last scan.
     pub hash: String,
+}
+
+impl FileStat {
+    /// Whether the file on disk is still the one this record describes, and may
+    /// therefore keep its stored hash and findings without being re-read.
+    ///
+    /// This is the *only* place the incremental fast path is decided. It used to
+    /// be open-coded at each call site in the engine, which is how the two
+    /// copies came to disagree about whether an absent mtime counted as a match.
+    /// A file whose stamp cannot be read is never unchanged: an unanswerable
+    /// question is not a yes.
+    pub fn still_matches(&self, md: &std::fs::Metadata) -> bool {
+        let Some(stamp) = exfil_core::mtime_stamp(md) else {
+            return false;
+        };
+        self.size == md.len() && self.mtime == stamp
+    }
 }
 
 /// What a [`Store::gc`] pass removed.
@@ -1526,6 +1571,7 @@ pub struct ScanRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exfil_core::Snippet;
 
     #[derive(serde::Serialize, serde::Deserialize)]
     struct FileRow {
@@ -1583,7 +1629,7 @@ mod tests {
             path: path.into(),
             line: 3,
             col: 7,
-            snippet: "secret = ...".into(),
+            snippet: Snippet::verbatim("secret = ..."),
             severity: Some(exfil_core::Severity::High),
             cwe: Some("CWE-798".into()),
             cve: None,

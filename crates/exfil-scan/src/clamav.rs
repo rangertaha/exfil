@@ -20,7 +20,7 @@ use std::path::Path;
 
 use aho_corasick::AhoCorasick;
 use anyhow::Result;
-use exfil_core::{Match, Severity};
+use exfil_core::{Match, Severity, Snippet};
 
 /// A parsed hash signature: expected size (None = any) and malware name.
 struct HashSig {
@@ -140,7 +140,7 @@ impl crate::Scanner for ClamavScanner {
             path: path_str.to_string(),
             line: 1,
             col: 1,
-            snippet: format!("ClamAV signature {name:?} matched ({what})"),
+            snippet: Snippet::describe(format!("ClamAV signature {name:?} matched ({what})")),
             severity: Some(Severity::Critical),
             cwe: Some("CWE-506".into()),
             cve: None,

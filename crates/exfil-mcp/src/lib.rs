@@ -120,7 +120,7 @@ where
 mod tests {
     use super::*;
 
-    use exfil_core::{FileMeta, Match, Severity};
+    use exfil_core::{FileMeta, Match, Severity, Snippet};
     use exfil_store::Store;
 
     fn meta(hash: &str, path: &str) -> FileMeta {
@@ -145,7 +145,7 @@ mod tests {
             path: path.into(),
             line: 1,
             col: 1,
-            snippet: "hit".into(),
+            snippet: Snippet::verbatim("hit"),
             severity: Some(Severity::High),
             cwe: Some("CWE-798".into()),
             cve: None,

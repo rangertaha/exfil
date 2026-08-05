@@ -64,6 +64,23 @@ impl Default for Limits {
     }
 }
 
+impl Limits {
+    /// The bounds a database shares with every other container, for the
+    /// [`Emitter`](crate::container::Emitter) that enforces them. A flattened
+    /// table *is* the emitted file here, so `max_tables` is a file count and
+    /// `per_table` a per-file size; only `max_rows_per_table` is specific to
+    /// reading rows. Naming the mapping here is what keeps the cap meaning the
+    /// same thing it means for a zip or an ISO.
+    fn shared(&self) -> crate::container::Limits {
+        crate::container::Limits {
+            max_input_bytes: self.max_input_bytes,
+            max_files: self.max_tables,
+            max_file_bytes: self.per_table,
+            max_total_bytes: self.total,
+        }
+    }
+}
+
 /// Expands SQLite database files into one virtual text file per table.
 #[derive(Debug, Default)]
 pub struct SqliteExpander {
@@ -131,11 +148,6 @@ impl FileTask for SqliteExpander {
     }
 }
 
-/// Build the `container!table` display path used for expanded tables.
-fn vpath(container: &str, table: &str) -> String {
-    format!("{container}!{table}")
-}
-
 /// Load `bytes` as a SQLite database (via a temp file — SQLite has no stable
 /// "open from an in-memory buffer" API) and flatten every user table's rows
 /// into one virtual file each, bounded by `limits`.
@@ -154,10 +166,13 @@ fn expand_sqlite(container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualF
         return Vec::new();
     };
 
-    let mut out = Vec::new();
-    let mut total = 0usize;
-    for table in tables.iter().take(limits.max_tables) {
-        if total >= limits.total {
+    // Every table is *examined*; only the ones that flatten to something spend
+    // budget. Taking the first `max_tables` names instead would let a database
+    // padded with empty tables hide the one row that matters behind them — the
+    // same shape of hole the zip expander's index-based cap had.
+    let mut out = crate::container::Emitter::new(container, limits.shared());
+    for table in tables.iter() {
+        if out.is_full() {
             break;
         }
         let Ok(text) = flatten_table(&conn, table, limits) else {
@@ -166,13 +181,13 @@ fn expand_sqlite(container: &str, bytes: &[u8], limits: &Limits) -> Vec<VirtualF
         if text.is_empty() {
             continue;
         }
-        total += text.len();
-        out.push(VirtualFile {
-            path: vpath(container, table),
-            content: text.into_bytes(),
-        });
+        // Clamped, not skipped: rows already stop at `per_table`, and a prefix
+        // of a flattened table is still readable text.
+        if out.push_clamped(table, text.into_bytes()).is_stop() {
+            break;
+        }
     }
-    out
+    out.finish()
 }
 
 /// List user-created table names (skipping SQLite's own `sqlite_*` bookkeeping
@@ -277,6 +292,34 @@ mod tests {
         // NULL is omitted, not printed as a literal "note=" or "NULL".
         let second_row = text.lines().nth(1).unwrap();
         assert!(!second_row.contains("note="), "{second_row}");
+    }
+
+    /// Regression: the table cap was applied to the *listed* names, so empty
+    /// tables — which flatten to nothing and emit no file — still consumed it.
+    /// A database padded with empty tables hid the rows filed after them, the
+    /// same way directory entries used to hide zip members.
+    #[test]
+    fn empty_tables_do_not_spend_the_table_budget() {
+        // Tables list alphabetically, so the padding is walked before `zdata`.
+        let mut setup: Vec<String> = (0..8)
+            .map(|i| format!("CREATE TABLE pad{i:02} (x TEXT)"))
+            .collect();
+        setup.push("CREATE TABLE zdata (secret TEXT)".into());
+        setup.push("INSERT INTO zdata VALUES ('AWS=AKIA0123456789ABCDEF')".into());
+        let refs: Vec<&str> = setup.iter().map(|s| s.as_str()).collect();
+
+        let exp = SqliteExpander::with_limits(Limits {
+            max_tables: 3,
+            ..Limits::default()
+        });
+        let Artifact::Files(files) = exp
+            .run(Path::new("app.db"), &Artifact::Bytes(sqlite_of(&refs)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(files.len(), 1, "only the non-empty table emits: {files:?}");
+        assert_eq!(files[0].path, "app.db!zdata");
     }
 
     #[test]

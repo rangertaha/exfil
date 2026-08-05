@@ -58,10 +58,10 @@ pub fn check_domain(domain: &str, path: &str) -> Option<Match> {
         path: path.to_string(),
         line: 0,
         col: 1,
-        snippet: format!(
+        snippet: exfil_core::Snippet::describe(format!(
             "{domain} resolves to reserved address(es): {}",
             reserved.join(", ")
-        ),
+        )),
         severity: Some(Severity::Medium),
         cwe: Some("CWE-918".into()),
         cve: None,

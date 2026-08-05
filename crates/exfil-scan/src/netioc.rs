@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use exfil_core::{Match, Rule, Severity};
+use exfil_core::{Match, Rule, Severity, Snippet};
 use exfil_task::{Artifact, ArtifactKind, FileTask, Indicators};
 
 /// Parse a rule pattern as a network IOC: `domain:<host>`, `ip:<addr>`, or
@@ -108,7 +108,7 @@ impl NetworkIocScanner {
                 path: path.to_string(),
                 line: 0,
                 col: 1,
-                snippet: format!("known-bad {kind}: {value}"),
+                snippet: Snippet::describe(format!("known-bad {kind}: {value}")),
                 severity: Some(meta.severity),
                 cwe: Some(meta.cwe.clone()),
                 cve: None,
