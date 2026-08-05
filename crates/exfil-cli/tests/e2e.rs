@@ -408,9 +408,14 @@ fn piped_output_is_never_truncated() {
     assert!(o.status.success(), "{}", err(&o));
 
     // stdout here is a pipe, so full absolute paths must survive intact.
+    //
+    // Compared against the path the scan was *given*, which is what findings
+    // record. Canonicalizing first passes only where that is a no-op: on macOS
+    // `/tmp` resolves to `/private/tmp` and on Windows to a `\\?\` verbatim
+    // path, so the canonical root appears nowhere in the output and the
+    // assertion fails for a reason that has nothing to do with truncation.
     let listed = out(&exfil(&j, &["search", ""]));
-    let root = j.tree.canonicalize().unwrap_or_else(|_| j.tree.clone());
-    let root = root.display().to_string();
+    let root = j.tree.display().to_string();
     assert!(
         listed.lines().any(|l| l.contains(&root)),
         "an absolute path was truncated in piped output:\n{listed}"
